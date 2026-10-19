@@ -11,7 +11,58 @@ project uses git-height–based versioning (clean `0.1.x` releases on `main`).
 
 No changes yet.
 
-## [0.1.74] — 2026-10-15 — current release
+## [0.1.81] — 2026-10-19 — current release
+
+Clearer dungeon controls, faster character switching, and redesigned party menus.
+
+### Added
+- Town character-name dropdowns let each player switch to an eligible saved
+  party character without opening Character Details. **Y / Triangle** opens
+  the owning player's dropdown; each co-op player controls their own list.
+- Ally inspection includes natural/modified attributes, multiline status from
+  equipped abilities and active conditions, and effective resistances.
+- Ally AI can use typed Banish and Dispel spells through **Offensive Cast**
+  and their individual permissions, respecting monster types, resistance,
+  immunity, and the spells' actual damage and target limits.
+
+### Changed
+- Single-player dungeon allies sit at the top right and monster companions
+  at the bottom left. Desktop maps use the extra upper-left space; Mobile
+  maps extend behind the unchanged direction circles.
+- Clicking a player's full name/stats card opens that character's details;
+  **RB / R1** does the same for the owning player, including the second co-op
+  player. Player stats use XP / HP / SP columns with aligned ally HP/SP.
+- Town Exchange groups equipped items by slot above unequipped inventory.
+  Selecting a character's **Gold** row opens one central amount slider and
+  Give action, with thousands separators throughout. Character dropdowns
+  contain only eligible saved characters; permissions follow their owners,
+  not their screen columns.
+- Ally inspection is organized as **Equipment**, **AI behavior**, **Spells**,
+  then **Stats**. Equipment uses orange slot captions and identification-safe
+  icons/names; generated Tavern equipment remains developer-only.
+- Spell permissions appear before their aligned SP costs within each row.
+  Manual-only spells remain visible without misleading automation toggles.
+  Controllers can browse the trailing information without activating settings.
+- Gameplay saves now checkpoint on dungeon floor changes, entering/leaving
+  town, and hired-character membership changes. Ordinary room moves, town
+  transactions, automated buffs, and control changes wait for the next
+  checkpoint instead of requesting a save each time. A crash or forced
+  termination can lose changes made since the last checkpoint.
+
+### Fixed
+- Zoomed-out map walls and door edges remain visible at different window sizes
+  in the dungeon, Library, and destination picker.
+- Releasing a tap after opening an ally popup no longer immediately closes it
+  or hands the same touch to the Cancel hint.
+- Voluntary companions show their contentment/stability icons as well as
+  their bound counterparts.
+- Learned spells and their AI permissions remain visible in inspection
+  despite stat drain, insufficient current/maximum SP, or disabled master
+  capabilities.
+- Repeated inspection changes preserve the popup, controls, scroll position,
+  focus, and the correct live ally for either player.
+
+## [0.1.74] — 2026-10-15
 
 Consistent switches, shared buff automation, and smoother local saving.
 
