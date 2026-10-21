@@ -121,25 +121,37 @@ modernizes the structure of play:
 
 - **Single-player _or_ local couch co-op.** Play solo, or pair two independent
   characters in a local two-player session on one machine — each player drives
-  their own input device (gamepad, keyboard + mouse, or touch).
-- **AI-enabled allies.** Recruit NPC adventurers at the tavern and charm monsters
-  to fight at your side; companions act and support **autonomously** through a
-  combat AI. A solo hero can lead up to four companions.
-- **One hero, not a four-slot party.** You control a single character (plus
-  companions) instead of micromanaging a fixed party of four.
+  their own device: two gamepads, or one gamepad plus keyboard + mouse on PC.
+  Touch and the phone layout are available for solo play.
+- **AI-enabled parties.** Hire generated adventurers or recruit your other
+  eligible saved characters at the [Tavern](docs/help/tavern.md). Solo parties
+  support **three character allies and eight monster companions**; each co-op
+  player has **one ally and four monster slots**.
+- **One controlled character at a time.** Switch control between eligible saved
+  party members in town or the dungeon. The outgoing character becomes an AI
+  ally; each real character keeps their own progression, gear, inventory, and
+  bank. Town [Exchange](docs/help/character-sheet.md#town-exchange) supports
+  items and bank gold between those characters.
 - **No aging.** The original's aging mechanic — and the death risk it carried —
   is removed entirely.
 - **Gold is auto-banked.** Your gold is deposited safely on entering town, so you
   never carry it (or risk losing it) into the dungeon.
 - **Death sends you back to town.** No corpse to recover and no morgue trip — you
   respawn in town and carry on.
-- **Stat drain is recoverable.** Drained stats are restored when you return to
-  town — for a fee — instead of the loss being permanent.
+- **Configurable stat-drain recovery.** By default, drained stats are restored
+  in town for a fee. The optional **Don't restore drained stats in town**
+  setting keeps that drain until you recover the points with stat-boosting items
+  or turn the setting off and return to town.
 - **Guild quests are flexible.** Quests can be completed with any guild active.
 - **Reimagined presentation.** A 2D top-down map with paperdoll monster art,
   rather than the original's 3D first-person corridors.
 - **Full controller & touch support.** Gamepad focus navigation with a radial
   hotbar, plus a dedicated phone layout with an on-screen d-pad.
+- **Checkpoint saving and optional cloud sync.** Local saves checkpoint town
+  and floor transitions and hired-party membership changes. Normal exits flush
+  the latest progress; forced termination can lose uncheckpointed changes.
+  Optional Google Drive cloud saves share local save data across devices.
+  See [Settings & Controls](docs/help/settings.md#saving-and-checkpoints).
 
 ## Bring your own game data
 

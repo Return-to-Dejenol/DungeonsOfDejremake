@@ -22,11 +22,31 @@ and getting back out alive.
   position, floor, or facing may be unreliable until you step back into known
   territory or otherwise get your bearings.
 
+### Your party on screen
+
+- Click or tap the whole **name/stats card** to open the currently controlled
+  character's sheet, or use **RB / R1** on that player's gamepad. The card shows
+  **XP / HP / SP**; each co-op card opens its own character.
+- In solo play, character allies sit at the **top right** and monster companions
+  at the **bottom left**. The desktop map uses the available upper-left space;
+  Mobile extends the map behind the unchanged direction circles.
+- Saved-character allies show a **green up arrow** when they have enough XP for
+  the next active-guild level, or a **red up arrow** when pinned at that guild's
+  quest cap. Red takes precedence. Green is not a promise that a quest or fee
+  will not block training. Generated Tavern allies do not show these arrows.
+- An ally's menu provides **Inspect / AI behavior** and, for eligible real
+  saved members, **Switch to this character**. Switching transfers control,
+  not ownership or an extra turn. Inspection covers Equipment, AI behavior,
+  Spells, and Stats; see the [Character Sheet](character-sheet.md#ally-ai-and-inspection).
+- Companion faces summarize current **binding/contentment stability**, separate
+  from HP color. A lock means permanent binding. Open the companion's menu for
+  details or learned Control/Restrain/Domination targeting.
+
 ### Combat
 
 Fights happen in real-time rounds, driven by a combat timer that ticks about once
-per second. Each round your hero acts once, your companions act on their own, and
-the monsters act. Your hero's options:
+per second. Each round your hero and character allies act once, with monster
+companions taking their own sub-turns. Your hero's options:
 
 - **Attack** — swing your equipped weapon(s) at a monster group. You get a base
   number of swings from your active guild plus extra swings from your weapons; if a
@@ -44,11 +64,21 @@ the monsters act. Your hero's options:
 - **Use an item** — potions, scrolls, charged items, and more.
 - **Move away** — walking away from an active fight interrupts the encounter.
 
-Each round always resolves in a **fixed order**: your hero acts, then your
-companions, then the monsters. There's no initiative roll — your side always acts
-before the monsters. Your stance (attack/defend/tank) **sticks** from round to
-round and even carries into your next fight, so you're not re-choosing it
-constantly — change it whenever you like.
+Normal rounds resolve in **fixed participant order**, with allied character
+actions and companion sub-turns before the monsters. There is no DEX initiative
+roll. The exception is a friendly encounter becoming hostile through its
+aggression check: the monsters receive a **monster-only opening round**.
+
+A manually chosen Attack/Defend/Tank stance **sticks within the current
+encounter** until replaced. Automatic defaults, including a new encounter or a
+return from a one-shot action, instead use the controlled character's
+capabilities: **Attack** if enabled, otherwise **Tank** if enabled, otherwise
+**Defend**. These flags do not forbid you from manually choosing Attack or Tank.
+
+You can select a monster group during a friendly encounter without provoking
+it. Offensive spells and spell-bearing items use that selected group when
+executed. Support items open their spell's appropriate recipient or destination
+picker; canceling does not consume a charge.
 
 ### Chests and traps
 
@@ -62,12 +92,24 @@ Before grabbing the contents:
 3. **Open** to claim the loot. If you misjudge it, the trap goes off — fire, shock,
    poison, disease, and worse.
 
+Gold is shared among that encounter's participating real characters, with
+generated allies' shares treated as expenses. Chest items collected by an ally
+go to that player's currently controlled real character. If the pack is full,
+uncollected items stay in the opened chest for later collection rather than
+being silently discarded.
+
 ### Staying alive
 
 - Keep an eye on your HP and spell points. When either runs low, head back to the
   stairs and return to town to heal, bank your loot, and restock.
 - The deeper you go, the better the rewards — and the deadlier the monsters and
   traps.
+- Downed saved-character allies can be revived before returning. If brought
+  back unrevived, they pay their own normal death/recovery costs; generated
+  adventurers use their separate town revival rules.
+- Floor changes and entering/leaving town are save checkpoints, but ordinary
+  room moves are not. Exit normally to flush recent progress; see
+  [saving and checkpoints](settings.md#saving-and-checkpoints).
 
 ## Differences from the original
 
@@ -88,4 +130,3 @@ Before grabbing the contents:
   group.
 
 [Back to Help index](index.md)
-

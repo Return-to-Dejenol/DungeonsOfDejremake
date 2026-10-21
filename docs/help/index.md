@@ -25,7 +25,9 @@ The town is your safe hub. Everything outside the dungeon happens here.
 - [Guild Hall](guild-hall.md) — join guilds, level up, take quests.
 - [General Store](general-store.md) — buy, sell, identify, uncurse.
 - [Bank](bank.md)
-- [Tavern](tavern.md) — recruit AI allies.
+- [Tavern](tavern.md) — generated and saved recruits, party limits, and switching.
+- [Town Exchange](character-sheet.md#town-exchange) — give items and bank gold
+  between real party characters in solo or co-op.
 - [Seer](seer.md) — locate monsters and items, and boost your luck finding them.
 - [Library](library.md) — your bestiary, item catalog, and maps.
 - [Companion Store](companion-store.md) — buy, sell, and manage companion monsters.
@@ -33,10 +35,12 @@ The town is your safe hub. Everything outside the dungeon happens here.
 
 ### The dungeon
 - [The Dungeon](dungeon.md) — movement, mapping, combat, chests, and traps.
-- [Character Sheet](character-sheet.md) — stats, equipment, inventory, and spells.
+- [Character Sheet](character-sheet.md) — stats, equipment, spells, buff modes,
+  and ally AI behavior.
 
 ### System
-- [Settings & Controls](settings.md)
+- [Settings & Controls](settings.md) — input, gameplay options, checkpoints,
+  and optional cloud saves.
 - [Couch Co-op](coop.md)
 - [End User License Agreement](eula.md)
 - [Changelog](changelog.md) — what's changed between releases.

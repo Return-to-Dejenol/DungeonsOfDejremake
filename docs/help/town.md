@@ -25,6 +25,32 @@ From the town you can reach every service in the game:
 When you're ready to adventure, head to the staircase to enter
 [the dungeon](dungeon.md).
 
+### Switching characters
+
+When your party has another eligible saved character, your **character name**
+becomes a dropdown. Click or tap it to choose the character you want to play;
+**Y / Triangle** opens your dropdown on a gamepad. Up/Down selects, A/Cross
+accepts, and B/Circle cancels. Each co-op player has their own list and input
+ownership.
+
+Only living, present, active real members of your own party are eligible.
+Generated Tavern adventurers, downed, lost, and parked members cannot be
+controlled. Switching uses the selected character's actual gear, guilds,
+inventory, and bank without starting another town visit.
+
+The rest of your status card still opens character details. There is no
+separate Party button on the town character page; use the name dropdown for
+switching. That page's **Exchange** button opens
+[Town Exchange](character-sheet.md#town-exchange) for items and bank gold.
+
+### Saving your visit
+
+Entering town from the dungeon and leaving town are save checkpoints; initial
+town entry after starting/loading a session also establishes a checkpoint.
+Moving between buildings, shopping, exchanging possessions, and switching
+characters are not separate saves. Those changes join the next checkpoint or
+normal exit flush. See [saving and checkpoints](settings.md#saving-and-checkpoints).
+
 **Good habits in town:**
 
 - Sell loot and identify anything unknown before your next dive.
@@ -40,9 +66,11 @@ When you're ready to adventure, head to the staircase to enter
 - **Death brings you back here.** If you fall in the dungeon you respawn in town —
   there's no body to recover and no morgue visit. (Some penalties still apply; see
   [The Dungeon](dungeon.md).)
-- **Drained stats are restored in town.** Stats sapped by monsters are returned
-  when you re-enter town, for a price; your guild covers any shortfall.
-  Normal death's possible CON loss is handled the same way, so CON is not actually
-  lowered.
+- **Configurable drain recovery.** By default, stats sapped by monsters are
+  restored when you re-enter town, for a price; your guild covers any shortfall.
+  Enabling **Don't restore drained stats in town** keeps that drain through town
+  visits and death. Recover it with stat-boosting items, or disable the option
+  and return to town. Ordinary death's separate possible CON-loss charge remains
+  a fee rather than a permanent reduction of base CON.
 
 [Back to Help index](index.md)

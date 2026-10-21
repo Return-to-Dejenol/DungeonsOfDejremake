@@ -15,13 +15,16 @@ The Library has three sections:
 - **Items.** A catalog of items discovered in this saved world, handy for
   comparing gear and remembering what a piece does.
 - **Maps.** A read-only view of each dungeon floor explored in this saved world,
-  drawn from its map knowledge.
+  drawn from its map knowledge. Select a teleporter whose destination you have
+  learned to navigate to that remembered destination floor and highlight its
+  cell. This changes the reference view, not your character's location.
 
 Monster and item entries are listed alphabetically so you can find things
-quickly; map entries are listed by level. The Library is a reference only — you
-can't take actions from it; it just helps you study what your saved world has
-found. Library knowledge and explored maps are shared by all of your characters
-in that saved world.
+quickly; map entries are listed by level. You can navigate the reference maps,
+but the Library does not move your character or change the dungeon. Library
+knowledge and explored maps are shared by all of your characters in that saved
+world. The optional [Library spell filter](settings.md#gameplay-options) uses
+perceived knowledge, which may be mistaken, rather than revealing hidden facts.
 
 ## Differences from the original
 

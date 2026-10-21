@@ -24,11 +24,13 @@ You'll make five choices, in roughly this order:
      it adds +1 attack/defense, and every point below it subtracts. Together they
      set your spell points (SP = INT×5 + WIS×5). Both are also required to learn
      spells, and WIS additionally helps you spot chest traps.
-   - **CON**: drives your maximum HP. Only your permanent base CON counts toward
-     HP — raising it (with tomes or stat potions) scales your whole HP total.
+   - **CON**: drives your maximum HP. Raising base CON with tomes or stat potions
+     scales your whole HP total; later CON drain can reduce it. Equipment CON
+     bonuses do not increase maximum HP.
    - **CHA**: needed for charm spells, improves friendly monsters' chance to offer
      to join you as companions, and reduces the chance that friendly encounters
-     turn hostile. Tavern recruiting is based on gold, not CHA.
+     turn hostile. Generated Tavern adventurers charge a recruitment fee;
+     eligible saved characters have no recruitment fee. Neither uses a CHA roll.
 3. **Sex.** Cosmetic; affects your portrait.
 4. **Alignment.** Good, Neutral, or Evil. Your race may restrict which are
    available. Alignment affects which guilds you can join and how some items and
@@ -44,10 +46,12 @@ over time, so you don't have to decide everything now.
 
 ## Differences from the original
 
-- **You keep a single hero.** There's no four-character party to roll up; you
-  create one adventurer and later gain monster companions through friendly
-  encounters or charm spells. A recruited [Tavern](tavern.md) NPC is a separate
-  ally, not one of those companion slots.
+- **One controlled hero at a time.** Create characters separately, then recruit
+  eligible saved characters at the [Tavern](tavern.md) and switch control within
+  your party. Each keeps their own progression and possessions. Character allies
+  use separate slots from purchased, friendly, or charmed monster companions:
+  solo allows three allies/eight monster slots, while each co-op player has
+  one ally/four monster slots.
 - **A starter kit.** New-game characters begin with a small set of
   basic equipment to get going.
 

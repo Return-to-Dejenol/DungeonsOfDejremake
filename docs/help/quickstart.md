@@ -23,8 +23,9 @@ AI-generated replacements, so importing the original SFX is recommended.
 
 ## 2. Create your hero
 
-You play a **single** character (you'll gain companions later, but there's no
-fixed four-slot party to manage). On the
+You control **one character at a time**. Later you can recruit character allies
+and monster companions, and switch control to another eligible saved party
+member. On the
 [character-creation screen](character-creation.md) you'll:
 
 1. Pick a **race** — this sets your stat ranges, allowed alignments, and how fast
@@ -69,6 +70,15 @@ you; chest traps do not steal gold.
   loot. Risky, but that's where the good gear is.
 - When your HP gets low or your spell points run dry, head back to the stairs and
   return to town to heal and bank your haul.
+- In your spellbook, **Automatic buffs** is the master switch; each buff's
+  **Disabled / Self / All** mode controls whether it can be cast automatically
+  for yourself or eligible nearby party characters. Automatic buffs cost normal
+  SP, so review these modes before a dive. See
+  [automatic buffs](character-sheet.md#automatic-buffs).
+
+Click or tap your **name/stats card** in the dungeon to open your character
+sheet; **RB / R1** opens it on a gamepad. In solo play, character allies appear
+at the top right and monster companions at the bottom left.
 
 If you die, don't panic: you **respawn back in town**. There's no corpse to
 recover and no morgue run — you just pick up where you left off (minus some
@@ -101,9 +111,37 @@ HP rolls to re-run. The practical upshot:
 
 See the [Guild Hall](guild-hall.md) page for the full details.
 
+## 6. Build a party
+
+The [Tavern](tavern.md) offers paid generated adventurers and eligible characters
+from your other saves, who have no recruitment fee. Solo parties can have up to
+**three character allies and eight monster slots**. Each co-op player has one
+ally and four monster slots; excess living companions and character allies are
+parked rather than discarded. Restoring monster bodies has a
+[one-body limit and discard warning](companion-store.md#carried-bodies-and-parked-companions).
+
+When another saved party member is eligible, choose your **name dropdown in
+town** to switch control (**Y / Triangle** on a gamepad). The rest of your
+status card opens character details. Use **Exchange** on the town character
+page to give items or bank gold between real party characters.
+
+## 7. Know when progress is saved
+
+Saving is automatic at **dungeon floor changes**, **entering/leaving town**, and
+**hired-character membership changes**. Ordinary room moves, purchases, sales,
+exchanges, and control switches wait for the next checkpoint. Normal exits and
+app suspension flush the latest local state, but a crash or forced termination
+can lose progress since the last checkpoint.
+
+See [Settings & Controls](settings.md#saving-and-checkpoints) for saving and
+optional cloud synchronization. That page also describes gameplay options,
+including whether drained stats are restored in town.
+
 ## Where to go next
 
 - [The Dungeon](dungeon.md) — combat, chests, traps, and mapping in depth.
 - [Guild Hall](guild-hall.md) — guilds, multi-classing, and quests.
 - [Character Sheet](character-sheet.md) — equipment and spell casting.
+- [Tavern](tavern.md) — saved recruits, AI allies, and party limits.
+- [Settings & Controls](settings.md) — preferences, saving, and cloud sync.
 - [Couch Co-op](coop.md) — play with a friend on one machine.

@@ -9,7 +9,14 @@ project uses git-height–based versioning (clean `0.1.x` releases on `main`).
 
 ## [Unreleased]
 
-No changes yet.
+### Changed
+- Removed the redundant **Party** button from the town character page.
+  Character switching remains available through each player's town name
+  dropdown; Party information and Exchange are unchanged.
+- Updated the player guides and README for saved-character parties, solo/co-op
+  limits, control switching, income sharing, item/gold Exchange, buff modes and
+  AI behavior, the current dungeon HUD, targeted spells/items, gameplay settings,
+  checkpoint saving, cloud saves, and remembered teleporter navigation.
 
 ## [0.1.81] — 2026-10-19 — current release
 

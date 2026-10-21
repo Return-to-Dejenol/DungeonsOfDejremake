@@ -60,8 +60,10 @@ your **CON** and your **guild levels**. The rules of thumb:
   above a guild's HP cap use that guild's minimum HP gain.
 - A high **CON** adds bonus HP per qualifying level (the bonus grows the further
   CON is above 16), so CON is by far the biggest lever on your total HP. Only your
-  permanent **base** CON counts here — raise it with tomes or stat potions; CON
-  from equipped gear does **not** increase max HP.
+  natural CON (**base minus current drain**) counts here — raise base CON with
+  tomes or stat potions; CON from equipped gear does **not** increase max HP.
+  Drain normally clears on town return, unless the
+  [persistent-drain setting](settings.md#gameplay-options) is enabled.
 
 Because the total is computed from your current `(CON, guild levels)` state, **the
 order in which you leveled doesn't matter, and there are no HP rolls.** This

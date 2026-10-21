@@ -16,6 +16,11 @@ works quietly in the background.
   it is auto-banked.
 - The bank screen is also where you deposit inventory items and withdraw stored
   items.
+- Every real saved party character has their **own bank**. Switch the controlled
+  character in town to use their balance and storage. To give bank gold or
+  eligible items between active real party members, use
+  [Town Exchange](character-sheet.md#town-exchange) from the town character page;
+  this works in solo and co-op without an income split or generated-ally fee.
 
 Think of the bank as your running score and your spending account rolled into one:
 sell loot, watch the balance climb, and spend it at the
