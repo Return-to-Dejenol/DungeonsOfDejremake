@@ -3,6 +3,8 @@
 //! Original formulas come from the imported tables; [`Tuning`] is the remake's
 //! rebalance layer on top of them, loaded from `patches/*.toml`.
 
+pub mod mdr;
+
 use serde::Deserialize;
 
 const MODERN: &str = include_str!("../../../patches/modern.toml");

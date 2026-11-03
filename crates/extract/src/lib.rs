@@ -1,7 +1,9 @@
 //! Imports data from the player's own copy of Mordor: The Depths of Dejenol.
 //!
 //! Accepts the distribution ZIP (e.g. the shareware `MORDOR11.ZIP`), a loose
-//! `.WIP` installer archive, or an installed game folder. Only data, music and
+//! `.WIP` installer archive, or an installed game folder. Files packed with
+//! MS-DOS `COMPRESS.EXE` (`*.MD_`, as the registered dungeon ships) are expanded.
+//! Only data, music and
 //! sound files are copied out; executables are never extracted. Nothing produced
 //! here may be committed or redistributed.
 
@@ -14,7 +16,7 @@ use zip::ZipArchive;
 /// Files the remake reads. `MG11.DLL` holds the original monster bitmaps.
 fn wanted(name: &str) -> bool {
     let n = name.to_ascii_uppercase();
-    (n.starts_with("MDATA") && n.ends_with(".MDR"))
+    (n.starts_with("MDATA") && (n.ends_with(".MDR") || n.ends_with(".MD_")))
         || n.ends_with(".MID")
         || n.ends_with(".WAV")
         || n == "MG11.DLL"
@@ -32,8 +34,7 @@ pub fn import(src: &Path, out: &Path) -> io::Result<Vec<String>> {
             if upper.ends_with(".WIP") || upper.ends_with(".ZIP") {
                 got.extend(import(&p, out)?);
             } else if wanted(&name) {
-                fs::copy(&p, out.join(&upper))?;
-                got.push(upper);
+                store(upper, fs::read(&p)?, out, &mut got)?;
             }
         }
     } else {
@@ -56,11 +57,62 @@ fn unzip<R: Read + Seek>(r: R, out: &Path, got: &mut Vec<String>) -> io::Result<
             f.read_to_end(&mut buf)?;
             unzip(Cursor::new(buf), out, got)?;
         } else if wanted(&name) {
-            io::copy(&mut f, &mut fs::File::create(out.join(&name))?)?;
-            got.push(name);
+            let mut buf = Vec::new();
+            f.read_to_end(&mut buf)?;
+            store(name, buf, out, got)?;
         }
     }
     Ok(())
+}
+
+/// Writes one file, expanding `COMPRESS.EXE` output (name ending in `_`).
+fn store(name: String, data: Vec<u8>, out: &Path, got: &mut Vec<String>) -> io::Result<()> {
+    let (name, data) = match name.strip_suffix('_') {
+        Some(stem) => {
+            let (last, data) = expand(&data)?;
+            (format!("{stem}{}", char::from(last.to_ascii_uppercase())), data)
+        }
+        None => (name, data),
+    };
+    fs::write(out.join(&name), data)?;
+    got.push(name);
+    Ok(())
+}
+
+/// Expands an SZDD file (LZSS, 4 KB window). Returns the file name's missing
+/// last character and the data.
+fn expand(b: &[u8]) -> io::Result<(u8, Vec<u8>)> {
+    if b.len() < 14 || &b[..8] != b"SZDD\x88\xf0\x27\x33" {
+        return Err(io::Error::other("not a COMPRESS.EXE file"));
+    }
+    let len = u32::from_le_bytes([b[10], b[11], b[12], b[13]]) as usize;
+    let (mut win, mut pos, mut out) = ([b' '; 4096], 4096 - 16, Vec::with_capacity(len));
+    let mut src = b[14..].iter().copied();
+    'outer: while out.len() < len {
+        let Some(flags) = src.next() else { break };
+        for bit in 0..8 {
+            // Set bit: one literal byte. Clear: 12-bit window offset, 4-bit length - 3.
+            let (off, n) = if flags >> bit & 1 == 1 {
+                let Some(c) = src.next() else { break 'outer };
+                win[pos] = c;
+                (pos, 1)
+            } else {
+                let (Some(lo), Some(hi)) = (src.next(), src.next()) else { break 'outer };
+                (usize::from(lo) | usize::from(hi & 0xf0) << 4, usize::from(hi & 15) + 3)
+            };
+            for k in 0..n {
+                let c = win[(off + k) & 4095];
+                win[pos] = c;
+                pos = (pos + 1) & 4095;
+                out.push(c);
+            }
+        }
+    }
+    if out.len() < len {
+        return Err(io::Error::other("truncated COMPRESS.EXE file"));
+    }
+    out.truncate(len);
+    Ok((b[9], out))
 }
 
 /// Where imported data lives: `gamedata/` in the working directory (gitignored).
@@ -85,5 +137,12 @@ mod tests {
         assert_eq!(got.iter().filter(|g| g.ends_with(".MID")).count(), 16);
         assert!(got.iter().any(|g| g.ends_with(".WAV")));
         assert!(!got.iter().any(|g| g.ends_with(".EXE")));
+    }
+
+    #[test]
+    fn expands_szdd() {
+        // Literals "ab", then a 4-byte match at the window start: "ababab".
+        let f = b"SZDD\x88\xf0\x27\x33Ar\x06\0\0\0\x03ab\xf0\xf1";
+        assert_eq!(expand(f).unwrap(), (b'r', b"ababab".to_vec()));
     }
 }
