@@ -1,6 +1,8 @@
 # Original data formats (MDATA*.MDR)
 
-Worked out from the shareware v1.1 files; the parser is `crates/rules/src/mdr.rs`.
+Worked out from the shareware v1.1 files; the parser is `crates/rules/src/mdr.rs`. Race and
+guild fields were checked against the fan PlayGuide refcard
+(https://www.mocagh.org/miscgame/dejenol-refcard.pdf).
 "Probable" means inferred from value patterns, not yet checked against gameplay.
 
 ## Container
@@ -29,12 +31,17 @@ MS-DOS `COMPRESS.EXE` (SZDD); the importer expands it. MDATA11 has no version re
 ## Fields (word = i16, offsets after the name)
 
 - **Race**: w0-5 stat minimums (STR INT WIS CON CHA DEX), w6 unused; w7-12 maximums, w13
-  unused; w14-25 resistances (order unconfirmed); w26 alignment mask (1 good, 2 neutral,
-  4 evil); w27-29 unknown (w29 may be the point-buy budget); w30 lifespan; w31-32 f32 XP
-  factor (probable).
-- **Guild**: w0-2 unknown (w0 may be HP per level: Warrior 6, Wizard 2); w3-4 f32 XP
-  factor (probable; Nomad 8 is lowest); w5 unknown; w6-11 stat requirements; w13
-  alignment mask; the rest is mostly f32 tables, not decoded yet.
+  unused; w14-25 resistance % (fire, cold, electric, mind, disease, poison, magic, stone,
+  paralysis, drain, acid, unused); w26 alignment mask (1 good, 2 neutral, 4 evil); w27
+  unknown; w28 size (1 small, 2 normal, 3 big, 4 very big); w29 unknown; w30 lifespan;
+  w31-32 f32 XP factor.
+- **Guild**: w0 average HP per level up to w1; w1 that level cap; w2 HP per level after it;
+  w3-4 f32 XP factor; w5 unknown (Nomad 90, others 1); w6-11 stat requirements; w13
+  alignment mask; w15-26 six f32 abilities, each x10 as the refcard shows (thieving,
+  backstab, critical hit, multiple swings, fighting, perception); w32 quest chance %;
+  w33-108 a per-spell-family table (Charm of Opening's family holds the level it is
+  learned at: Nomad 12, Ninja 9, Scavenger 6, Thief 3); w109 race mask (bit n = race n);
+  w111-118 unknown.
 - **Item**: w0 id; w1-2 probably attack/defense modifiers (negative on cursed items);
   w3-4 u32 price; w5 0-16, maybe level found; w15 guild-usable bitmask (bit n = guild n;
   4095 = all); w23 index into item types.
@@ -42,6 +49,21 @@ MS-DOS `COMPRESS.EXE` (SZDD); the importer expands it. MDATA11 has no version re
   that level, so near certain); w0, w1, w3 large varied values (likely attack, defense,
   hit points); w4 1-4.
 - **Spell**: w0 id; w1 0-17; w2 level (probable); w3 0-145, maybe SP cost.
+
+## Characters (MDATA4)
+
+Created at run time; MDATA9 lists the names. Record size not worked out yet. Offsets are
+from the start of the name, a fixed 30-byte space-padded string. Confirmed by editing a
+save and reading the result in the game:
+- +30 race (0 = Human)
+- +36 age in days, as an f32
+- +56-66 the six stats
+- +1646 XP, as a VB Currency (i64 × 10,000)
+- +1654 gold, also a Currency
+- +1662 current HP, then max HP
+- +1678 Nomad level
+
+Other guild levels probably follow +1678; unverified.
 
 ## Dungeon floors (MDATA11)
 

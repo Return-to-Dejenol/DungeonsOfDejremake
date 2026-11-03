@@ -86,11 +86,12 @@ pub struct Race {
     /// STR, INT, WIS, CON, CHA, DEX.
     pub stat_min: [i16; 6],
     pub stat_max: [i16; 6],
-    /// Percentages; which resistance each slot is has not been confirmed.
+    /// Percentages: fire, cold, electric, mind, disease, poison, magic, stone,
+    /// paralysis, drain, acid, then an unused slot.
     pub resist: [i16; 12],
     pub alignments: Alignments,
     pub lifespan: i16,
-    /// Probable: experience modifier (Human 3, Troll 9).
+    /// Experience modifier (Human 3, Troll 9).
     pub xp_factor: f32,
     pub rest: Vec<u8>,
 }
@@ -98,7 +99,7 @@ pub struct Race {
 #[derive(Debug)]
 pub struct Guild {
     pub name: String,
-    /// Probable: experience modifier (Nomad 8, Wizard 30).
+    /// Experience modifier (Nomad 8, Wizard 30).
     pub xp_factor: f32,
     /// STR, INT, WIS, CON, CHA, DEX needed to join.
     pub stat_req: [i16; 6],
