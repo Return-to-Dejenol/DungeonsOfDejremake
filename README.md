@@ -1,216 +1,28 @@
-<p align="center">
-  <img src="media/title_banner.png" alt="Dungeons of Dej'remake" width="560">
-</p>
+# Depths of Dejenol remake (Rust)
 
-<h1 align="center">Dungeons of Dej'remake</h1>
+A modernized remake of *Mordor: The Depths of Dejenol* (1995), written in Rust.
+It started as a fork of [matteo-prosperi/DungeonsOfDejremake](https://github.com/matteo-prosperi/DungeonsOfDejremake);
+that project publishes no source, so everything here is new. Its README is kept at
+[docs/upstream-README.md](docs/upstream-README.md).
 
-<p align="center">
-  A one-person, fully AI-assisted remake of the classic 1995 dungeon crawler
-  <strong><em>Mordor: The Depths of Dejenol</em></strong>, rebuilt from scratch in the
-  <a href="https://godotengine.org/">Godot Engine</a> for modern desktop and mobile.
-</p>
+Like upstream, this repo and its builds contain **no original-game content**. The player
+imports their own copy, and the importer extracts data tables, MIDI music and sounds into
+`gamedata/` (gitignored, never redistributed). The remake's rebalance is shipped as
+patch files that apply on top of those tables.
 
-This is an independent, non-commercial preservation/hobby project. It is **not
-affiliated with, authorized, endorsed, licensed, or sponsored by** Decklin's
-Domain, MakeItSo Software, TDA, or any other current or former rights holder of
-the original game. See [DISCLAIMER.md](DISCLAIMER.md).
+## Layout
 
-> **What's published here:** compiled game builds, distributed as
-> [Releases](../../releases). The remake's own source code is **not** published
-> in this repository at this time.
+- `crates/rules`: headless game rules and the tuning layer. No window, fully testable.
+- `crates/extract`: imports `MORDOR11.ZIP`, a `.WIP` archive, or an install folder.
+- `crates/game`: thin egui frontend.
+- `patches/modern.toml`: the rebalance (XP curve, depth rewards, SP, potion and lock rates).
+  Any other `patches/*.toml` overrides it key by key.
 
-## Project philosophy
+## Run
 
-This project is a deliberate experiment in solo, AI-driven game development:
+```
+cargo run -p ddj-extract -- tests/fixtures/MORDOR11.ZIP
+cargo run -p ddj-game
+```
 
-- **One-person project.** Designed, built, and maintained by a single developer.
-- **100% "vibe coded."** The entire codebase was written conversationally with an
-  AI coding agent — describing intent and iterating, rather than hand-typing the
-  implementation. Every gameplay rule is still held to the original game as the
-  source of truth, with a strict test suite and a faithfulness rule behind it.
-- **All assets are AI-generated.** Every piece of art (monsters, character
-  portraits, items, spells, towns, UI) plus the music and sound effects shipped
-  with the game are original, AI-generated replacements. **No original-game art,
-  audio, or data is included** — you bring your own copy of the original game and
-  the data is extracted locally on your device (see
-  [Bring your own game data](#bring-your-own-game-data)).
-
-## Screenshots
-
-<p align="center">
-  <img src="media/screenshots/town.png" width="80%"><br>
-  <em>The town hub — guilds, shops, and services, with your hero's portrait and stats.</em>
-</p>
-
-<table>
-  <tr>
-    <td align="center" width="50%"><img src="media/screenshots/dungeon.png" width="100%"><br><em>Exploring the dungeon and facing an encounter.</em></td>
-    <td align="center" width="50%"><img src="media/screenshots/character_spells.png" width="100%"><br><em>The character sheet — inventory, equipment, and spellbook.</em></td>
-  </tr>
-  <tr>
-    <td align="center" width="50%"><img src="media/screenshots/tavern.png" width="100%"><br><em>Recruiting AI-driven allies at the tavern.</em></td>
-    <td align="center" width="50%"><img src="media/screenshots/general_store.png" width="100%"><br><em>Buying and selling at the general store.</em></td>
-  </tr>
-</table>
-
-## A look at the AI-generated art
-
-### Monsters
-
-<table>
-  <tr>
-    <td align="center"><img src="media/monsters/silver_dragon.png" width="150"><br>Silver Dragon</td>
-    <td align="center"><img src="media/monsters/spectral_dragon.png" width="150"><br>Spectral Dragon</td>
-    <td align="center"><img src="media/monsters/phoenix.png" width="150"><br>Phoenix</td>
-  </tr>
-  <tr>
-    <td align="center"><img src="media/monsters/flame_devil.png" width="150"><br>Flame Devil</td>
-    <td align="center"><img src="media/monsters/gorgon.png" width="150"><br>Gorgon</td>
-    <td align="center"><img src="media/monsters/wolf_spider.png" width="150"><br>Wolf Spider</td>
-  </tr>
-</table>
-
-### Character portraits
-
-Portraits are generated per race, guild, gender, and progression tier, so your
-character's look evolves as they grow in power.
-
-<table>
-  <tr>
-    <td align="center"><img src="media/characters/female_elf_sorcerer_L60.png" width="150"><br>Elf Sorcerer</td>
-    <td align="center"><img src="media/characters/male_giant_nomad_L120.png" width="150"><br>Giant Nomad</td>
-    <td align="center"><img src="media/characters/male_human_thief_L120.png" width="150"><br>Human Thief</td>
-  </tr>
-  <tr>
-    <td align="center"><img src="media/characters/female_gnome_healer_L1.png" width="150"><br>Gnome Healer</td>
-    <td align="center"><img src="media/characters/male_osiri_seeker_L250.png" width="150"><br>Osiri Seeker</td>
-    <td align="center"><img src="media/characters/female_troll_villain_L120.png" width="150"><br>Troll Villain</td>
-  </tr>
-</table>
-
-### Items
-
-<table>
-  <tr>
-    <td align="center"><img src="media/items/adamantite_sword.png" width="96"><br>Adamantite Sword</td>
-    <td align="center"><img src="media/items/holy_sword.png" width="96"><br>Holy Sword</td>
-    <td align="center"><img src="media/items/ring_of_flames.png" width="96"><br>Ring of Flames</td>
-    <td align="center"><img src="media/items/crystal_of_healing.png" width="96"><br>Crystal of Healing</td>
-    <td align="center"><img src="media/items/tome_of_learning.png" width="96"><br>Tome of Learning</td>
-    <td align="center"><img src="media/items/potion_of_health.png" width="96"><br>Potion of Health</td>
-  </tr>
-</table>
-
-### Spells
-
-<table>
-  <tr>
-    <td align="center"><img src="media/spells/firebolt.png" width="96"><br>Firebolt</td>
-    <td align="center"><img src="media/spells/sphere_of_flames.png" width="96"><br>Sphere of Flames</td>
-    <td align="center"><img src="media/spells/ice_spray.png" width="96"><br>Ice Spray</td>
-    <td align="center"><img src="media/spells/teleport.png" width="96"><br>Teleport</td>
-    <td align="center"><img src="media/spells/minor_heal.png" width="96"><br>Minor Heal</td>
-    <td align="center"><img src="media/spells/resurrect.png" width="96"><br>Resurrect</td>
-  </tr>
-</table>
-
-## What this remake changes
-
-The remake stays faithful to the original's formulas and content, but
-modernizes the structure of play:
-
-- **Single-player _or_ local couch co-op.** Play solo, or pair two independent
-  characters in a local two-player session on one machine — each player drives
-  their own device: two gamepads, or one gamepad plus keyboard + mouse on PC.
-  Touch and the phone layout are available for solo play.
-- **AI-enabled parties.** Hire generated adventurers or recruit your other
-  eligible saved characters at the [Tavern](docs/help/tavern.md). Solo parties
-  support **three character allies and eight monster companions**; each co-op
-  player has **one ally and four monster slots**.
-- **One controlled character at a time.** Switch control between eligible saved
-  party members in town or the dungeon. The outgoing character becomes an AI
-  ally; each real character keeps their own progression, gear, inventory, and
-  bank. Town [Exchange](docs/help/character-sheet.md#town-exchange) supports
-  items and bank gold between those characters.
-- **No aging.** The original's aging mechanic — and the death risk it carried —
-  is removed entirely.
-- **Gold is auto-banked.** Your gold is deposited safely on entering town, so you
-  never carry it (or risk losing it) into the dungeon.
-- **Death sends you back to town.** No corpse to recover and no morgue trip — you
-  respawn in town and carry on.
-- **Configurable stat-drain recovery.** By default, drained stats are restored
-  in town for a fee. The optional **Don't restore drained stats in town**
-  setting keeps that drain until you recover the points with stat-boosting items
-  or turn the setting off and return to town.
-- **Guild quests are flexible.** Quests can be completed with any guild active.
-- **Reimagined presentation.** A 2D top-down map with paperdoll monster art,
-  rather than the original's 3D first-person corridors.
-- **Full controller & touch support.** Gamepad focus navigation with a radial
-  hotbar, plus a dedicated phone layout with an on-screen d-pad.
-- **Checkpoint saving and optional cloud sync.** Local saves checkpoint town
-  and floor transitions and hired-party membership changes. Normal exits flush
-  the latest progress; forced termination can lose uncheckpointed changes.
-  Optional Google Drive cloud saves share local save data across devices.
-  See [Settings & Controls](docs/help/settings.md#saving-and-checkpoints).
-
-## Bring your own game data
-
-The released builds ship **no original game content** — no maps, items,
-monsters, spells, artwork, or audio from the original game. Instead, on first
-launch the game asks you to point it at your **own copy** of the original Mordor
-installer, and it extracts the data it needs locally on your device.
-
-For convenience, the freely redistributable **shareware** distribution of the
-original game is included in this repository at
-[`tests/fixtures/MORDOR11.ZIP`](tests/fixtures/MORDOR11.ZIP). Redistribution of
-that shareware package is **explicitly permitted by the original publisher** (see
-[`tests/fixtures/README.md`](tests/fixtures/README.md)). It contains the first
-3 dungeon levels. If you own the full retail game, you can point the importer at
-your own copy to unlock all 15 levels.
-
-The IP of _Mordor: The Depths of Dejenol_ and related games is currently owned
-by Decklin's Domain. © 1994-2026 Decklin's Domain™ - All Rights Reserved.
-_Depths of Dejenol_ and _Darkness Awakening_ are trademarks of Decklin's Domain
-Ltd. The original game's data, artwork, and audio are **never** redistributed
-by this project in extracted or transformed form.
-
-## Getting started
-
-1. Download the build for your platform from the [Releases](../../releases) page.
-2. Launch it. On first run, the **Set Up Your Game Data** screen lets you import
-   from a `.ZIP` (such as the bundled shareware) or a loose `MORDOR.WIP`, by
-   picking a local file/folder or by entering a download URL.
-3. (Optional) You may also extract the original sound effects and/or monster
-   artwork from your own copy to use in place of the bundled replacements. This
-   can be toggled any time later from **Settings → Manage Original Assets…**.
-
-Game downloads are governed by the [End User License Agreement](docs/help/eula.md).
-
-New to the game? Read the **[Player Help & Guide](docs/help/index.md)** — a
-per-screen how-to plus a [Quickstart](docs/help/quickstart.md) and a list of
-[differences from the original](docs/help/index.md). See the
-[Changelog](docs/help/changelog.md) for what's changed between releases.
-
-## Platforms
-
-Windows, Android, and (work-in-progress) web/console targets.
-
-## Repository license and game-binary EULA
-
-The [MIT License](LICENSE), Copyright (c) 2026 Matteo Prosperi, applies only to
-the original distribution-site, documentation, and project-authored media files
-committed in this repository. It does not license downloadable game binaries or
-GitHub release assets. See [LICENSE-SCOPE.md](LICENSE-SCOPE.md).
-
-Downloadable game binaries are governed by the [End User License
-Agreement](EULA.txt). The MIT license and EULA do **not** apply to, and grant no
-rights in:
-
-- the bundled shareware package (`tests/fixtures/MORDOR11.ZIP`) or any other
-  original-game content, which remains Decklin's Domain intellectual property
-  and is redistributed only under the original publisher's own shareware terms;
-  or
-- Decklin's Domain names, trademarks, and other intellectual property, including
-  _Depths of Dejenol_ and _Darkness Awakening_.
-
-See [DISCLAIMER.md](DISCLAIMER.md) for the full legal notice.
+The bundled shareware covers floors 1-3; point the importer at a retail copy for all 15.

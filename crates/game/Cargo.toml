@@ -1,0 +1,9 @@
+[package]
+name = "ddj-game"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ddj-extract = { version = "0.1.0", path = "../extract" }
+ddj-rules = { version = "0.1.0", path = "../rules" }
+eframe = "0.37.0"

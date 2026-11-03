@@ -1,0 +1,27 @@
+# The remake's rebalance layer, applied on top of the imported original tables.
+# Every value here is a first-pass placeholder to tune during play-testing.
+# Player patches (any other .toml in this folder) override these key by key.
+
+[xp]
+# XP to reach the next level = base * level^exponent (the original is far steeper).
+base = 120.0
+exponent = 1.6
+# Extra XP per floor below floor 1: floor 10 pays 1 + 9 * 0.15 = 2.35x.
+depth_bonus_per_floor = 0.15
+# Bonus for party members below the party's highest level, per level behind.
+catchup_per_level_behind = 0.10
+catchup_cap = 1.0
+
+[spells]
+# Multiplier on the original max-SP gain per level.
+max_sp_mult = 2.5
+# Fraction of max SP restored per dungeon step (resting in town still refills).
+regen_per_step = 0.005
+
+[loot]
+# Drop weight of SP-restoring potions relative to healing potions.
+sp_potion_vs_heal = 0.85
+
+[boxes]
+# Chance a chest is magically locked, by floor (1-based); the last value repeats.
+magic_lock_chance = [0.01, 0.01, 0.015, 0.02, 0.025, 0.08, 0.12, 0.16, 0.20, 0.25]
