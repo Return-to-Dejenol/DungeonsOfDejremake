@@ -127,3 +127,18 @@ Savings carry forward. A Human Warrior needs 256k XP for level 60 (640k in the o
 Dividing the cumulative totals instead was rejected: around level 70 a single level would
 cost about 2x the original. Race and guild scaling stay as in the original. The gold
 needed to level is unchanged for now.
+
+### Experience boosts (2026-11-03)
+
+Each boost multiplies the XP a character gets from combat. It lasts until the party
+changes floor, going back to town included.
+
+| Boost | Multiplier | Who it affects | Where it comes from |
+|---|---|---|---|
+| Potion of Experience | 1.5x | the drinker | General Store (high price) and drops |
+| Greater Potion of Experience | 2.0x | the drinker | drops only, floor 5 and deeper |
+| Charm of Experience | 1.5x | the whole party | Seeker spell, spell level 16 |
+
+- Boosts do not stack: only the strongest active boost applies to a character.
+- Charm of Experience sits above Resist Magic (15), the top of the original Seeker list.
+- Its SP cost, and the potion's price and drop rates, are start values to tune.
