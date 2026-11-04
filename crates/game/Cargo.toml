@@ -17,3 +17,6 @@ rodio = { version = "0.23.0", default-features = false, features = ["playback", 
 wasm-bindgen = "0.2.130"
 wasm-bindgen-futures = "0.4.80"
 web-sys = { version = "0.3.107", features = ["console", "Document", "HtmlCanvasElement", "Window"] }
+
+[build-dependencies]
+winresource = "0.1.34"

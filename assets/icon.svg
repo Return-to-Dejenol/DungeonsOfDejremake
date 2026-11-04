@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- The game's icon: the original's blue slab-serif M, redrawn for the remake. -->
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a5bd9"/>
+      <stop offset="1" stop-color="#0b1a6e"/>
+    </linearGradient>
+  </defs>
+  <path d="M16,30 H96 L128,112 L160,30 H240 V56 H222 V200 H240 V226 H150 V200 H168 V110 L138,186 H118 L88,110 V200 H106 V226 H16 V200 H34 V56 H16 Z" fill="url(#g)" stroke="#06104a" stroke-width="4" stroke-linejoin="round"/>
+</svg>

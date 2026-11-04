@@ -20,6 +20,8 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 UninstallDisplayName={#AppName}
+UninstallDisplayIcon={app}\DejenolRemake.exe
+SetupIconFile=..\assets\icon.ico
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
