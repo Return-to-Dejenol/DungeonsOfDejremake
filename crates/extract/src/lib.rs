@@ -236,9 +236,21 @@ fn bmp8(b: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
     Some((w, rows, out))
 }
 
-/// Where imported data lives: `gamedata/` in the working directory (gitignored).
+/// Where imported data, saves and patches live: the working directory when it already
+/// has `gamedata/` (running from source), else the user's own app data folder, since an
+/// installed game's folder isn't writable.
+pub fn home() -> PathBuf {
+    if Path::new("gamedata").is_dir() {
+        return PathBuf::from(".");
+    }
+    let base = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("XDG_DATA_HOME")).map(PathBuf::from);
+    let base = base.or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
+    base.map_or_else(|| PathBuf::from("."), |b| b.join("DejenolRemake"))
+}
+
+/// Where imported data lives (gitignored when it's the source tree's `gamedata/`).
 pub fn data_dir() -> PathBuf {
-    PathBuf::from("gamedata")
+    home().join("gamedata")
 }
 
 #[cfg(test)]

@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::{fs, path::PathBuf, time::Instant};
 
 use ddj_rules::{
@@ -57,12 +59,12 @@ struct App {
 }
 
 fn saves() -> PathBuf {
-    PathBuf::from("saves")
+    ddj_extract::home().join("saves")
 }
 
 /// Player patches: every `patches/*.toml` except the built-in `modern.toml`, by name.
 fn load_tuning() -> Result<Tuning, String> {
-    let mut paths: Vec<_> = fs::read_dir("patches")
+    let mut paths: Vec<_> = fs::read_dir(ddj_extract::home().join("patches"))
         .map(|d| d.flatten().map(|e| e.path()).collect())
         .unwrap_or_default();
     paths.retain(|p| p.extension().is_some_and(|e| e == "toml") && !p.ends_with("modern.toml"));
@@ -77,6 +79,10 @@ fn load(name: &str) -> std::io::Result<Character> {
 
 impl App {
     fn new() -> Self {
+        // A path on the command line ("Open with" on the game's ZIP) is imported first.
+        if let Some(src) = std::env::args_os().nth(1) {
+            let _ = ddj_extract::import(src.as_ref(), &ddj_extract::data_dir());
+        }
         let data = GameData::load(&ddj_extract::data_dir()).ok();
         let screen = if data.is_some() { Screen::Menu } else { Screen::Import };
         Self {
@@ -113,10 +119,15 @@ impl App {
 
     fn import(&mut self, ui: &mut egui::Ui) {
         ui.heading("Depths of Dejenol remake");
-        ui.label("Point this at your copy of the original game (MORDOR11.ZIP, MORDOR.WIP, or the install folder):");
+        ui.label("This remake needs your own copy of Mordor: The Depths of Dejenol. Drop its ZIP, MORDOR.WIP or install folder on this window, or type the path:");
+        ui.label("(The free shareware MORDOR11.ZIP gives floors 1-3; the full game all 15.)");
+        let dropped = ui.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()));
+        if let Some(p) = &dropped {
+            self.import_path = p.display().to_string();
+        }
         ui.horizontal(|ui| {
-            ui.text_edit_singleline(&mut self.import_path);
-            if ui.button("Import").clicked() {
+            ui.add(egui::TextEdit::singleline(&mut self.import_path).desired_width(480.0));
+            if ui.button("Import").clicked() || dropped.is_some() {
                 let dir = ddj_extract::data_dir();
                 self.status = match ddj_extract::import(self.import_path.trim().as_ref(), &dir).and_then(|_| GameData::load(&dir)) {
                     Ok(d) => {
@@ -473,6 +484,9 @@ impl eframe::App for App {
                 self.spells(ui, d, &tuning);
             });
         }
+        if !playing {
+            egui::Panel::bottom("status").show(ui, |ui| ui.label(&self.status));
+        }
         egui::CentralPanel::default().show(ui, |ui| match (&self.screen, &data) {
             (Screen::Import, _) | (_, None) => self.import(ui),
             (Screen::Menu, Some(d)) => self.menu(ui, d),
@@ -482,9 +496,6 @@ impl eframe::App for App {
         });
         if let (Some(i), Some(d)) = (self.editing, &data) {
             self.macro_editor(ui.ctx(), d, i);
-        }
-        if !playing {
-            egui::Panel::bottom("status").show(ui, |ui| ui.label(&self.status));
         }
         // The original's Sound Canvas music for the menu, the city and the dungeon, and
         // its effects for what just happened (at most a few a frame).
@@ -504,7 +515,8 @@ impl eframe::App for App {
                 self.heard = g.log.len();
             }
         }
-        self.data = data;
+        // A first import sets the data during the frame; keep it.
+        self.data = self.data.take().or(data);
         self.tuning = Ok(tuning);
     }
 }
