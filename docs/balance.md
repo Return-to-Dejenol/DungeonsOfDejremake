@@ -142,3 +142,26 @@ changes floor, going back to town included.
 - Boosts do not stack: only the strongest active boost applies to a character.
 - Charm of Experience sits above Resist Magic (15), the top of the original Seeker list.
 - Its SP cost, and the potion's price and drop rates, are start values to tune.
+
+## Taken while building (review at play-test)
+
+Where the original's rule isn't known, these are stand-ins close to its spirit. Each
+can be changed in `patches/modern.toml` or here.
+
+- **Combat start values**: hit chance 50% ± (attack − defense)%, clamped to 5-95%.
+  Weapon damage is 1 to power × 6 plus (STR − 10) / 2; bare hands count as power 2.
+  Monster damage is 1 to level × 2 + attack / 20. A kill is worth
+  hp × level × 1.5 + attack / 2 XP. Gold is level × 5-25 per monster, and a cleared
+  group leaves an item 15% of the time.
+- **Guild A/D**: each level adds 3 × the guild's fighting ability to attack and
+  defense, and the best guild counts (Nomad reaches about 71 by level 30; the help
+  says 75).
+- **Joining guilds**: the first guild after Nomad is free, as in the original; after
+  that each costs 5,000 gold × the guilds already joined.
+- **Morgue**: rescuers charge 250 × floor², raising 100 + 50 × (total levels)², or
+  all your gold if you have less. Raising always works, and loses a point of CON
+  half the time.
+- **Store stock**: the store-only items (level 0) at their listed prices; it buys at
+  half price.
+- **Dungeon view**: the original's stone, floor and door textures on a 3D view up to
+  four squares deep, instead of its 50 pre-drawn frames, so it scales to any window.

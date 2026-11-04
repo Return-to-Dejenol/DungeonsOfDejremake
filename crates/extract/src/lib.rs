@@ -3,8 +3,8 @@
 //! Accepts the distribution ZIP (e.g. the shareware `MORDOR11.ZIP`), a loose
 //! `.WIP` installer archive, or an installed game folder. Files packed with
 //! MS-DOS `COMPRESS.EXE` (`*.MD_`, as the registered dungeon ships) are expanded.
-//! Only data, music and
-//! sound files are copied out; executables are never extracted. Nothing produced
+//! Only data, music, sound and picture files are copied out; executables are never
+//! extracted (MORDOR.EXE is only scanned for its embedded pictures). Nothing produced
 //! here may be committed or redistributed.
 
 use std::fs;
@@ -20,6 +20,44 @@ fn wanted(name: &str) -> bool {
         || n.ends_with(".MID")
         || n.ends_with(".WAV")
         || n == "MG11.DLL"
+        || n == "MORDOR.EXE"
+}
+
+/// The city and menu pictures VB3 embedded in MORDOR.EXE, by (width, height) in file
+/// order. Only these bitmaps are written out; the program itself never is.
+const EXE_PICTURES: [(&str, i32, i32); 11] = [
+    ("CITY_EXIT", 120, 42),
+    ("CITY_DUNGEON", 120, 87),
+    ("CITY_GUILDS", 120, 87),
+    ("CITY_SEER", 120, 87),
+    ("CITY_MORGUE", 120, 87),
+    ("CITY_BANK", 120, 87),
+    ("CITY_STORE", 120, 87),
+    ("CITY_CONFINEMENT", 120, 87),
+    ("SPLASH", 300, 300),
+    ("MENU", 600, 400),
+    ("PORTRAIT", 150, 150),
+];
+
+fn exe_pictures(exe: &[u8], out: &Path, got: &mut Vec<String>) -> io::Result<()> {
+    let at = |o: usize| exe.get(o..o + 4).map(|b| i32::from_le_bytes(b.try_into().unwrap()));
+    let mut want = EXE_PICTURES.iter().peekable();
+    for o in (0..exe.len().saturating_sub(54)).filter(|&o| &exe[o..o + 2] == b"BM") {
+        let (Some(size), Some(hdr), Some(w), Some(h)) = (at(o + 2), at(o + 14), at(o + 18), at(o + 22)) else { continue };
+        let Some(&&(name, ww, wh)) = want.peek() else { break };
+        if hdr == 40 && (w, h) == (ww, wh) && exe.get(o..o + size as usize).is_some() {
+            let file = format!("{name}.BMP");
+            fs::write(out.join(&file), &exe[o..o + size as usize])?;
+            got.push(file);
+            want.next();
+        }
+    }
+    Ok(())
+}
+
+/// Decodes a picture saved by the importer (e.g. `CITY_STORE.BMP`) as (width, height, RGBA).
+pub fn picture(dir: &Path, name: &str) -> Option<(usize, usize, Vec<u8>)> {
+    bmp8(&fs::read(dir.join(format!("{name}.BMP"))).ok()?)
 }
 
 /// Copies every wanted file from `src` into `out`, returning the file names.
@@ -67,6 +105,9 @@ fn unzip<R: Read + Seek>(r: R, out: &Path, got: &mut Vec<String>) -> io::Result<
 
 /// Writes one file, expanding `COMPRESS.EXE` output (name ending in `_`).
 fn store(name: String, data: Vec<u8>, out: &Path, got: &mut Vec<String>) -> io::Result<()> {
+    if name == "MORDOR.EXE" {
+        return exe_pictures(&data, out, got);
+    }
     let (name, data) = match name.strip_suffix('_') {
         Some(stem) => {
             let (last, data) = expand(&data)?;
@@ -170,7 +211,7 @@ mod tests {
         let _ = fs::remove_dir_all(&out);
         let zip = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/MORDOR11.ZIP");
         let got = import(&zip, &out).unwrap();
-        for f in ["MDATA1.MDR", "MDATA11.MDR", "DUNGEON.MID", "MG11.DLL"] {
+        for f in ["MDATA1.MDR", "MDATA11.MDR", "DUNGEON.MID", "MG11.DLL", "CITY_STORE.BMP", "MENU.BMP"] {
             assert!(got.iter().any(|g| g == f), "missing {f}");
         }
         assert_eq!(got.iter().filter(|g| g.ends_with(".MID")).count(), 16);
