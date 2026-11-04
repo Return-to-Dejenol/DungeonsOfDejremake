@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 
 use zip::ZipArchive;
 
+pub mod vfs;
+
 /// Files the remake reads. `MG11.DLL` holds the original monster bitmaps.
 fn wanted(name: &str) -> bool {
     let n = name.to_ascii_uppercase();
@@ -47,7 +49,7 @@ fn exe_pictures(exe: &[u8], out: &Path, got: &mut Vec<String>) -> io::Result<()>
         let Some(&&(name, ww, wh)) = want.peek() else { break };
         if hdr == 40 && (w, h) == (ww, wh) && exe.get(o..o + size as usize).is_some() {
             let file = format!("{name}.BMP");
-            fs::write(out.join(&file), &exe[o..o + size as usize])?;
+            vfs::write(out.join(&file), &exe[o..o + size as usize])?;
             got.push(file);
             want.next();
         }
@@ -57,30 +59,48 @@ fn exe_pictures(exe: &[u8], out: &Path, got: &mut Vec<String>) -> io::Result<()>
 
 /// Decodes a picture saved by the importer (e.g. `CITY_STORE.BMP`) as (width, height, RGBA).
 pub fn picture(dir: &Path, name: &str) -> Option<(usize, usize, Vec<u8>)> {
-    bmp8(&fs::read(dir.join(format!("{name}.BMP"))).ok()?)
+    bmp8(&vfs::read(dir.join(format!("{name}.BMP"))).ok()?)
 }
 
-/// Copies every wanted file from `src` into `out`, returning the file names.
+/// Copies every wanted file from `src` (a ZIP, `.WIP` or game folder) into `out`,
+/// returning the file names.
 pub fn import(src: &Path, out: &Path) -> io::Result<Vec<String>> {
-    fs::create_dir_all(out)?;
-    let mut got = Vec::new();
+    let mut files = Vec::new();
     if src.is_dir() {
         for e in fs::read_dir(src)? {
             let p = e?.path();
             let Some(name) = p.file_name().and_then(|n| n.to_str()).map(str::to_owned) else { continue };
-            let upper = name.to_ascii_uppercase();
-            if upper.ends_with(".WIP") || upper.ends_with(".ZIP") {
-                got.extend(import(&p, out)?);
-            } else if wanted(&name) {
-                store(upper, fs::read(&p)?, out, &mut got)?;
+            if archive(&name) || wanted(&name) {
+                files.push((name, fs::read(&p)?));
             }
         }
     } else {
-        unzip(fs::File::open(src)?, out, &mut got)?;
+        files.push(("SOURCE.ZIP".into(), fs::read(src)?));
+    }
+    import_files(files, out)
+}
+
+/// Imports files already read (picked in a browser, or bundled): archives are
+/// unpacked, wanted files kept, anything else ignored.
+pub fn import_files(files: Vec<(String, Vec<u8>)>, out: &Path) -> io::Result<Vec<String>> {
+    vfs::create_dir_all(out)?;
+    let mut got = Vec::new();
+    for (name, data) in files {
+        let upper = name.to_ascii_uppercase();
+        if archive(&upper) {
+            unzip(Cursor::new(data), out, &mut got)?;
+        } else if wanted(&upper) {
+            store(upper, data, out, &mut got)?;
+        }
     }
     got.sort();
     got.dedup();
     Ok(got)
+}
+
+fn archive(name: &str) -> bool {
+    let n = name.to_ascii_uppercase();
+    n.ends_with(".WIP") || n.ends_with(".ZIP")
 }
 
 /// Extracts wanted entries, descending into nested `.WIP`/`.ZIP` archives.
@@ -90,7 +110,7 @@ fn unzip<R: Read + Seek>(r: R, out: &Path, got: &mut Vec<String>) -> io::Result<
         let mut f = zip.by_index(i).map_err(io::Error::other)?;
         // enclosed_name rejects absolute and `..` paths; keep only the base name.
         let Some(name) = f.enclosed_name().and_then(|p| p.file_name()?.to_str().map(str::to_ascii_uppercase)) else { continue };
-        if name.ends_with(".WIP") || name.ends_with(".ZIP") {
+        if archive(&name) {
             let mut buf = Vec::new();
             f.read_to_end(&mut buf)?;
             unzip(Cursor::new(buf), out, got)?;
@@ -115,7 +135,7 @@ fn store(name: String, data: Vec<u8>, out: &Path, got: &mut Vec<String>) -> io::
         }
         None => (name, data),
     };
-    fs::write(out.join(&name), data)?;
+    vfs::write(out.join(&name), data)?;
     got.push(name);
     Ok(())
 }

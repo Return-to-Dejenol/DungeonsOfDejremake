@@ -5,9 +5,11 @@ It started as a fork of [matteo-prosperi/DungeonsOfDejremake](https://github.com
 that project publishes no source, so everything here is new. Its README is kept at
 [docs/upstream-README.md](docs/upstream-README.md).
 
-Like upstream, this repo and its builds contain **no original-game content**. The player
-imports their own copy, and the importer extracts data tables, pictures, MIDI music and
-sounds (never the program itself). The remake's rebalance is shipped as patch files that
+Apart from the original's freely redistributable shareware release (floors 1-3), which
+every build ships and starts with, this repo and its builds contain **no original-game
+content**. For the full game the player imports their own registered copy, and the
+importer extracts data tables, pictures, MIDI music and sounds (never the program
+itself). How the builds are distributed is in [docs/distribution.md](docs/distribution.md). The remake's rebalance is shipped as patch files that
 apply on top of those tables; the rules it changes are in [docs/balance.md](docs/balance.md).
 
 ## Layout
@@ -22,9 +24,14 @@ apply on top of those tables; the rules it changes are in [docs/balance.md](docs
 
 ## Play
 
-Install with `DejenolRemake-Setup-<version>.exe`, start it, and drop your copy of the
+Install with `DejenolRemake-Setup-<version>.exe` and start it: it opens on the shareware.
+For all 15 floors, choose *Import your registered copy* and drop your copy of the
 original (its ZIP, `MORDOR.WIP` or install folder) on the window. Imported data, saves
 and patches live in `%LOCALAPPDATA%\DejenolRemake`; uninstalling leaves them.
+
+In the browser version the import screen also has *Choose files* and *Choose folder*.
+The browser keeps the imported files and saves in its own storage (IndexedDB) for that
+site; clearing the site's data deletes them.
 
 ## Run from source
 
@@ -52,6 +59,18 @@ cargo run -p ddj-rules --bin ddj-save -- set C:/MORDOR/DATA/MDATA4.MDR Ann.guild
 Remake fields are JSON paths (`stats.0`, `items.2.charges`); the original's are
 `NAME.field`, listed by `show`. A remake save is checked before it is written.
 `scripts/re/` holds the tools that read the original's rules out of MORDOR.EXE.
+
+## Build the web version
+
+```
+cd crates/game
+trunk build --release
+```
+
+Needs `rustup target add wasm32-unknown-unknown`, [trunk](https://trunkrs.dev) and the
+SoundFont in `vendor/soundfont/`. The site lands in `target/web/` and is static: serve
+it from any web host (`trunk serve` for a local one). It holds the game, the shareware
+and the SoundFont, never a registered copy.
 
 ## Build the installer
 

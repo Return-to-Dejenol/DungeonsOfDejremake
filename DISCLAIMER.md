@@ -24,8 +24,9 @@ this remake. No claim of ownership over those marks is made or implied.
 ## No original-game content is distributed in the builds
 
 The compiled builds released by this project contain **none** of the original
-game's copyrighted content. They ship only original, project-authored code and
-assets (including independently created replacement art and audio).
+game's copyrighted content, except the unmodified shareware package described under
+"Bundled shareware" below, which they carry so the game starts without an import.
+Otherwise they ship only original, project-authored code and assets.
 
 To play, a user supplies their **own copy** of the original game; the software
 then extracts the required data locally on the user's own device. This project

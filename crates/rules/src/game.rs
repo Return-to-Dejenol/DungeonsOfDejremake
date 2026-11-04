@@ -2,7 +2,9 @@
 //! saves. Combat is in `combat.rs`, spells in `magic.rs` and party AI in `ai.rs`; the
 //! remake's rules are in docs/balance.md.
 
-use std::{fs, io, path::Path};
+use std::{io, path::Path};
+
+use ddj_extract::vfs as fs;
 
 use serde::{Deserialize, Serialize};
 
@@ -183,6 +185,9 @@ impl Character {
         let spent: i16 = stats.iter().zip(start_stats(data, race)).map(|(s, b)| s - b).sum();
         if name.trim().is_empty() || name.contains(['/', '\\', '.']) {
             return Err("Pick a name without slashes or dots.".into());
+        }
+        if name.trim().eq_ignore_ascii_case("store") {
+            return Err("That name is taken by the store's file.".into());
         }
         if (0..6).any(|i| stats[i] < r.stat_min[i] || stats[i] > r.stat_max[i]) || spent > FREE_POINTS {
             return Err("Stats are outside the race's range.".into());
@@ -567,7 +572,7 @@ pub(crate) fn guild_ad(data: &GameData, g: usize, level: u32) -> [f64; 2] {
 /// Names of the characters saved in `dir`.
 pub fn saved(dir: &Path) -> Vec<String> {
     let mut v: Vec<String> = fs::read_dir(dir)
-        .map(|d| d.flatten().filter_map(|e| e.file_name().into_string().ok()?.strip_suffix(".json").map(str::to_owned)).collect())
+        .map(|d| d.iter().filter_map(|p| p.file_name()?.to_str()?.strip_suffix(".json").filter(|n| *n != "store").map(str::to_owned)).collect())
         .unwrap_or_default();
     v.sort();
     v

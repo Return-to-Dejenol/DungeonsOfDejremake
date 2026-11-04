@@ -1,6 +1,8 @@
 //! The original game's pictures as textures, the 1995 look, and the textured dungeon view.
 
-use std::{fs, path::Path};
+use std::path::Path;
+
+use ddj_extract::vfs as fs;
 
 use ddj_rules::{
     game::{self, Game, Side},

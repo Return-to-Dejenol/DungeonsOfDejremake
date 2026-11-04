@@ -3,7 +3,9 @@
 //! stock, the cheaper it is; items sold restock the store; resting in the city brings
 //! new stock from the floors the party has reached.
 
-use std::{fs, io, path::Path};
+use std::{io, path::Path};
+
+use ddj_extract::vfs as fs;
 
 use serde::{Deserialize, Serialize};
 

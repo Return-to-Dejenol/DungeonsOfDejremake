@@ -3,14 +3,14 @@
 //! Without the SoundFont the music is skipped.
 
 use std::{
-    fs::File,
-    io::BufReader,
+    io::Cursor,
     num::NonZero,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
 
+use ddj_extract::vfs;
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use rustysynth::{MidiFile, MidiFileSequencer, SoundFont, Synthesizer, SynthesizerSettings};
 
@@ -65,7 +65,14 @@ impl Source for Song {
     }
 }
 
+/// The SoundFont: fetched beside the web page into memory (web/index.html).
+#[cfg(target_arch = "wasm32")]
+fn font_path() -> Option<PathBuf> {
+    Some(PathBuf::from("sound").join(FONT))
+}
+
 /// The SoundFont: beside the installed game, or in the source tree's `vendor/`.
+#[cfg(not(target_arch = "wasm32"))]
 fn font_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("sound").join(FONT)));
     exe.into_iter().chain([PathBuf::from("sound").join(FONT), PathBuf::from("vendor/soundfont").join(FONT)]).find(|p| p.exists())
@@ -87,12 +94,13 @@ impl Audio {
             return;
         }
         self.stop_music();
+        // The web build's SoundFont arrives after start-up, so it keeps looking until then.
         if !self.font_tried {
-            self.font_tried = true;
-            self.font = font_path().and_then(|p| SoundFont::new(&mut BufReader::new(File::open(p).ok()?)).ok()).map(Arc::new);
+            self.font = font_path().and_then(|p| SoundFont::new(&mut Cursor::new(vfs::read(p).ok()?)).ok()).map(Arc::new);
+            self.font_tried = self.font.is_some() || cfg!(not(target_arch = "wasm32"));
         }
-        let (Some(font), Ok(f)) = (&self.font, File::open(dir.join(track))) else { return };
-        let Ok(midi) = MidiFile::new(&mut BufReader::new(f)) else { return };
+        let (Some(font), Ok(b)) = (&self.font, vfs::read(dir.join(track))) else { return };
+        let Ok(midi) = MidiFile::new(&mut Cursor::new(b)) else { return };
         let Ok(synth) = Synthesizer::new(font, &SynthesizerSettings::new(RATE as i32)) else { return };
         let mut seq = MidiFileSequencer::new(synth);
         seq.play(&Arc::new(midi), true);
@@ -114,8 +122,8 @@ impl Audio {
         if !self.sound_on {
             return;
         }
-        if let Ok(f) = File::open(dir.join(wav))
-            && let Ok(d) = Decoder::try_from(f)
+        if let Ok(b) = vfs::read(dir.join(wav))
+            && let Ok(d) = Decoder::try_from(Cursor::new(b))
         {
             self.sink.mixer().add(d.amplify(0.8));
         }
@@ -185,8 +193,8 @@ mod tests {
             assert!(out.join(w).exists(), "{w}");
         }
         let Some(font) = [root.join("vendor/soundfont").join(FONT)].into_iter().find(|p| p.exists()) else { return };
-        let font = Arc::new(SoundFont::new(&mut BufReader::new(File::open(font).unwrap())).unwrap());
-        let midi = Arc::new(MidiFile::new(&mut BufReader::new(File::open(out.join("DUNGEOSC.MID")).unwrap())).unwrap());
+        let font = Arc::new(SoundFont::new(&mut Cursor::new(vfs::read(font).unwrap())).unwrap());
+        let midi = Arc::new(MidiFile::new(&mut Cursor::new(vfs::read(out.join("DUNGEOSC.MID")).unwrap())).unwrap());
         let mut seq = MidiFileSequencer::new(Synthesizer::new(&font, &SynthesizerSettings::new(RATE as i32)).unwrap());
         seq.play(&midi, true);
         let mut song = Song { seq, left: vec![0.0; 1024], right: vec![0.0; 1024], at: 2048 };

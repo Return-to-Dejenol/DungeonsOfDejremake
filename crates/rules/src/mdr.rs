@@ -2,7 +2,9 @@
 //! `docs/formats.md`; fields documented as "probable" are inferred from value
 //! patterns only. Every record keeps its undecoded bytes in `rest`.
 
-use std::{fs, io, path::Path};
+use std::{io, path::Path};
+
+use ddj_extract::vfs as fs;
 
 /// A Visual Basic random-access file: fixed-size records, record 0 holds the
 /// version string, and bytes past a record's fields are leftover disk junk.

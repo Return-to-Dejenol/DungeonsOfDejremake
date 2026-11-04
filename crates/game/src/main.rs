@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::{fs, path::PathBuf, time::Instant};
+use std::path::PathBuf;
+
+use ddj_extract::vfs as fs;
+use web_time::Instant;
 
 use ddj_rules::{
     Tuning,
@@ -15,7 +18,13 @@ mod audio;
 mod dungeon;
 mod party;
 mod town;
+#[cfg(target_arch = "wasm32")]
+mod web;
 use art::Art;
+
+/// The free shareware release (floors 1-3), which its publisher lets anyone pass on.
+/// The game starts with it until the player imports their registered copy.
+const SHAREWARE: &[u8] = include_bytes!("../../../tests/fixtures/MORDOR11.ZIP");
 
 enum Screen {
     Import,
@@ -39,6 +48,7 @@ struct App {
     /// The original pictures, once imported.
     art: Option<Art>,
     styled: bool,
+    #[cfg(not(target_arch = "wasm32"))]
     import_path: String,
     status: String,
     screen: Screen,
@@ -54,6 +64,8 @@ struct App {
     seer_query: String,
     amount: String,
     audio: Option<audio::Audio>,
+    /// The web build opens audio after the first click, as browsers require.
+    audio_tried: bool,
     /// Log lines already given their sound.
     heard: usize,
 }
@@ -64,12 +76,10 @@ fn saves() -> PathBuf {
 
 /// Player patches: every `patches/*.toml` except the built-in `modern.toml`, by name.
 fn load_tuning() -> Result<Tuning, String> {
-    let mut paths: Vec<_> = fs::read_dir(ddj_extract::home().join("patches"))
-        .map(|d| d.flatten().map(|e| e.path()).collect())
-        .unwrap_or_default();
+    let mut paths = fs::read_dir(ddj_extract::home().join("patches")).unwrap_or_default();
     paths.retain(|p| p.extension().is_some_and(|e| e == "toml") && !p.ends_with("modern.toml"));
     paths.sort();
-    let texts: Vec<String> = paths.iter().filter_map(|p| fs::read_to_string(p).ok()).collect();
+    let texts: Vec<String> = paths.iter().filter_map(|p| String::from_utf8(fs::read(p).ok()?).ok()).collect();
     Tuning::load(&texts.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|e| e.to_string())
 }
 
@@ -83,13 +93,19 @@ impl App {
         if let Some(src) = std::env::args_os().nth(1) {
             let _ = ddj_extract::import(src.as_ref(), &ddj_extract::data_dir());
         }
-        let data = GameData::load(&ddj_extract::data_dir()).ok();
+        let dir = ddj_extract::data_dir();
+        let mut data = GameData::load(&dir).ok();
+        if data.is_none() {
+            let _ = ddj_extract::import_files(vec![("MORDOR11.ZIP".into(), SHAREWARE.to_vec())], &dir);
+            data = GameData::load(&dir).ok();
+        }
         let screen = if data.is_some() { Screen::Menu } else { Screen::Import };
         Self {
             tuning: load_tuning(),
             data,
             art: None,
             styled: false,
+            #[cfg(not(target_arch = "wasm32"))]
             import_path: String::new(),
             status: String::new(),
             screen,
@@ -102,7 +118,8 @@ impl App {
             rule: party::RuleDraft::default(),
             seer_query: String::new(),
             amount: String::new(),
-            audio: audio::Audio::new(),
+            audio: None,
+            audio_tried: false,
             heard: 0,
         }
     }
@@ -121,27 +138,52 @@ impl App {
     }
 
     fn import(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Depths of Dejenol remake");
-        ui.label("This remake needs your own copy of Mordor: The Depths of Dejenol. Drop its ZIP, MORDOR.WIP or install folder on this window, or type the path:");
-        ui.label("(The free shareware MORDOR11.ZIP gives floors 1-3; the full game all 15.)");
-        let dropped = ui.input(|i| i.raw.dropped_files.first().map(|f| f.path().to_path_buf()).filter(|p| !p.as_os_str().is_empty()));
-        if let Some(p) = &dropped {
-            self.import_path = p.display().to_string();
-        }
+        ui.heading("Import your registered copy");
+        ui.label("The full game's 15 dungeon levels come from your own copy of Mordor: The Depths of Dejenol. Drop its ZIP, MORDOR.WIP or install folder's files on this window, or choose them:");
+        let dropped = ui.input(|i| i.raw.dropped_files.clone());
+        #[cfg(not(target_arch = "wasm32"))]
+        let (files, mut path) = (Vec::new(), dropped.first().map(|f| f.path().to_path_buf()));
+        #[cfg(not(target_arch = "wasm32"))]
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.import_path).desired_width(480.0));
-            if ui.button("Import").clicked() || dropped.is_some() {
-                let dir = ddj_extract::data_dir();
-                self.status = match ddj_extract::import(self.import_path.trim().as_ref(), &dir).and_then(|_| GameData::load(&dir)) {
-                    Ok(d) => {
-                        self.data = Some(d);
-                        self.screen = Screen::Menu;
-                        String::new()
-                    }
-                    Err(e) => format!("Import failed: {e}"),
-                };
+            if ui.button("Import").clicked() {
+                path = Some(PathBuf::from(self.import_path.trim()));
             }
         });
+        #[cfg(target_arch = "wasm32")]
+        let (files, path) = {
+            if !dropped.is_empty() {
+                web::read_dropped(dropped, ui.ctx().clone());
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Choose files...").clicked() {
+                    web::choose(false, ui.ctx().clone());
+                }
+                if ui.button("Choose folder...").clicked() {
+                    web::choose(true, ui.ctx().clone());
+                }
+            });
+            (web::picked().unwrap_or_default(), None::<PathBuf>)
+        };
+        if ui.button("Back").clicked() {
+            self.screen = Screen::Menu;
+        }
+        let dir = ddj_extract::data_dir();
+        let done = match (path, files.is_empty()) {
+            (Some(p), _) => ddj_extract::import(&p, &dir),
+            (None, false) => ddj_extract::import_files(files, &dir),
+            (None, true) => return,
+        };
+        self.status = match done.and_then(|_| GameData::load(&dir)) {
+            Ok(d) => {
+                let n = d.floors.len();
+                self.data = Some(d);
+                self.art = None;
+                self.screen = Screen::Menu;
+                if n < 15 { format!("Imported {n} dungeon levels: that's the shareware release.") } else { "Imported the full game.".into() }
+            }
+            Err(e) => format!("Import failed: {e}"),
+        };
     }
 
     fn menu(&mut self, ui: &mut egui::Ui, d: &GameData) {
@@ -161,7 +203,14 @@ impl App {
         ui.vertical_centered(|ui| {
             ui.heading(egui::RichText::new("MORDOR").size(32.0).color(Color32::from_rgb(0, 0, 128)));
             ui.label(egui::RichText::new("The Depths of Dejenol").italics().color(Color32::from_rgb(128, 0, 0)));
-            ui.label(format!("{} dungeon levels imported", d.floors.len()));
+            if d.floors.len() < 15 {
+                ui.label(format!("Shareware: dungeon levels 1-{}", d.floors.len()));
+                if ui.button("Import your registered copy").clicked() {
+                    self.screen = Screen::Import;
+                }
+            } else {
+                ui.label(format!("{} dungeon levels", d.floors.len()));
+            }
             ui.add_space(8.0);
             if ui.button("Create a character").clicked() {
                 let stats = game::start_stats(d, 0);
@@ -456,6 +505,10 @@ impl eframe::App for App {
             art::style(ui.ctx());
             self.styled = true;
         }
+        if !self.audio_tried && (cfg!(not(target_arch = "wasm32")) || ui.input(|i| i.pointer.any_click() || !i.keys_down.is_empty())) {
+            self.audio_tried = true;
+            self.audio = audio::Audio::new();
+        }
         if self.art.is_none() && data.is_some() {
             self.art = Art::load(ui.ctx(), &ddj_extract::data_dir());
         }
@@ -525,6 +578,12 @@ impl eframe::App for App {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+fn main() {
+    web::start();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     eframe::run_native(
         "Depths of Dejenol remake",

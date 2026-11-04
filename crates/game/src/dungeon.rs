@@ -1,6 +1,8 @@
 //! The dungeon screen: movement, the view, combat orders, chests and the automap.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use ddj_rules::{
     Tuning,
