@@ -223,7 +223,7 @@ fn spring(g: &mut Game, d: &GameData, who: usize, c: &Chest) -> bool {
             let m = &mut g.party[who];
             if m.d100() < 50 + 2 * l as i32 {
                 let s = m.roll(40) as usize;
-                if s < m.items.len() && !(500..512).contains(&d.items[m.items[s].item].w(10)) {
+                if s < m.items.len() && !(500..512).contains(&d.items[m.items[s].item].w(10)) && m.items[s].item != crate::game::HANDS {
                     let h = m.items.remove(s);
                     g.say(format!("The slime eats {}!", d.items[h.item].name));
                 }

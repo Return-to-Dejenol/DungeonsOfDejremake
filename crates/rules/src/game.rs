@@ -19,6 +19,9 @@ use crate::{
 };
 
 pub const SAVE_VERSION: u32 = 2;
+/// Item 0, "Hands": every character's first slot, the weapon when no other is wielded
+/// (two swings at half damage). It can't be sold, dropped, stolen or destroyed.
+pub const HANDS: usize = 0;
 /// Points to spend on top of [`start_stats`] when creating a character.
 pub const FREE_POINTS: i16 = 5;
 /// The character you control plus up to three allies.
@@ -214,7 +217,7 @@ impl Character {
             hp,
             max_hp: hp,
             sp: 0,
-            items: Vec::new(),
+            items: vec![Held { equipped: true, ..crate::magic::new_held(data, HANDS, true) }],
             pos: Pos::default(),
             life: Life::Alive,
             status: Status::default(),
@@ -359,8 +362,10 @@ impl Character {
             .unwrap_or(0)
     }
 
+    /// The wielded weapon, else Hands.
     pub(crate) fn weapon(&self, data: &GameData) -> Option<usize> {
-        self.items.iter().find(|h| h.equipped && data.items[h.item].power > 0).map(|h| h.item)
+        let wielded = self.items.iter().find(|h| h.equipped && h.item != HANDS && data.items[h.item].power > 0).map(|h| h.item);
+        wielded.or(self.items.iter().any(|h| h.item == HANDS).then_some(HANDS))
     }
 
     /// INT + WIS per level, as the original; casters' growth scales by `max_sp_mult`.
@@ -485,10 +490,19 @@ impl Character {
     pub fn toggle_equip(&mut self, data: &GameData, slot: usize) -> Result<(), String> {
         let it = &data.items[self.items[slot].item];
         if self.items[slot].equipped {
+            if self.items[slot].item == HANDS {
+                return Err("Your hands are always ready.".into());
+            }
             if crate::magic::cursed(data, self.items[slot].item, self.alignment) {
                 return Err(format!("The {} is cursed! The store can uncurse it.", it.name));
             }
             self.items[slot].equipped = false;
+            // Putting a weapon away leaves the hands.
+            if it.power > 0 {
+                for h in self.items.iter_mut().filter(|h| h.item == HANDS) {
+                    h.equipped = true;
+                }
+            }
             return Ok(());
         }
         if it.guilds & (1 << self.guild) == 0 {
@@ -543,6 +557,10 @@ impl Character {
         if c.version < 2 {
             c.macros = ai::preset(ai::Role::of(c.guild));
             c.age_days = c.age_days.max(16 * 365);
+        }
+        // Saves from before Hands was carried get it back in the first slot.
+        if !c.items.iter().any(|h| h.item == HANDS) {
+            c.items.insert(0, Held { item: HANDS, equipped: false, charges: 0, known: true });
         }
         c.version = SAVE_VERSION;
         Ok(c)
@@ -841,7 +859,7 @@ impl Game {
                 if self.party[i].chance(0.1) && !self.party[i].items.is_empty() {
                     let n = self.party[i].items.len() as u32;
                     let s = self.party[i].roll(n) as usize;
-                    if !self.party[i].items[s].equipped {
+                    if !self.party[i].items[s].equipped && self.party[i].items[s].item != HANDS {
                         let h = self.party[i].items.remove(s);
                         self.say(format!("{} loses {} in the sand.", self.party[i].name, data.items[h.item].name));
                     }
@@ -1043,6 +1061,9 @@ impl Game {
 
     pub fn sell(&mut self, data: &GameData, i: usize, slot: usize) -> String {
         let it = &data.items[self.party[i].items[slot].item];
+        if self.party[i].items[slot].item == HANDS {
+            return "The store has no use for your hands.".into();
+        }
         if (500..512).contains(&it.w(10)) {
             return format!("The store won't buy guild items like the {}.", it.name);
         }
@@ -1310,6 +1331,25 @@ mod tests {
         }
         assert!(g.party[0].gold > before && g.chest.is_none());
         assert!(g.log.iter().any(|l| l.contains("disarms")));
+    }
+
+    /// Everyone carries Hands in the first slot: the weapon until another is wielded,
+    /// back when it is put away, and never sold.
+    #[test]
+    fn hands() {
+        let d = data();
+        let mut c = Character::new(&d, "Bare", 0, false, 1, start_stats(&d, 0)).unwrap();
+        assert_eq!((c.items[0].item, c.items[0].equipped, c.weapon(&d)), (HANDS, true, Some(HANDS)));
+        let sword = d.items.iter().position(|i| i.name == "Bronze Sword").unwrap();
+        c.items.push(magic::new_held(&d, sword, true));
+        c.toggle_equip(&d, 1).unwrap();
+        assert_eq!((c.items[0].equipped, c.weapon(&d)), (false, Some(sword)));
+        c.toggle_equip(&d, 1).unwrap();
+        assert_eq!((c.items[0].equipped, c.weapon(&d)), (true, Some(HANDS)));
+        assert!(c.toggle_equip(&d, 0).is_err());
+        let mut g = Game::new(c);
+        g.sell(&d, 0, 0);
+        assert_eq!(g.party[0].items[0].item, HANDS);
     }
 
     /// MORDOR.EXE's numbers: the hit roll, A/D, swings, gold and prices.

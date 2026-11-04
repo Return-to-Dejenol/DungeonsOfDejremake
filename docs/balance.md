@@ -42,7 +42,7 @@ are listed at the end. Notation:
   - Damage = (ln(L + 5) + 1) / ln 1.2 × s / 30 × a roll of 0.6-1.6 around (s + 10) / 20 × mult. Here s is STR, compressed: s − ln s (ln s − 2.4) 2.25 + 1.
   - The attack/defense gap takes up to (def − att) / 8 off, or adds it when the attacker is stronger.
   - mult above 1 is compressed to mult − ln(mult)².
-- **Swings:** a character swings its swings plus the weapon's (w9). A miss, or a hit that doesn't kill, ends the turn; a kill moves on to the next foe. There is no melee without a weapon.
+- **Swings:** a character swings its swings plus the weapon's (w9). A miss, or a hit that doesn't kill, ends the turn; a kill moves on to the next foe. Every character carries item 0, Hands (two swings at half damage), in its first slot; it is the weapon whenever no other is wielded, and can't be sold, dropped, stolen or destroyed.
 - **Guild swings:** the first extra one comes at level ln(11 − r) × 50, and each next at ln(11 − r) × 2 × the last. A Warrior gets them at 91 and 324.
 - **Multiplier:**
   - Fighting: 0.6 + (ln(100 + L) / 1.75 − 2.3) × r² / 2, times the weapon's w18.

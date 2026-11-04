@@ -53,7 +53,7 @@ Taken while building; reviewed at play-test.
 - The spell list's type filter only offers "All"; the Resist. and Look tabs are sparse.
 - Window positions are not saved per character as the original saved them.
 - Not matched yet: the store's inner sunken list boxes, its item order and per-alignment
-  stock ("0 0 1 0"); slot 1's "Hands"; Windows 95 title bars are drawn from memory
+  stock ("0 0 1 0"); Windows 95 title bars are drawn from memory
   (the comparison host draws Windows 11 ones).
 
 ## Checked against the original (2026-11-04)

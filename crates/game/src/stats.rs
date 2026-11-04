@@ -318,6 +318,7 @@ impl App {
                 let it = g.party[sel].items[i].item;
                 magic::use_item(g, d, t, sel, it);
             }
+            (Some(2), Some(i)) if g.party[sel].items[i].item == game::HANDS => msg = "You can't drop your hands.".into(),
             (Some(2), Some(i)) => {
                 let h = g.party[sel].items.remove(i);
                 msg = format!("{} dropped {}.", g.party[sel].name, magic::item_name(d, &h));

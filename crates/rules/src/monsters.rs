@@ -357,7 +357,7 @@ fn thieves(g: &mut Game, d: &GameData, m: usize, j: usize, dmg: i32) {
         let protect = (45 - i32::from(mon.level) + 2 * i32::from(c.stats[DEX]) - 2 * i32::from(mon.stats[5])).clamp(25, 90);
         let s = c.roll(c.items.len() as u32) as usize;
         let it = &d.items[c.items[s].item];
-        if c.d100() > protect && it.level - 2 <= mon.level && !(500..512).contains(&it.w(10)) {
+        if c.d100() > protect && it.level - 2 <= mon.level && !(500..512).contains(&it.w(10)) && c.items[s].item != crate::game::HANDS {
             let h = c.items.remove(s);
             g.say(format!("The {} destroys {name}'s {}!", mon.name, d.items[h.item].name));
         }
@@ -380,7 +380,7 @@ fn thieves(g: &mut Game, d: &GameData, m: usize, j: usize, dmg: i32) {
     let took = ((c.rnd() * ((floor + f64::from(mon.attack)) * 3353.452 * f64::from(mon.power_level) / f64::from(c.level().max(1)))) as u64).min(c.gold);
     c.gold -= took;
     let mut msg = format!("The {} steals {took} gold from {name}", mon.name);
-    let loose: Vec<usize> = (0..c.items.len()).filter(|&s| !c.items[s].equipped).collect();
+    let loose: Vec<usize> = (0..c.items.len()).filter(|&s| !c.items[s].equipped && c.items[s].item != crate::game::HANDS).collect();
     let item = x <= 10.0 && !loose.is_empty();
     if item {
         let s = loose[c.roll(loose.len() as u32) as usize];
