@@ -259,9 +259,23 @@ pub fn home() -> PathBuf {
     if Path::new("gamedata").is_dir() {
         return PathBuf::from(".");
     }
-    let base = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("XDG_DATA_HOME")).map(PathBuf::from);
-    let base = base.or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
-    base.map_or_else(|| PathBuf::from("."), |b| b.join("DejenolRemake"))
+    static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let base = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("XDG_DATA_HOME")).map(PathBuf::from);
+        let base = base.or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")));
+        base.map_or_else(
+            || PathBuf::from("."),
+            |b| {
+                // The folder from before the project's rename comes along, saves and all.
+                let (old, new) = (b.join("DejenolRemake"), b.join("DejenolRestoration"));
+                if !new.exists() && old.is_dir() {
+                    let _ = fs::rename(&old, &new);
+                }
+                new
+            },
+        )
+    })
+    .clone()
 }
 
 /// Where imported data lives (gitignored when it's the source tree's `gamedata/`).

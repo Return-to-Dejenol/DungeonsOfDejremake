@@ -2,7 +2,7 @@
 
 ## Non-affiliation
 
-**Dungeons of Dejremake** is an independent, non-commercial, fan-made remake. It
+The **Dejenol Restoration Project** is an independent, non-commercial, fan-made remake. It
 is **not affiliated with, authorized, endorsed, licensed, or sponsored by**
 Decklin's Domain, MakeItSo Software, TDA, or any other current or former rights holder of
 _Mordor: The Depths of Dejenol_. This project is a hobby and game-preservation

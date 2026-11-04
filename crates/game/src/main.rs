@@ -670,7 +670,7 @@ fn main() {
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     eframe::run_native(
-        "Mordor: The Depths of Dejenol",
+        "Dejenol Restoration Project",
         eframe::NativeOptions {
             viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 900.0]).with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../../../assets/icon.png")).unwrap_or_default()),
             ..Default::default()

@@ -1,6 +1,6 @@
-# Depths of Dejenol remake (Rust)
+# Dejenol Restoration Project
 
-A modernized remake of *Mordor: The Depths of Dejenol* (1995), written in Rust.
+A fan remake of *Mordor: The Depths of Dejenol* (1995), modernized and written in Rust.
 It started as a fork of [matteo-prosperi/DungeonsOfDejremake](https://github.com/matteo-prosperi/DungeonsOfDejremake);
 that project publishes no source, so everything here is new. Its README is kept at
 [docs/upstream-README.md](docs/upstream-README.md).
@@ -24,11 +24,12 @@ apply on top of those tables; the rules it changes are in [docs/balance.md](docs
 
 ## Play
 
-Install with `DejenolRemake-Setup-<version>.exe` and start it: it opens on the shareware,
+Install with `DejenolRestoration-Setup-<version>.exe` and start it: it opens on the shareware,
 in the original's own windows ([docs/ui.md](docs/ui.md)). For all 15 floors, open
 *Options...*, choose *Import Game...* and drop your copy of the original (its ZIP,
 `MORDOR.WIP` or install folder) on the window. Imported data, saves
-and patches live in `%LOCALAPPDATA%\DejenolRemake`; uninstalling leaves them.
+and patches live in `%LOCALAPPDATA%\DejenolRestoration` (the earlier `DejenolRemake` folder moves
+there on first run); uninstalling leaves them.
 
 In the browser version the import screen also has *Choose files* and *Choose folder*.
 The browser keeps the imported files and saves in its own storage (IndexedDB) for that
