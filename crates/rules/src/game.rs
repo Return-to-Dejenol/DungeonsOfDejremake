@@ -1,6 +1,6 @@
-//! The first playable slice: one character, the town's guilds, store and morgue, and the
-//! dungeon with room spawns and timed melee rounds. Numbers come from the imported
-//! tables and [`Tuning`]; the remake's rules are in docs/balance.md.
+//! The game state: characters, the party, the city's services, dungeon movement and
+//! saves. Combat is in `combat.rs`, spells in `magic.rs` and party AI in `ai.rs`; the
+//! remake's rules are in docs/balance.md.
 
 use std::{fs, io, path::Path};
 
@@ -8,16 +8,33 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Tuning,
+    ai::{self, Rule},
+    combat::Fight,
     mdr::{Floor, GameData, square},
+    monsters::Companion,
+    treasure::Chest,
 };
 
-pub const SAVE_VERSION: u32 = 1;
+pub const SAVE_VERSION: u32 = 2;
 /// Points to spend on top of [`start_stats`] when creating a character.
 pub const FREE_POINTS: i16 = 5;
+/// The character you control plus up to three allies.
+pub const MAX_PARTY: usize = 4;
 pub const STATS: [&str; 6] = ["STR", "INT", "WIS", "CON", "CHA", "DEX"];
-const STR: usize = 0;
-const CON: usize = 3;
-const DEX: usize = 5;
+pub(crate) const STR: usize = 0;
+pub(crate) const INT: usize = 1;
+pub(crate) const WIS: usize = 2;
+pub(crate) const CON: usize = 3;
+pub(crate) const CHA: usize = 4;
+pub(crate) const DEX: usize = 5;
+pub(crate) const NOMAD: usize = 0;
+pub(crate) const HEALER: usize = 11;
+/// Slots of `Guild::abilities`.
+pub const ABILITIES: [&str; 6] = ["Thieving", "Backstab", "Critical hit", "Multiple swings", "Fighting", "Perception"];
+pub(crate) const THIEVING: usize = 0;
+pub(crate) const CRITICAL: usize = 2;
+pub(crate) const FIGHTING: usize = 4;
+pub(crate) const PERCEPTION: usize = 5;
 
 /// Floor 0 is the town. Facing runs clockwise from 0 = north; x is east, y is north.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -31,7 +48,7 @@ pub struct Pos {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Life {
     Alive,
-    /// The corpse lies here until rescuers bring it to the morgue.
+    /// The corpse lies here (or is carried by the party) until it reaches the morgue.
     Dead(Pos),
     InMorgue,
 }
@@ -41,6 +58,34 @@ pub struct Held {
     /// Index into `GameData::items`.
     pub item: usize,
     pub equipped: bool,
+    /// Uses left for potions, scrolls and spell-casting items; 0 for the rest.
+    #[serde(default)]
+    pub charges: i16,
+    /// Fully identified (name, abilities and curses known).
+    #[serde(default)]
+    pub known: bool,
+}
+
+/// Lasting conditions; the city cures them on arrival.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Status {
+    /// Steps or rounds left.
+    pub poison: u16,
+    pub disease: u16,
+    pub paralysis: u16,
+    pub stoned: bool,
+}
+
+/// Effects that last until the party changes floor.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Buffs {
+    pub protection: i32,
+    /// Bit n: resistance slot n raised by a spell.
+    pub resist: u16,
+    /// The strongest experience boost (potions, Charm of Experience); 0 = none.
+    pub xp_mult: f32,
+    pub levitate: bool,
+    pub see_invisible: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -57,36 +102,40 @@ pub struct Character {
     pub xp: Vec<u64>,
     pub guild: usize,
     pub gold: u64,
+    #[serde(default)]
+    pub bank: u64,
     pub hp: i32,
     pub max_hp: i32,
-    /// Attack/defense from guild teaching; the best guild counts.
-    pub guild_ad: f64,
+    #[serde(default)]
+    pub sp: i32,
     pub items: Vec<Held>,
     pub pos: Pos,
     pub life: Life,
+    #[serde(default)]
+    pub status: Status,
+    #[serde(default)]
+    pub buffs: Buffs,
     /// The automap: squares seen, per floor, row-major.
     pub seen: Vec<Vec<bool>>,
     pub kills: u32,
+    /// Combat rules for when this character is AI-controlled, first match wins.
+    #[serde(default)]
+    pub macros: Vec<Rule>,
+    /// Monsters fighting for this character (charmed, bound or bought).
+    #[serde(default)]
+    pub companions: Vec<Companion>,
+    /// Allies who travel with this character, rejoined when it is loaded.
+    #[serde(default)]
+    pub allies: Vec<String>,
+    #[serde(default)]
+    pub sanctuary: Option<Pos>,
+    /// Days lived; the city ages you as you rest there.
+    #[serde(default)]
+    pub age_days: u32,
+    /// A guild quest: kill this monster before the next level.
+    #[serde(default)]
+    pub quest: Option<usize>,
     rng: u64,
-}
-
-pub struct Foe {
-    pub monster: usize,
-    pub hp: i32,
-}
-
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Action {
-    Fight,
-    Defend,
-    Run,
-}
-
-pub struct Fight {
-    pub foes: Vec<Foe>,
-    pub action: Action,
-    /// Where the party came from, for running away.
-    pub back: Pos,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -141,10 +190,10 @@ impl Character {
             return Err(format!("{}s cannot be that alignment.", r.name));
         }
         let mut levels = vec![0; data.guilds.len()];
-        levels[0] = 1;
+        levels[NOMAD] = 1;
         let hp = i32::from(stats[CON]) + 4;
         let seed = name.bytes().fold(0x9E37_79B9_7F4A_7C15u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01B3));
-        Ok(Self {
+        let mut c = Self {
             version: SAVE_VERSION,
             name: name.trim().into(),
             race,
@@ -153,18 +202,29 @@ impl Character {
             stats,
             xp: vec![0; levels.len()],
             levels,
-            guild: 0,
+            guild: NOMAD,
             gold: 1500,
+            bank: 0,
             hp,
             max_hp: hp,
-            guild_ad: 0.0,
+            sp: 0,
             items: Vec::new(),
             pos: Pos::default(),
             life: Life::Alive,
+            status: Status::default(),
+            buffs: Buffs::default(),
             seen: Vec::new(),
             kills: 0,
+            macros: ai::preset(ai::Role::Fighter),
+            companions: Vec::new(),
+            allies: Vec::new(),
+            sanctuary: None,
+            age_days: 16 * 365,
+            quest: None,
             rng: seed | 1,
-        })
+        };
+        c.sp = c.max_sp(data, &Tuning::load(&[]).expect("built-in tuning"));
+        Ok(c)
     }
 
     /// 0..n, from a generator saved with the character.
@@ -175,12 +235,25 @@ impl Character {
         (self.rng % u64::from(n.max(1))) as u32
     }
 
-    fn chance(&mut self, p: f64) -> bool {
+    pub(crate) fn chance(&mut self, p: f64) -> bool {
         f64::from(self.roll(10_000)) < p * 10_000.0
+    }
+
+    pub fn alive(&self) -> bool {
+        self.life == Life::Alive
+    }
+
+    /// Able to act: alive, not paralysed or stoned.
+    pub fn able(&self) -> bool {
+        self.alive() && self.status.paralysis == 0 && !self.status.stoned
     }
 
     pub fn level(&self) -> u32 {
         self.levels[self.guild]
+    }
+
+    pub fn age(&self) -> u32 {
+        self.age_days / 365
     }
 
     /// Total XP the current guild wants before its next level.
@@ -188,10 +261,32 @@ impl Character {
         t.xp_needed(self.level(), data.races[self.race].xp_factor, data.guilds[self.guild].xp_factor)
     }
 
+    /// A guild's ability rating, before the character's other guilds are weighed.
+    fn guild_ability(data: &GameData, g: usize, i: usize) -> f32 {
+        // Healers are decent in melee (docs/balance.md): Villain's fighting.
+        if g == HEALER && i == FIGHTING { 0.8 } else { data.guilds[g].abilities[i] }
+    }
+
+    /// Ability rating (thieving, fighting...): the best guild's level x its ability.
+    /// Nomad passes a 20% share to the other guilds, counting no more Nomad levels than
+    /// the best other guild has; a pure Nomad gets 70% of its own rating.
+    pub fn ability(&self, data: &GameData, i: usize) -> f32 {
+        let lv = |g: usize| self.levels[g].saturating_sub(1) as f32;
+        let best_other = (0..self.levels.len()).filter(|&g| g != NOMAD && self.levels[g] > 0).map(|g| lv(g) * Self::guild_ability(data, g, i)).fold(0.0, f32::max);
+        let other_level = (0..self.levels.len()).filter(|&g| g != NOMAD).map(|g| self.levels[g]).max().unwrap_or(0);
+        let nomad = Self::guild_ability(data, NOMAD, i);
+        if other_level == 0 {
+            return 0.7 * lv(NOMAD) * nomad;
+        }
+        let share = 0.2 * lv(NOMAD).min(other_level as f32) * nomad;
+        best_other.max(lv(NOMAD) * nomad * 0.7) + share
+    }
+
     /// Melee rating (2 x STR + DEX) / 3 sets to-hit; STR above 15 adds defense.
-    pub fn att_def(&self, data: &GameData) -> (i32, i32) {
+    pub fn att_def(&self, data: &GameData, t: &Tuning) -> (i32, i32) {
         let rating = (2 * i32::from(self.stats[STR]) + i32::from(self.stats[DEX])) / 3;
-        let (mut a, mut d) = (10 + self.guild_ad as i32 + rating - 10, 10 + self.guild_ad as i32 + (i32::from(self.stats[STR]) - 15).max(0));
+        let ad = (self.ability(data, FIGHTING) as f64 * t.combat.ad_per_fighting) as i32;
+        let (mut a, mut d) = (ad + rating, 10 + ad + (i32::from(self.stats[STR]) - 15).max(0) + self.buffs.protection);
         for h in self.items.iter().filter(|h| h.equipped) {
             a += i32::from(data.items[h.item].attack);
             d += i32::from(data.items[h.item].defense);
@@ -199,39 +294,80 @@ impl Character {
         (a, d)
     }
 
-    fn weapon(&self, data: &GameData) -> Option<usize> {
+    pub(crate) fn weapon(&self, data: &GameData) -> Option<usize> {
         self.items.iter().find(|h| h.equipped && data.items[h.item].power > 0).map(|h| h.item)
     }
 
-    pub fn add_xp(&mut self, data: &GameData, t: &Tuning, xp: u64) {
+    /// INT + WIS per level, as the original; casters' growth scales by `max_sp_mult`.
+    pub fn max_sp(&self, data: &GameData, t: &Tuning) -> i32 {
+        let best = self.levels.iter().max().copied().unwrap_or(1).max(1) as f64;
+        let _ = data;
+        let per = f64::from(self.stats[INT] + self.stats[WIS]);
+        (per * (5.0 + t.spells.max_sp_mult * (best - 1.0))) as i32
+    }
+
+    pub fn add_xp(&mut self, data: &GameData, t: &Tuning, xp: u64) -> u64 {
+        let xp = if self.buffs.xp_mult > 1.0 { (xp as f32 * self.buffs.xp_mult) as u64 } else { xp };
         // Pinned: XP stops one short of the level after next until the next level is made.
         let cap = t.xp_needed(self.level() + 1, data.races[self.race].xp_factor, data.guilds[self.guild].xp_factor) - 1;
         self.xp[self.guild] = (self.xp[self.guild] + xp).min(cap);
+        xp
     }
 
     pub fn make_level(&mut self, data: &GameData, t: &Tuning) -> Result<String, String> {
         let (need, gold) = (self.xp_needed(data, t), Tuning::level_gold(self.level()));
+        if let Some(m) = self.quest {
+            return Err(format!("The guild wants you to slay a {} first.", data.monsters[m].name));
+        }
         if self.xp[self.guild] < need {
             return Err(format!("You need {} more experience.", need - self.xp[self.guild]));
         }
-        if self.gold < gold {
+        if self.gold + self.bank < gold {
             return Err(format!("The guild asks {gold} gold."));
         }
-        self.gold -= gold;
+        self.pay(gold);
         let g = &data.guilds[self.guild];
         let highest = self.levels.iter().all(|&l| l <= self.level());
         self.levels[self.guild] += 1;
         let level = self.level();
-        self.guild_ad = self.guild_ad.max(f64::from(level - 1) * f64::from(g.fighting) * t.combat.ad_per_fighting);
         let mut msg = format!("Welcome to level {level}!");
         if highest {
-            let avg = if level <= g.hp_cap as u32 { g.hp_per_level } else { g.hp_after };
-            let gain = (i32::from(avg) - 1 + self.roll(3) as i32).max(1) + (i32::from(self.stats[CON]) - 16).max(0);
+            // Nomad: 3 a level to 20, then 1. Healer: 3 a level to its cap.
+            let (per, cap) = match self.guild {
+                NOMAD => (3, 20),
+                HEALER => (3, g.hp_cap),
+                _ => (g.hp_per_level, g.hp_cap),
+            };
+            let past_cap = level > cap as u32;
+            let avg = if past_cap { g.hp_after } else { per };
+            let con = (i32::from(self.stats[CON]) - 16).max(0);
+            let mut gain = (i32::from(avg) - 1 + self.roll(3) as i32).max(1) + if past_cap { con / 2 } else { con };
+            // Nomad's share: other guilds gain a hit per level Nomad has already reached.
+            if self.guild != NOMAD && self.levels[NOMAD] >= level {
+                gain += 1;
+            }
             self.max_hp += gain;
             self.hp += gain;
             msg += &format!(" You gain {gain} hits.");
         }
+        // Every few levels a guild may set a quest (the original's pinning by quest).
+        if level % 5 == 0 && self.chance(0.5) {
+            let floor = (level / 5).clamp(1, 15) as i16;
+            let fits: Vec<usize> = (0..data.monsters.len()).filter(|&m| data.monsters[m].level == floor).collect();
+            if !fits.is_empty() {
+                let m = fits[self.roll(fits.len() as u32) as usize];
+                self.quest = Some(m);
+                msg += &format!(" The guild asks you to slay a {} before your next level.", data.monsters[m].name);
+            }
+        }
         Ok(msg)
+    }
+
+    /// Spends gold, taking from the bank when the purse runs short (as the original).
+    pub fn pay(&mut self, gold: u64) {
+        let from_purse = gold.min(self.gold);
+        self.gold -= from_purse;
+        self.bank = self.bank.saturating_sub(gold - from_purse);
     }
 
     /// Joining is free for the first guild after Nomad, then 5,000 gold per guild held.
@@ -255,33 +391,47 @@ impl Character {
             return Err(format!("The guild won't take a {}.", data.races[self.race].name));
         }
         let cost = self.join_cost();
-        if self.gold < cost {
+        if self.gold + self.bank < cost {
             return Err(format!("Joining costs {cost} gold."));
         }
-        self.gold -= cost;
+        self.pay(cost);
         self.levels[g] = 1;
         self.guild = g;
         self.items.iter_mut().filter(|h| data.items[h.item].guilds & (1 << g) == 0).for_each(|h| h.equipped = false);
+        self.macros = ai::preset(ai::Role::of(g));
         Ok(format!("Welcome to the {} guild!", guild.name))
     }
 
+    /// CHA above 10 gets 1% better prices per point, buying and selling.
+    fn cha_bonus(&self) -> f64 {
+        f64::from(self.stats[CHA] - 10).max(0.0) / 100.0
+    }
+
+    pub fn buy_price(&self, data: &GameData, item: usize) -> u64 {
+        (f64::from(data.items[item].price) * (1.0 - self.cha_bonus())).round() as u64
+    }
+
+    /// The store pays half price.
+    pub fn sell_price(&self, data: &GameData, item: usize) -> u64 {
+        (f64::from(data.items[item].price) / 2.0 * (1.0 + self.cha_bonus())).round() as u64
+    }
+
     pub fn buy(&mut self, data: &GameData, item: usize) -> Result<String, String> {
-        let it = &data.items[item];
-        if self.gold < u64::from(it.price) {
+        let price = self.buy_price(data, item);
+        if self.gold + self.bank < price {
             return Err("You can't afford that.".into());
         }
         if self.items.len() >= 40 {
             return Err("You can't carry any more.".into());
         }
-        self.gold -= u64::from(it.price);
-        self.items.push(Held { item, equipped: false });
-        Ok(format!("You bought {}.", it.name))
+        self.pay(price);
+        self.items.push(crate::magic::new_held(data, item, true));
+        Ok(format!("You bought {} for {price} gold.", data.items[item].name))
     }
 
-    /// The store pays half price.
     pub fn sell(&mut self, data: &GameData, slot: usize) -> String {
         let h = self.items.remove(slot);
-        let price = u64::from(data.items[h.item].price) / 2;
+        let price = self.sell_price(data, h.item);
         self.gold += price;
         format!("Sold {} for {price} gold.", data.items[h.item].name)
     }
@@ -290,11 +440,17 @@ impl Character {
     pub fn toggle_equip(&mut self, data: &GameData, slot: usize) -> Result<(), String> {
         let it = &data.items[self.items[slot].item];
         if self.items[slot].equipped {
+            if crate::magic::cursed(data, self.items[slot].item, self.alignment) {
+                return Err(format!("The {} is cursed! The store can uncurse it.", it.name));
+            }
             self.items[slot].equipped = false;
             return Ok(());
         }
         if it.guilds & (1 << self.guild) == 0 {
             return Err(format!("Your guild can't use {}.", it.name));
+        }
+        if crate::magic::consumable(data, self.items[slot].item) {
+            return Err(format!("{} is used, not worn.", it.name));
         }
         let clash = |o: &crate::mdr::Item| if it.power > 0 { o.power > 0 } else { o.power == 0 && o.kind == it.kind };
         for h in &mut self.items {
@@ -306,7 +462,45 @@ impl Character {
         Ok(())
     }
 
-    fn see(&mut self, data: &GameData) {
+    pub fn deposit(&mut self, gold: u64) {
+        let n = gold.min(self.gold);
+        self.gold -= n;
+        self.bank += n;
+    }
+
+    pub fn withdraw(&mut self, gold: u64) {
+        let n = gold.min(self.bank);
+        self.bank -= n;
+        self.gold += n;
+    }
+
+    /// The store identifies for a tenth of the price (25 at least).
+    pub fn identify_cost(data: &GameData, item: usize) -> u64 {
+        (u64::from(data.items[item].price) / 10).max(25)
+    }
+
+    pub fn identify(&mut self, data: &GameData, slot: usize) -> Result<String, String> {
+        let cost = Self::identify_cost(data, self.items[slot].item);
+        if self.gold + self.bank < cost {
+            return Err(format!("Identifying costs {cost} gold."));
+        }
+        self.pay(cost);
+        self.items[slot].known = true;
+        Ok(format!("It is {}.", data.items[self.items[slot].item].name))
+    }
+
+    /// Uncursing costs half the price (100 at least) and frees the item.
+    pub fn uncurse(&mut self, data: &GameData, slot: usize) -> Result<String, String> {
+        let cost = (u64::from(data.items[self.items[slot].item].price) / 2).max(100);
+        if self.gold + self.bank < cost {
+            return Err(format!("Uncursing costs {cost} gold."));
+        }
+        self.pay(cost);
+        let h = self.items.remove(slot);
+        Ok(format!("The store takes the cursed {} off your hands.", data.items[h.item].name))
+    }
+
+    pub(crate) fn see(&mut self, data: &GameData) {
         let Pos { x, y, floor, .. } = self.pos;
         if floor == 0 {
             return;
@@ -323,10 +517,15 @@ impl Character {
     }
 
     pub fn load(path: &Path) -> io::Result<Self> {
-        let c: Self = serde_json::from_slice(&fs::read(path)?)?;
-        if c.version != SAVE_VERSION {
-            return Err(io::Error::other(format!("save version {} is not supported", c.version)));
+        let mut c: Self = serde_json::from_slice(&fs::read(path)?)?;
+        if c.version > SAVE_VERSION {
+            return Err(io::Error::other(format!("save version {} is newer than this game", c.version)));
         }
+        if c.version < 2 {
+            c.macros = ai::preset(ai::Role::of(c.guild));
+            c.age_days = c.age_days.max(16 * 365);
+        }
+        c.version = SAVE_VERSION;
         Ok(c)
     }
 }
@@ -340,68 +539,172 @@ pub fn saved(dir: &Path) -> Vec<String> {
     v
 }
 
-/// The store's stock: store-only items at ordinary prices, cheapest first.
+/// The store's stock: store-only items at ordinary prices (the Potion of Experience
+/// among them), cheapest first.
 pub fn stock(data: &GameData) -> Vec<usize> {
     let mut v: Vec<usize> = (0..data.items.len()).filter(|&i| data.items[i].level == 0 && (1..=100_000).contains(&data.items[i].price)).collect();
     v.sort_by_key(|&i| data.items[i].price);
     v
 }
 
-/// A running game: the character plus what isn't saved (the fight, cleared rooms, log).
+/// A running game: the party plus what isn't saved (the fight, cleared rooms, log).
+/// `party[0]` is the character the player controls.
 pub struct Game {
-    pub ch: Character,
+    pub party: Vec<Character>,
     pub fight: Option<Fight>,
+    /// A chest left in the room after a fight, until the party moves on.
+    pub chest: Option<Chest>,
     /// (floor, area) cleared since the last visit to town.
     pub cleared: Vec<(usize, i16)>,
     pub log: Vec<String>,
 }
 
 impl Game {
-    pub fn new(ch: Character) -> Self {
-        Self { ch, fight: None, cleared: Vec::new(), log: Vec::new() }
+    pub fn new(lead: Character) -> Self {
+        Self { party: vec![lead], fight: None, chest: None, cleared: Vec::new(), log: Vec::new() }
     }
 
-    fn say(&mut self, s: impl Into<String>) {
+    pub fn lead(&self) -> &Character {
+        &self.party[0]
+    }
+
+    pub fn lead_mut(&mut self) -> &mut Character {
+        &mut self.party[0]
+    }
+
+    pub(crate) fn say(&mut self, s: impl Into<String>) {
         self.log.push(s.into());
     }
 
-    pub fn floor<'a>(&self, data: &'a GameData) -> Option<&'a Floor> {
-        self.ch.pos.floor.checked_sub(1).map(|f| &data.floors[f])
+    pub fn pos(&self) -> Pos {
+        self.party[0].pos
     }
 
-    /// Arriving in town: rest to full health; the dungeon repopulates.
-    fn to_town(&mut self) {
-        self.ch.pos = Pos::default();
-        self.ch.hp = self.ch.max_hp;
+    pub fn floor<'a>(&self, data: &'a GameData) -> Option<&'a Floor> {
+        self.pos().floor.checked_sub(1).map(|f| &data.floors[f])
+    }
+
+    /// Party members who are alive.
+    pub fn living(&self) -> Vec<usize> {
+        (0..self.party.len()).filter(|&i| self.party[i].alive()).collect()
+    }
+
+    /// Adds a saved character as an ally: alive, in the city, and not Good with Evil.
+    pub fn add_ally(&mut self, ally: Character) -> Result<(), String> {
+        if self.party.len() >= MAX_PARTY {
+            return Err("A party holds at most four.".into());
+        }
+        if !ally.alive() {
+            return Err(format!("{} must be raised first.", ally.name));
+        }
+        if self.party.iter().any(|m| m.alignment.abs_diff(ally.alignment) == 2) {
+            return Err("Good and Evil won't travel together.".into());
+        }
+        if self.party.iter().any(|m| m.name == ally.name) {
+            return Err(format!("{} is already in the party.", ally.name));
+        }
+        let name = ally.name.clone();
+        self.party.push(ally);
+        self.party[0].allies = self.party[1..].iter().map(|m| m.name.clone()).collect();
+        self.say(format!("{name} joins the party."));
+        Ok(())
+    }
+
+    pub fn dismiss(&mut self, i: usize) -> Option<Character> {
+        if i == 0 || i >= self.party.len() {
+            return None;
+        }
+        let c = self.party.remove(i);
+        self.party[0].allies = self.party[1..].iter().map(|m| m.name.clone()).collect();
+        Some(c)
+    }
+
+    /// Puts another living member in control (the original's Switch To).
+    pub fn switch_to(&mut self, i: usize) {
+        if i < self.party.len() && self.party[i].alive() {
+            self.party.swap(0, i);
+            let names: Vec<String> = self.party[1..].iter().map(|m| m.name.clone()).collect();
+            self.party[0].allies = names;
+            for m in &mut self.party[1..] {
+                m.allies.clear();
+            }
+        }
+    }
+
+    /// Moves everyone, carried bodies included.
+    pub(crate) fn set_pos(&mut self, data: &GameData, p: Pos) {
+        let floor_changed = p.floor != self.pos().floor;
+        if (p.x, p.y, p.floor) != (self.pos().x, self.pos().y, self.pos().floor) {
+            self.chest = None;
+        }
+        for m in &mut self.party {
+            m.pos = p;
+            if let Life::Dead(_) = m.life {
+                m.life = Life::Dead(p);
+            }
+            if m.alive() {
+                m.see(data);
+                if floor_changed {
+                    m.buffs = Buffs::default();
+                }
+            }
+        }
+    }
+
+    /// Arriving in town: the living rest (healed, cured, aged a little), carried bodies
+    /// go to the morgue, and the dungeon repopulates.
+    pub(crate) fn to_town(&mut self, data: &GameData, t: &Tuning) {
+        for m in &mut self.party {
+            m.pos = Pos::default();
+            m.buffs = Buffs::default();
+            match m.life {
+                Life::Alive => {
+                    m.hp = m.max_hp;
+                    m.sp = m.max_sp(data, t);
+                    m.status = Status::default();
+                    m.age_days += 1;
+                }
+                Life::Dead(_) => m.life = Life::InMorgue,
+                Life::InMorgue => {}
+            }
+        }
         self.cleared.clear();
         self.fight = None;
         self.say("You return to the city and rest.");
     }
 
     pub fn enter_dungeon(&mut self, data: &GameData) -> Result<(), String> {
-        if self.ch.life != Life::Alive {
-            return Err("Only the living may enter.".into());
+        if let Some(m) = self.party.iter().find(|m| !m.alive()) {
+            return Err(format!("{} is dead; visit the morgue or dismiss them first.", m.name));
         }
         let f = &data.floors[0];
         let i = f.squares.iter().position(|s| s.flags & square::STAIRS_UP != 0).unwrap_or(0);
-        self.ch.pos = Pos { x: i % f.width, y: i / f.width, floor: 1, facing: 0 };
-        self.ch.see(data);
+        self.set_pos(data, Pos { x: i % f.width, y: i / f.width, floor: 1, facing: 0 });
         self.say("You descend into the dungeon.");
         Ok(())
     }
 
     pub fn turn(&mut self, by: u8) {
         if self.fight.is_none() {
-            self.ch.pos.facing = (self.ch.pos.facing + by) % 4;
+            for m in &mut self.party {
+                m.pos.facing = (m.pos.facing + by) % 4;
+            }
         }
     }
 
-    pub fn step(&mut self, data: &GameData) {
-        if self.fight.is_some() {
-            return self.say("You can't walk away; choose Run.");
+    pub fn step(&mut self, data: &GameData, t: &Tuning) {
+        if let Some(f) = &self.fight {
+            if !f.peaceful {
+                return self.say("You can't walk away; choose Run.");
+            }
+            // Peaceful monsters let you walk on through.
+            self.fight = None;
+        }
+        if self.party.iter().any(|m| m.alive() && m.status.paralysis > 0) {
+            return self.say("A paralysed party member can't be left behind.");
         }
         let Some(f) = self.floor(data) else { return };
-        let Pos { x, y, facing, .. } = self.ch.pos;
+        let Pos { x, y, facing, .. } = self.pos();
         let secret = match facing {
             0 => f.square(x, y).flags & square::UPPER_SECRET_DOOR != 0,
             1 => f.square(x, y).flags & square::RIGHT_SECRET_DOOR != 0,
@@ -412,58 +715,118 @@ impl Game {
         if secret {
             self.say("You find a secret door!");
         }
-        let back = self.ch.pos;
-        self.ch.pos.x = nx;
-        self.ch.pos.y = ny;
+        let back = self.pos();
+        self.set_pos(data, Pos { x: nx, y: ny, ..back });
+        self.walk_effects(data, t);
         self.arrive(data, back);
     }
 
+    /// Each step: poison and disease bite, SP trickles back, and a Healer in the party
+    /// slowly mends everyone (docs/balance.md).
+    fn walk_effects(&mut self, data: &GameData, t: &Tuning) {
+        let healer = self.party.iter().any(|m| m.alive() && m.levels[HEALER] > 0);
+        let mut hurt = Vec::new();
+        for (i, m) in self.party.iter_mut().enumerate().filter(|(_, m)| m.alive()) {
+            let max_sp = m.max_sp(data, t);
+            m.sp = (m.sp + ((f64::from(max_sp) * t.spells.regen_per_step).ceil() as i32)).min(max_sp);
+            if healer {
+                m.hp = (m.hp + (m.max_hp / 100).max(1)).min(m.max_hp);
+            }
+            if m.status.poison > 0 {
+                m.status.poison -= 1;
+                hurt.push((i, 1 + m.max_hp / 30));
+            }
+            if m.status.disease > 0 {
+                m.status.disease -= 1;
+                if m.status.disease % 3 == 0 {
+                    hurt.push((i, 1));
+                }
+            }
+            m.status.paralysis = m.status.paralysis.saturating_sub(1);
+        }
+        for (i, dmg) in hurt {
+            self.hurt(i, dmg);
+        }
+        self.companions_step(data);
+    }
+
     /// Effects of the square just entered, then a possible encounter.
-    fn arrive(&mut self, data: &GameData, back: Pos) {
-        self.ch.see(data);
-        let f = self.floor(data).unwrap();
-        let Pos { x, y, floor, .. } = self.ch.pos;
+    pub(crate) fn arrive(&mut self, data: &GameData, back: Pos) {
+        let Some(f) = self.floor(data) else { return };
+        let Pos { x, y, floor, .. } = self.pos();
         let sq = f.square(x, y);
         let (flags, area) = (sq.flags, sq.area);
         for (bit, dir) in [(square::FACE_NORTH, 0), (square::FACE_EAST, 1), (square::FACE_SOUTH, 2), (square::FACE_WEST, 3)] {
             if flags & bit != 0 {
-                self.ch.pos.facing = dir;
+                self.turn_to(dir);
             }
         }
         if flags & square::ROTATOR != 0 {
-            self.ch.pos.facing = self.ch.roll(4) as u8;
+            let dir = self.party[0].roll(4) as u8;
+            self.turn_to(dir);
             self.say("The floor spins you around!");
         }
-        if flags & square::PIT != 0 {
-            let dmg = 1 + self.ch.roll(4 * floor as u32) as i32;
-            self.say(format!("You fall into a pit for {dmg} damage."));
-            if self.hurt(dmg) {
-                return;
+        let levitating = self.party.iter().filter(|m| m.alive()).all(|m| m.buffs.levitate);
+        if flags & square::PIT != 0 && !levitating {
+            for i in self.living() {
+                let dmg = 1 + self.party[i].roll(4 * floor as u32) as i32;
+                self.say(format!("{} falls into a pit for {dmg} damage.", self.party[i].name));
+                self.hurt(i, dmg);
             }
         }
-        if flags & square::CHUTE != 0 {
+        if flags & square::WATER != 0 && !levitating {
+            for i in self.living() {
+                // Heavy armour drags you under (defense 9+ items, the original's "heavy items").
+                let heavy = self.party[i].items.iter().filter(|h| h.equipped).map(|h| i32::from(data.items[h.item].defense)).sum::<i32>() >= 12;
+                if heavy && self.party[i].chance(0.25) {
+                    let dmg = 2 + self.party[i].roll(3 * floor as u32) as i32;
+                    self.say(format!("{} struggles in the water for {dmg} damage.", self.party[i].name));
+                    self.hurt(i, dmg);
+                }
+            }
+        }
+        if flags & square::QUICKSAND != 0 && !levitating {
+            for i in self.living() {
+                let dmg = 1 + self.party[i].roll(2 * floor as u32) as i32;
+                self.say(format!("{} sinks into quicksand for {dmg} damage.", self.party[i].name));
+                if self.party[i].chance(0.1) && !self.party[i].items.is_empty() {
+                    let n = self.party[i].items.len() as u32;
+                    let s = self.party[i].roll(n) as usize;
+                    if !self.party[i].items[s].equipped {
+                        let h = self.party[i].items.remove(s);
+                        self.say(format!("{} loses {} in the sand.", self.party[i].name, data.items[h.item].name));
+                    }
+                }
+                self.hurt(i, dmg);
+            }
+        }
+        if flags & square::EXTINGUISH != 0 {
+            for m in &mut self.party {
+                m.buffs = Buffs::default();
+            }
+            self.say("Your magic fades away.");
+        }
+        if self.living().is_empty() {
+            return;
+        }
+        if flags & square::CHUTE != 0 && !levitating {
             let drop = f.chutes.iter().find(|c| c.at == (x, y)).map_or(1, |c| c.drop.max(1) as usize);
             let to = (floor + drop).min(data.floors.len());
-            let dmg = 1 + self.ch.roll(6 * drop as u32) as i32;
-            self.say(format!("You slide down a chute to level {to} and take {dmg} damage."));
-            self.ch.pos.floor = to;
-            self.ch.see(data);
-            self.hurt(dmg);
+            self.say(format!("You slide down a chute to level {to}!"));
+            self.set_pos(data, Pos { floor: to, ..self.pos() });
+            for i in self.living() {
+                let dmg = 1 + self.party[i].roll(6 * drop as u32) as i32;
+                self.hurt(i, dmg);
+            }
             return;
         }
         if flags & square::TELEPORTER != 0 {
             let tp = f.teleporters.iter().find(|tp| tp.at == (x, y)).and_then(|tp| tp.to);
             let (tx, ty, tf) = match tp {
                 Some((tx, ty, tf)) => (tx, ty, (tf as usize).clamp(1, data.floors.len())),
-                None => loop {
-                    let (rx, ry) = (self.ch.roll(f.width as u32) as usize, self.ch.roll(f.height as u32) as usize);
-                    if f.square(rx, ry).flags & square::ROCK == 0 {
-                        break (rx, ry, floor);
-                    }
-                },
+                None => self.random_square(data, floor),
             };
-            self.ch.pos = Pos { x: tx, y: ty, floor: tf, facing: self.ch.pos.facing };
-            self.ch.see(data);
+            self.set_pos(data, Pos { x: tx, y: ty, floor: tf, facing: self.pos().facing });
             return self.say("A teleporter whisks you away!");
         }
         if area != 0 && !self.cleared.contains(&(floor, area)) {
@@ -471,179 +834,172 @@ impl Game {
         }
     }
 
-    /// Rooms hold their lair monster, or a group of a type the room allows.
-    fn spawn(&mut self, data: &GameData, area: i16, stud: bool, back: Pos) {
-        let floor = self.ch.pos.floor;
-        let a = &data.floors[floor - 1].areas[area as usize];
-        let level = floor as i16 + i16::from(stud);
-        let pick = if a.lair != 0 {
-            data.monsters.iter().position(|m| m.id == a.lair)
-        } else {
-            if !self.ch.chance(0.6) {
-                self.cleared.push((floor, area));
-                return;
+    pub(crate) fn random_square(&mut self, data: &GameData, floor: usize) -> (usize, usize, usize) {
+        let f = &data.floors[floor - 1];
+        loop {
+            let (x, y) = (self.party[0].roll(f.width as u32) as usize, self.party[0].roll(f.height as u32) as usize);
+            if f.square(x, y).flags & square::ROCK == 0 {
+                return (x, y, floor);
             }
-            let fits: Vec<usize> = (0..data.monsters.len())
-                .filter(|&i| a.monster_types >> data.monsters[i].kind & 1 != 0 && data.monsters[i].level == level.min(16))
-                .collect();
-            (!fits.is_empty()).then(|| fits[self.ch.roll(fits.len() as u32) as usize])
-        };
-        let Some(m) = pick else { return };
-        let mon = &data.monsters[m];
-        let n = if a.lair != 0 { 1 } else { 1 + self.ch.roll(mon.group.max(1) as u32) };
-        let foes = (0..n).map(|_| Foe { monster: m, hp: (i32::from(mon.hp) * (75 + self.ch.roll(51) as i32) / 100).max(1) }).collect();
-        self.say(format!("You encounter {n} {}{}!", mon.name, if n > 1 { "s" } else { "" }));
-        self.fight = Some(Fight { foes, action: Action::Fight, back });
+        }
     }
 
-    /// Takes damage; true if it killed the character.
-    fn hurt(&mut self, dmg: i32) -> bool {
-        self.ch.hp -= dmg;
-        if self.ch.hp > 0 {
+    fn turn_to(&mut self, dir: u8) {
+        for m in &mut self.party {
+            m.pos.facing = dir;
+        }
+    }
+
+    /// Takes damage; true if it killed that member. When the controlled character dies,
+    /// control passes to the next living member; when all are dead, the fight ends.
+    pub(crate) fn hurt(&mut self, i: usize, dmg: i32) -> bool {
+        let m = &mut self.party[i];
+        if !m.alive() {
             return false;
         }
-        self.ch.hp = 0;
-        self.ch.life = Life::Dead(self.ch.pos);
-        self.fight = None;
-        self.say("You have died. Your body lies where you fell.");
-        self.ch.pos = Pos::default();
+        m.hp -= dmg;
+        if m.hp > 0 {
+            return false;
+        }
+        m.hp = 0;
+        m.life = Life::Dead(m.pos);
+        let name = m.name.clone();
+        self.say(format!("{name} has died!"));
+        if self.living().is_empty() {
+            self.fight = None;
+            self.say("The whole party has fallen. Your bodies lie where you fell.");
+            for m in &mut self.party {
+                m.pos = Pos::default();
+            }
+        } else if i == 0 {
+            let next = self.living()[0];
+            self.switch_to(next);
+            self.say(format!("You take control of {}.", self.party[0].name));
+        }
         true
     }
 
-    pub fn take_stairs(&mut self, data: &GameData) {
+    pub fn take_stairs(&mut self, data: &GameData, t: &Tuning) {
         let Some(f) = self.floor(data) else { return };
-        let flags = f.square(self.ch.pos.x, self.ch.pos.y).flags;
+        let p = self.pos();
+        let flags = f.square(p.x, p.y).flags;
         if self.fight.is_some() {
             self.say("Not while fighting.");
         } else if flags & square::STAIRS_UP != 0 {
-            if self.ch.pos.floor == 1 {
-                self.to_town();
+            if p.floor == 1 {
+                self.to_town(data, t);
             } else {
-                self.ch.pos.floor -= 1;
-                self.ch.see(data);
-                self.say(format!("You climb to level {}.", self.ch.pos.floor));
+                self.set_pos(data, Pos { floor: p.floor - 1, ..p });
+                self.say(format!("You climb to level {}.", p.floor - 1));
             }
-        } else if flags & square::STAIRS_DOWN != 0 && self.ch.pos.floor < data.floors.len() {
-            self.ch.pos.floor += 1;
-            let back = self.ch.pos;
-            self.say(format!("You descend to level {}.", self.ch.pos.floor));
-            self.arrive(data, back);
+        } else if flags & square::STAIRS_DOWN != 0 && p.floor < data.floors.len() {
+            self.set_pos(data, Pos { floor: p.floor + 1, ..p });
+            self.say(format!("You descend to level {}.", p.floor + 1));
+            self.arrive(data, p);
+        } else if flags & square::CHUTE != 0 && self.party.iter().filter(|m| m.alive()).all(|m| m.buffs.levitate) {
+            self.say("You float down the chute.");
+            self.set_pos(data, Pos { floor: (p.floor + 1).min(data.floors.len()), ..p });
         } else {
             self.say("There are no stairs here.");
         }
     }
 
-    /// One combat round: the character acts, then every living foe attacks.
-    pub fn round(&mut self, data: &GameData, t: &Tuning) {
-        let Some(action) = self.fight.as_ref().map(|f| f.action) else { return };
-        let c = &t.combat;
-        let hit = |att: i32, def: i32| (0.5 + f64::from(att - def) / c.hit_spread).clamp(0.05, 0.95);
-        let (att, mut def) = self.ch.att_def(data);
-        if action == Action::Defend {
-            def += def / 2;
+    /// The Seer, for 200 gold: where a lost party member lies, or which floor holds a
+    /// monster's lair (handy for quests).
+    pub fn seer(&mut self, data: &GameData, name: &str) -> String {
+        let lead = &mut self.party[0];
+        if lead.gold + lead.bank < 200 {
+            return "The Seer wants 200 gold.".into();
         }
-        if action == Action::Run {
-            if self.ch.chance(0.6) {
-                let back = self.fight.take().unwrap().back;
-                self.ch.pos = back;
-                return self.say("You flee back the way you came.");
-            }
-            self.say("You fail to get away!");
+        lead.pay(200);
+        let name = name.trim().to_lowercase();
+        if let Some(m) = self.party.iter().find(|m| m.name.to_lowercase() == name) {
+            return match m.life {
+                Life::Dead(p) => format!("{} lies at {},{} on level {}.", m.name, p.x + 1, p.y + 1, p.floor),
+                Life::InMorgue => format!("{} is in the morgue.", m.name),
+                Life::Alive => format!("{} is alive and well.", m.name),
+            };
         }
-        if action == Action::Fight {
-            let target = self.fight.as_ref().unwrap().foes.iter().position(|f| f.hp > 0).unwrap();
-            let m = &data.monsters[self.fight.as_ref().unwrap().foes[target].monster];
-            if self.ch.chance(hit(att, i32::from(m.defense))) {
-                let (power, mult) = self.ch.weapon(data).map_or((2, 1.0), |w| (data.items[w].power, data.items[w].damage_mult));
-                let dmg = ((1 + self.ch.roll(power as u32 * c.weapon_die) as i32 + (i32::from(self.ch.stats[STR]) - 10) / 2).max(1) as f32 * mult) as i32;
-                let foe = &mut self.fight.as_mut().unwrap().foes[target];
-                foe.hp -= dmg;
-                let killed = foe.hp <= 0;
-                self.say(format!("You hit the {} for {dmg}{}", m.name, if killed { " and kill it!" } else { "." }));
-                if killed {
-                    self.ch.kills += 1;
-                    let floor = self.ch.pos.floor as u32;
-                    let base = (f64::from(m.hp) * f64::from(m.level) * c.xp_per_hp_level + f64::from(m.attack) / 2.0) as u64;
-                    let xp = t.xp_award(base, floor, 0);
-                    self.ch.add_xp(data, t, xp);
-                    let gold = u64::from(m.level.max(1) as u32 * (c.gold_min + self.ch.roll(c.gold_max - c.gold_min + 1)));
-                    self.ch.gold += gold;
-                    self.say(format!("You gain {xp} experience and find {gold} gold."));
-                }
-            } else {
-                self.say(format!("You miss the {}.", m.name));
-            }
-        }
-        let foes: Vec<usize> = self.fight.as_ref().unwrap().foes.iter().filter(|f| f.hp > 0).map(|f| f.monster).collect();
-        if foes.is_empty() {
-            return self.win(data, t);
-        }
-        for m in foes {
-            let m = &data.monsters[m];
-            if self.ch.chance(hit(i32::from(m.attack), def)) {
-                let dmg = 1 + self.ch.roll(m.level.max(1) as u32 * c.monster_die + (m.attack.max(0) / 20) as u32) as i32;
-                self.say(format!("The {} hits you for {dmg}.", m.name));
-                if self.hurt(dmg) {
-                    return;
-                }
-            }
+        let Some(m) = data.monsters.iter().position(|m| m.name.to_lowercase() == name) else { return "The Seer has never heard of it.".into() };
+        let id = data.monsters[m].id;
+        let lairs: Vec<String> = data.floors.iter().filter(|f| f.areas.iter().any(|a| a.lair == id)).map(|f| f.level.to_string()).collect();
+        if lairs.is_empty() {
+            format!("The {} wanders level {}.", data.monsters[m].name, data.monsters[m].level)
+        } else {
+            format!("The {} keeps a lair on level {}.", data.monsters[m].name, lairs.join(" and "))
         }
     }
 
-    fn win(&mut self, data: &GameData, t: &Tuning) {
-        self.fight = None;
-        let Pos { x, y, floor, .. } = self.ch.pos;
-        let area = data.floors[floor - 1].square(x, y).area;
-        self.cleared.push((floor, area));
-        self.say("The room is clear.");
-        if self.ch.chance(t.combat.item_chance) {
-            let found: Vec<usize> = (0..data.items.len()).filter(|&i| (1..=floor as i16).contains(&data.items[i].level) && data.items[i].price > 0).collect();
-            if !found.is_empty() && self.ch.items.len() < 40 {
-                let item = found[self.ch.roll(found.len() as u32) as usize];
-                self.ch.items.push(Held { item, equipped: false });
-                self.say(format!("You find {}!", data.items[item].name));
-            }
-        }
-    }
-
-    /// Rescuers fetch the corpse: 250 x floor² gold, or everything you have.
-    pub fn rescue_cost(&self) -> u64 {
-        match self.ch.life {
+    /// Rescuers fetch a corpse: 250 x floor² gold. Deeper is riskier: they fail
+    /// 3% per floor, and keep the fee.
+    pub fn rescue_cost(&self, i: usize) -> u64 {
+        match self.party[i].life {
             Life::Dead(p) => 250 * (p.floor as u64).pow(2),
             _ => 0,
         }
     }
 
-    pub fn raise_cost(&self) -> u64 {
-        100 + 50 * u64::from(self.ch.levels.iter().sum::<u32>()).pow(2)
+    pub fn raise_cost(&self, i: usize) -> u64 {
+        100 + 50 * u64::from(self.party[i].levels.iter().sum::<u32>()).pow(2)
     }
 
-    pub fn rescue(&mut self) {
-        let cost = self.rescue_cost().min(self.ch.gold);
-        self.ch.gold -= cost;
-        self.ch.life = Life::InMorgue;
-        self.say(format!("Rescuers bring your body to the morgue for {cost} gold."));
-    }
-
-    /// Raising always works in the slice, but often costs a point of CON.
-    pub fn raise(&mut self, data: &GameData) {
-        let cost = self.raise_cost().min(self.ch.gold);
-        self.ch.gold -= cost;
-        self.ch.life = Life::Alive;
-        self.ch.hp = self.ch.max_hp;
-        let min = data.races[self.ch.race].stat_min[CON];
-        if self.ch.chance(0.5) && self.ch.stats[CON] > min {
-            self.ch.stats[CON] -= 1;
-            self.say(format!("You are raised for {cost} gold, but lose a point of CON."));
-        } else {
-            self.say(format!("You are raised for {cost} gold."));
+    /// The fee comes from the dead character's purse and bank, then the party's.
+    fn charge(&mut self, i: usize, cost: u64) -> u64 {
+        let mut left = cost;
+        for j in std::iter::once(i).chain(0..self.party.len()) {
+            let m = &mut self.party[j];
+            let take = left.min(m.gold + m.bank);
+            m.pay(take);
+            left -= take;
         }
+        cost - left
+    }
+
+    pub fn rescue(&mut self, i: usize) {
+        let Life::Dead(p) = self.party[i].life else { return };
+        let paid = self.charge(i, self.rescue_cost(i));
+        if self.party[i].chance(0.03 * p.floor as f64) {
+            return self.say(format!("The rescuers couldn't find {} (fee {paid} gold).", self.party[i].name));
+        }
+        self.party[i].life = Life::InMorgue;
+        self.party[i].pos = Pos::default();
+        self.say(format!("Rescuers bring {} to the morgue for {paid} gold.", self.party[i].name));
+    }
+
+    /// The morgue's workers are good but not perfect: a raise fails 5% of the time,
+    /// more for the old (the original's complications), and often costs a point of CON.
+    pub fn raise(&mut self, data: &GameData, i: usize) {
+        if self.party[i].life != Life::InMorgue {
+            return;
+        }
+        let paid = self.charge(i, self.raise_cost(i));
+        let m = &mut self.party[i];
+        let old = f64::from(m.age().saturating_sub(data.races[m.race].lifespan.max(1) as u32 / 2)) / 100.0;
+        if m.chance(0.05 + old) {
+            m.age_days += 365;
+            let name = m.name.clone();
+            return self.say(format!("Complications! {name} ages a year and stays dead (fee {paid} gold)."));
+        }
+        m.life = Life::Alive;
+        m.hp = m.max_hp;
+        let min = data.races[m.race].stat_min[CON];
+        let msg = if m.chance(0.5) && m.stats[CON] > min {
+            m.stats[CON] -= 1;
+            format!("{} is raised for {paid} gold, but loses a point of CON.", m.name)
+        } else {
+            format!("{} is raised for {paid} gold.", m.name)
+        };
+        self.say(msg);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        ai::{Act, Target},
+        magic::{self, Magic},
+    };
 
     fn data() -> GameData {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -652,66 +1008,196 @@ mod tests {
         GameData::load(&out).unwrap()
     }
 
-    /// Human Nomads in the standard kit walk floor 1 (forward, turning at walls), fighting
-    /// what they meet. Prints how they fared, as a rough check on the start values.
+    fn kit(d: &GameData, c: &mut Character) {
+        for n in ["Bronze Sword", "Leather Armor", "Leather Gloves", "Leather Boots", "Cloth Cloak", "Wooden Shield", "Leather Cap"] {
+            let item = d.items.iter().position(|i| i.name == n).unwrap();
+            c.buy(d, item).unwrap();
+            let slot = c.items.len() - 1;
+            let _ = c.toggle_equip(d, slot);
+        }
+    }
+
+    /// A character of `guild` at `level`, with the standard kit.
+    fn hero(d: &GameData, name: &str, race: usize, align: u8, guild: usize, level: u32) -> Character {
+        let base = start_stats(d, race);
+        let stats = std::array::from_fn(|i| base[i].max(d.guilds[guild].stat_req[i]).min(d.races[race].stat_max[i]));
+        let mut c = Character::new(d, name, race, false, align, base).unwrap_or_else(|e| panic!("{name}: {e}"));
+        c.stats = stats;
+        c.gold = 100_000;
+        if guild != NOMAD {
+            c.join(d, guild).unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
+        c.levels[guild] = level;
+        c.max_hp += 6 * level as i32;
+        c.hp = c.max_hp;
+        kit(d, &mut c);
+        c
+    }
+
+    /// A fighter, a healer and a mage explore floor 1 with the AI running everyone.
     #[test]
-    fn plays_floor_one() {
+    fn party_plays_floor_one() {
         let (d, t) = (data(), Tuning::load(&[]).unwrap());
-        // The HelpLesson's "standard attire for a beginning Nomad": 1,180 of the 1,500 gold.
-        let kit = ["Bronze Sword", "Leather Armor", "Leather Gloves", "Leather Boots", "Cloth Cloak", "Wooden Shield", "Leather Cap"]
-            .map(|n| stock(&d).into_iter().find(|&i| d.items[i].name == n).unwrap());
         let mut best = 0;
-        for name in ["Ann", "Bo", "Cy", "Di", "Ed"] {
-            let mut g = Game::new(Character::new(&d, name, 0, false, 1, start_stats(&d, 0)).unwrap());
-            for (slot, item) in kit.into_iter().enumerate() {
-                g.ch.buy(&d, item).unwrap();
-                g.ch.toggle_equip(&d, slot).unwrap();
+        let mut cast = 0;
+        for seed in ["A", "B", "C"] {
+            let mut g = Game::new(hero(&d, &format!("Fighter{seed}"), 0, 1, 1, 4));
+            g.add_ally(hero(&d, &format!("Healer{seed}"), 1, 1, HEALER, 4)).unwrap();
+            g.add_ally(hero(&d, &format!("Mage{seed}"), 1, 0, 8, 4)).unwrap();
+            for m in &mut g.party {
+                m.sp = m.max_sp(&d, &t);
             }
-            assert_eq!((g.ch.gold, g.ch.att_def(&d)), (320, (18, 22)));
             g.enter_dungeon(&d).unwrap();
             let mut steps = 0;
-            while g.ch.life == Life::Alive && steps < 3000 {
+            while !g.living().is_empty() && steps < 3000 {
                 steps += 1;
                 if g.fight.is_some() {
                     g.round(&d, &t);
-                } else if g.log.last().is_some_and(|l| l.starts_with("A wall")) || g.ch.roll(8) == 0 {
-                    let by = 1 + 2 * g.ch.roll(2) as u8;
+                } else if g.log.last().is_some_and(|l| l.starts_with("A wall")) || g.party[0].roll(8) == 0 {
+                    let by = 1 + 2 * g.party[0].roll(2) as u8;
                     g.turn(by);
                     g.log.push(String::new());
                 } else {
-                    g.step(&d);
+                    g.step(&d, &t);
                 }
             }
-            let seen = g.ch.seen[0].iter().filter(|&&s| s).count();
-            eprintln!("{name}: {steps} steps, {} kills, {} XP, {seen} squares seen, {:?}", g.ch.kills, g.ch.xp[0], g.ch.life);
-            best = best.max(g.ch.kills);
+            let kills: u32 = g.party.iter().map(|m| m.kills).sum();
+            let heals = g.log.iter().filter(|l| l.contains(" heals ")).count();
+            let spells = g.log.iter().filter(|l| l.contains(" casts ")).count();
+            eprintln!("{seed}: {steps} steps, {kills} kills, {spells} spells ({heals} heals), living {}", g.living().len());
+            best = best.max(kills);
+            cast += spells;
         }
-        assert!(best >= 3);
+        assert!(cast > 0, "the AI never cast a spell");
+        assert!(best >= 5);
     }
 
     #[test]
-    fn levels_dies_and_is_raised() {
+    fn spells_follow_guild_rates_and_schools() {
+        let d = data();
+        let paladin = hero(&d, "Pal", 0, 0, 2, 6);
+        let minor = d.spells.iter().position(|s| s.name == "Minor Heal").unwrap();
+        assert!(magic::known(&paladin, &d).contains(&minor));
+        let early = hero(&d, "Pal5", 0, 0, 2, 5);
+        assert!(!magic::known(&early, &d).contains(&minor));
+        // Wizards give up the mind spells (docs/balance.md).
+        let sleep = d.spells.iter().position(|s| s.name == "Sleep").unwrap();
+        assert!(magic::taught_at(&d, 10, sleep).is_none() && magic::taught_at(&d, 8, sleep).is_some());
+        // Charm of Experience: Seekers at 16.
+        let charm = d.spells.iter().position(|s| s.id == magic::CHARM_OF_EXPERIENCE).unwrap();
+        assert_eq!((magic::taught_at(&d, 5, charm), magic::taught_at(&d, 8, charm)), (Some(16), None));
+    }
+
+    #[test]
+    fn experience_potion_boosts_until_floor_change() {
+        let (d, t) = (data(), Tuning::load(&[]).unwrap());
+        let mut g = Game::new(hero(&d, "Quaffer", 0, 1, 0, 1));
+        let potion = d.items.iter().position(|i| i.id == magic::POTION_OF_EXPERIENCE).unwrap();
+        assert!(magic::stock_has(&d, potion));
+        g.party[0].buy(&d, potion).unwrap();
+        g.enter_dungeon(&d).unwrap();
+        magic::use_item(&mut g, &d, &t, 0, potion);
+        assert_eq!(g.party[0].add_xp(&d, &t, 10), 15);
+        let p = g.pos();
+        g.set_pos(&d, Pos { floor: 2, ..p });
+        assert_eq!(g.party[0].add_xp(&d, &t, 10), 10);
+        assert!(g.party[0].items.iter().all(|h| h.item != potion));
+    }
+
+    #[test]
+    fn healer_ai_heals_the_wounded() {
+        let (d, t) = (data(), Tuning::load(&[]).unwrap());
+        let mut g = Game::new(hero(&d, "Tank", 0, 1, 1, 6));
+        g.add_ally(hero(&d, "Medic", 1, 1, HEALER, 6)).unwrap();
+        g.party[1].sp = 500;
+        g.enter_dungeon(&d).unwrap();
+        let kobold = d.monsters.iter().position(|m| m.name == "Kobold").unwrap();
+        let foes = vec![crate::combat::Foe { monster: kobold, hp: 50, max_hp: 50, asleep: 0 }];
+        g.fight = Some(crate::combat::Fight { foes, round: 0, order: Some(Act::Defend), back: g.pos(), lair: false, peaceful: false, chest: None, defending: vec![false; 2] });
+        g.party[0].hp = 3;
+        let act = crate::ai::decide(&g, &d, &t, 1);
+        assert!(matches!(act, Act::Cast(s, Target::LowestAlly) if magic::kind(&d.spells[s]) == Some(Magic::Heal)), "{act:?}");
+    }
+
+    #[test]
+    fn dies_is_rescued_raised_and_saved() {
         let (d, t) = (data(), Tuning::load(&[]).unwrap());
         let mut g = Game::new(Character::new(&d, "Raise", 0, true, 1, start_stats(&d, 0)).unwrap());
-        g.ch.add_xp(&d, &t, 10_000);
-        assert_eq!(g.ch.xp[0], t.xp_needed(2, 3.0, 8.0) - 1, "pinned below level 3");
-        g.ch.make_level(&d, &t).unwrap();
-        assert_eq!(g.ch.level(), 2);
-        assert!(g.ch.max_hp > 15 && g.ch.gold == 1500 - 39);
-
+        g.party[0].add_xp(&d, &t, 10_000);
+        assert_eq!(g.party[0].xp[0], t.xp_needed(2, 3.0, 8.0) - 1, "pinned below level 3");
+        g.party[0].make_level(&d, &t).unwrap();
+        assert_eq!(g.party[0].level(), 2);
         g.enter_dungeon(&d).unwrap();
-        let at = g.ch.pos;
-        assert!(g.hurt(1000));
-        assert_eq!(g.ch.life, Life::Dead(at));
-        assert_eq!(g.rescue_cost(), 250);
-        g.rescue();
-        g.raise(&d);
-        assert!(g.ch.life == Life::Alive && g.ch.hp == g.ch.max_hp);
-
+        let at = g.pos();
+        assert!(g.hurt(0, 1000));
+        assert_eq!(g.party[0].life, Life::Dead(at));
+        g.party[0].gold = 100_000;
+        while g.party[0].life != Life::InMorgue {
+            g.rescue(0);
+        }
+        while g.party[0].life != Life::Alive {
+            g.raise(&d, 0);
+        }
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ddj-save-test");
-        g.ch.save(&dir).unwrap();
+        g.party[0].save(&dir).unwrap();
         let back = Character::load(&dir.join("Raise.json")).unwrap();
-        assert_eq!((back.levels, back.gold, back.stats), (g.ch.levels.clone(), g.ch.gold, g.ch.stats));
+        assert_eq!((back.levels, back.gold, back.stats), (g.party[0].levels.clone(), g.party[0].gold, g.party[0].stats));
         assert!(saved(&dir).contains(&"Raise".to_string()));
+    }
+
+    #[test]
+    fn chests_trap_and_pay_out() {
+        let (d, t) = (data(), Tuning::load(&[]).unwrap());
+        let mut g = Game::new(hero(&d, "Picker", 0, 1, 6, 10));
+        g.enter_dungeon(&d).unwrap();
+        let before = g.party[0].gold;
+        for _ in 0..20 {
+            let trap = crate::treasure::Trap::PoisonGas;
+            g.chest = Some(crate::treasure::Chest { chest: true, trap, guess: trap, sure: 2, magic_lock: false, level: 1 });
+            crate::treasure::open(&mut g, &d, &t, 0);
+            g.party[0].hp = g.party[0].max_hp;
+        }
+        assert!(g.party[0].gold > before && g.chest.is_none());
+        assert!(g.log.iter().any(|l| l.contains("disarms")));
+    }
+
+    /// With `DDJ_RETAIL` set: a strong party plays 400 steps on every floor, to shake out
+    /// bad indexes and panics in the deeper floors' squares, monsters and specials.
+    #[test]
+    fn deep_floors_smoke() {
+        let Ok(src) = std::env::var("DDJ_RETAIL") else { return };
+        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ddj-retail-smoke");
+        ddj_extract::import(Path::new(&src), &out).unwrap();
+        let (d, t) = (GameData::load(&out).unwrap(), Tuning::load(&[]).unwrap());
+        for floor in 1..=d.floors.len() {
+            let mut g = Game::new(hero(&d, "Deep1", 0, 1, 1, 30));
+            g.add_ally(hero(&d, "Deep2", 1, 1, HEALER, 30)).unwrap();
+            g.add_ally(hero(&d, "Deep3", 1, 0, 9, 30)).unwrap();
+            g.add_ally(hero(&d, "Deep4", 0, 1, 6, 30)).unwrap();
+            for m in &mut g.party {
+                m.max_hp = 400;
+                m.hp = 400;
+                m.sp = m.max_sp(&d, &t);
+            }
+            g.enter_dungeon(&d).unwrap();
+            let (x, y, f) = g.random_square(&d, floor);
+            g.set_pos(&d, Pos { x, y, floor: f, facing: 0 });
+            for _ in 0..400 {
+                if g.living().is_empty() || g.pos().floor == 0 {
+                    break;
+                }
+                if g.fight.is_some() {
+                    g.round(&d, &t);
+                } else if g.party[0].roll(6) == 0 {
+                    g.turn(1);
+                } else if g.chest.is_some() {
+                    crate::treasure::open(&mut g, &d, &t, 0);
+                } else {
+                    g.step(&d, &t);
+                }
+            }
+            let kills: u32 = g.party.iter().map(|m| m.kills).sum();
+            eprintln!("floor {floor}: {kills} kills, {} living", g.living().len());
+        }
     }
 }

@@ -39,16 +39,42 @@ MS-DOS `COMPRESS.EXE` (SZDD); the importer expands it. MDATA11 has no version re
   w3-4 f32 XP factor; w5 unknown (Nomad 90, others 1); w6-11 stat requirements; w13
   alignment mask; w15-26 six f32 abilities, each x10 as the refcard shows (thieving,
   backstab, critical hit, multiple swings, fighting, perception); w32 quest chance %;
-  w33-108 a per-spell-family table (Charm of Opening's family holds the level it is
-  learned at: Nomad 12, Ninja 9, Scavenger 6, Thief 3); w109 race mask (bit n = race n);
-  w111-118 unknown.
-- **Item**: w0 id; w1-2 probably attack/defense modifiers (negative on cursed items);
-  w3-4 u32 price; w5 0-16, maybe level found; w15 guild-usable bitmask (bit n = guild n;
-  4095 = all); w23 index into item types.
-- **Monster**: w2 id (0-400); w7 level found (1-16; lairs on each floor hold monsters of
-  that level, so near certain); w0, w1, w3 large varied values (likely attack, defense,
-  hit points); w4 1-4.
-- **Spell**: w0 id; w1 0-17; w2 level (probable); w3 0-145, maybe SP cost.
+  w33-68 eighteen f32 spell rates, one per spell class: a spell is taught at guild level
+  `spell level x rate` (Paladin heal rate 3: Minor Heal at 6, Heal at 12, as the help's
+  lists); w69-108 eighteen more f32, unknown; w109 race mask (bit n = race n); w111-118
+  unknown.
+- **Item**: w0 id; w1-2 attack/defense (negative on cursed items); w3-4 u32 price; w5
+  level found (0 = sold in the store only); w6 probably rarity; w9 weapon power (the
+  bracketed number in item info); w11 the 1-based number of the spell it casts
+  (potions, scrolls, rods); w13 charges (potions 3, scrolls 4, rods 25); w15 guild-usable
+  bitmask (bit n = guild n; 4095 = all); w18-19 f32 damage multiplier; w23 index into
+  item types; w26-31 stats required (probable).
+- **Monster**: w0 attack; w1 defense; w2 id (0-400); w3 hit points; w5 portrait (1-based
+  tile of MG11's `MONS` sheet, 60x60, ten to a row); w7 level found (1-16); w8-19
+  resistances (race order); w20 casting level and w24 the spell classes it casts (mages,
+  priests); w22 special attacks (bits: 1 poison, 2 disease, 4 paralysis, 8 fire breath,
+  16 cold breath, 32 acid, 64 electric breath, 128 drain, 256 stoning, 512 aging
+  (probable), 1024 critical hits, 2048 steal gold, 4096 destroy items, 8192 steal
+  items; checked against the help's examples); w26 % chance a group is peaceful
+  (Clean-Ups 66, "usually docile"); w27-29 % box, chest and item chances (probable);
+  w32 group size; w45 monster type (rooms spawn by it).
+- **Spell**: w0 id; w1 class (the help's 18: fire, cold, electric, mind, damage,
+  element, kill, charm, bind, heal, movement, banish, dispel, resistant, visual,
+  magical, location, protection); w2 spell level; w3 SP cost; w6 monsters and w7 groups
+  affected; w8-9 damage or healing base and per-level (the help's "15/5"); w10 effect
+  (100 mind or death effect, 75-86 the monster type a charm, banish or dispel works on
+  (type = code - 75), 200+ a mass spell, 50-60 a resistance in race order, other values
+  cures, travel and location effects); w11-16 stats required (Ethereal Portal 14/18/18/
+  -/-/18, as the help); w18 resistance slot that weakens it.
+
+## Pictures (MG11.DLL and MORDOR.EXE)
+
+MG11.DLL keeps 8-bit BMP files as resources of type "MORDOR": `MAZE` (50 pre-drawn
+50x100 corridor views), `MONS` (the portraits, RLE8-compressed), `DOOR`, `WATR`, `QSND`,
+`FOG`, `MISC` (combat icons), `PICS` (toolbar icons), `BLNK` and `ASMO`. MORDOR.EXE holds
+the city buildings (120x87, in the order Dungeon, Guilds, Seer, Morgue, Bank, Store,
+Confinement), the Exit sign, the main menu panel (600x400) and two portraits, as VB3
+form pictures; the importer writes only these out.
 
 ## Characters (MDATA4)
 

@@ -108,8 +108,12 @@ pub struct Guild {
     /// STR, INT, WIS, CON, CHA, DEX needed to join.
     pub stat_req: [i16; 6],
     pub alignments: Alignments,
-    /// Fighting ability as the refcard shows it (Warrior 12, Nomad 7), /10.
-    pub fighting: f32,
+    /// Thieving, backstab, critical hit, multiple swings, fighting and perception, as
+    /// the refcard shows them /10 (Warrior fighting 1.2, Nomad 0.7).
+    pub abilities: [f32; 6],
+    /// Per spell class (see [`Spell::class`]): guild levels per spell level, 0 = not
+    /// taught. A spell is learned at guild level `spell.level x rate`.
+    pub spell_rates: [f32; 18],
     /// Bit n set: race n (in `GameData::races` order) may join.
     pub races: u16,
     pub rest: Vec<u8>,
@@ -144,8 +148,25 @@ pub struct Monster {
     pub attack: i16,
     pub defense: i16,
     pub hp: i16,
-    /// Probable: how many can appear together (1-4).
+    /// Resistance percentages, in the race order (fire, cold, electric, mind, disease,
+    /// poison, magic, stone, paralysis, drain, acid, unused).
+    pub resist: [i16; 12],
+    /// How many can appear together.
     pub group: i16,
+    /// Special attacks, bits: 1 poison, 2 disease, 4 paralysis, 8 fire breath, 16 cold
+    /// breath, 32 acid, 64 electric breath, 128 drain, 256 stoning, 512 aging
+    /// (probable), 1024 critical hits, 2048 steal gold, 4096 destroy items, 8192 steal
+    /// items. Checked against the help's examples (spiders poison, gorgons stone...).
+    pub specials: u16,
+    /// Spell-casting level and the spell classes it casts (bit n = class n); 0 = none.
+    pub magic_level: i16,
+    pub spells: u16,
+    /// Percent chance a group is peaceful (Clean-Ups 66, "usually docile").
+    pub peaceful: i16,
+    /// Percent chances of carrying a box, a chest, and an item.
+    pub box_chance: i16,
+    pub chest_chance: i16,
+    pub item_chance: i16,
     /// 1-based tile in the `MONS` bitmap of MG11.DLL (60x60, ten per row).
     pub picture: i16,
     /// Dungeon level it appears on (lairs on each floor hold monsters of that level).
@@ -155,12 +176,31 @@ pub struct Monster {
     pub rest: Vec<u8>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Spell {
     pub name: String,
     pub id: i16,
-    /// Probable: guild level needed to learn it.
+    /// The help's spell classes: 0 fire, 1 cold, 2 electric, 3 mind, 4 damage, 5 element,
+    /// 6 kill, 7 charm, 8 bind, 9 heal, 10 movement, 11 banish, 12 dispel, 13 resistant,
+    /// 14 visual, 15 magical, 16 location, 17 protection.
+    pub class: i16,
+    /// Spell level; a guild teaches it at `level x` the guild's rate for the class.
     pub level: i16,
+    pub sp: i16,
+    /// Monsters affected, and groups affected.
+    pub targets: i16,
+    pub groups: i16,
+    /// Damage or healing: `base/per_level` in the help's spell info.
+    pub base: i16,
+    pub per_level: i16,
+    /// What it does beyond damage: 100 a mind or death effect, 75-86 the monster type a
+    /// charm, banish or dispel works on, 200+ a mass (whole party) spell, other values
+    /// the specific effect (cures, travel, resistances; see `magic.rs`).
+    pub effect: i16,
+    /// STR, INT, WIS, CON, CHA, DEX needed to cast.
+    pub stat_req: [i16; 6],
+    /// Resistance slot that weakens it (race/monster order), or -1.
+    pub resist: i16,
     pub rest: Vec<u8>,
 }
 
@@ -334,11 +374,13 @@ impl GameData {
             let stat_req = c.words();
             c.skip(1);
             let alignments = c.i16();
-            c.skip(9);
-            let fighting = c.f32();
-            c.skip(84);
+            c.skip(1);
+            let abilities = std::array::from_fn(|_| c.f32());
+            c.skip(6);
+            let spell_rates = std::array::from_fn(|_| c.f32());
+            c.skip(40);
             let races = c.i16() as u16;
-            Guild { name, hp_per_level, hp_cap, hp_after, xp_factor, stat_req, alignments, fighting, races, rest: c.rest(start) }
+            Guild { name, hp_per_level, hp_cap, hp_after, xp_factor, stat_req, alignments, abilities, spell_rates, races, rest: c.rest(start) }
         }).collect();
         let mut names = |n: usize| section(n).map(|i| t.rec(i).str()).collect::<Vec<_>>();
         let (item_types, item_classes, monster_types, monster_families) =
@@ -368,27 +410,54 @@ impl GameData {
             let mut c = mo.rec(i);
             let name = c.str();
             let start = c.p;
-            let [attack, defense, id, hp, group, picture] = c.words();
+            let [attack, defense, id, hp, _, picture] = c.words();
             c.skip(1);
             let level = c.i16();
-            c.skip(37);
-            Monster { name, id, attack, defense, hp, group, picture, level, kind: c.i16(), rest: c.rest(start) }
+            let resist = c.words();
+            let [magic_level, _, specials, _, spells, _, peaceful, box_chance, chest_chance, item_chance, _, _, group] = c.words();
+            c.skip(12);
+            let kind = c.i16();
+            Monster {
+                name,
+                id,
+                attack,
+                defense,
+                hp,
+                resist,
+                group: group.max(1),
+                specials: specials as u16,
+                magic_level,
+                spells: spells as u16,
+                peaceful,
+                box_chance,
+                chest_chance,
+                item_chance,
+                picture,
+                level,
+                kind,
+                rest: c.rest(start),
+            }
         }).collect();
         let sp = Mdr::new(m2, 75)?;
         let spells = rows(&sp, 1, 2).into_iter().map(|i| {
             let mut c = sp.rec(i);
             let name = c.str();
             let start = c.p;
-            let id = c.i16();
+            let [id, class, level, sp] = c.words();
+            c.skip(2);
+            let [targets, groups, base, per_level, effect] = c.words();
+            let stat_req = c.words();
             c.skip(1);
-            Spell { name, id, level: c.i16(), rest: c.rest(start) }
+            Spell { name, id, class, level, sp, targets, groups, base, per_level, effect, stat_req, resist: c.i16(), rest: c.rest(start) }
         }).collect();
         // MDATA11 has no version: record 0 is the floor count, then 1-based
         // record numbers of each floor's header.
         let du = Mdr { b: m11, size: 20 };
         let floors = (1..=du.count(0)).map(|i| Floor::parse(&du, du.count(i).saturating_sub(1))).collect();
 
-        Ok(Self { races, guilds, item_types, item_classes, monster_types, monster_families, items, monsters, spells, floors })
+        let mut d = Self { races, guilds, item_types, item_classes, monster_types, monster_families, items, monsters, spells, floors };
+        crate::magic::add_remake_entries(&mut d);
+        Ok(d)
     }
 }
 
@@ -455,17 +524,23 @@ mod tests {
         assert_eq!((paladin.alignments, paladin.stat_req), (1, [14, 9, 9, 10, 16, 15]));
         assert_eq!(d.guilds[0].xp_factor, 8.0);
 
-        assert_eq!(d.items.len(), 366);
+        assert_eq!(d.items.len(), 366 + 2);
         let dagger = d.items.iter().find(|i| i.name == "Bronze Dagger").unwrap();
         assert_eq!((dagger.price, dagger.guilds, d.item_types[dagger.kind as usize].as_str()), (250, 4095, "Dagger"));
         let mut ids: Vec<_> = d.items.iter().map(|i| i.id).collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), 366);
+        assert_eq!(ids.len(), 366 + 2);
 
         assert_eq!((dagger.attack, dagger.defense, dagger.level, dagger.power, dagger.damage_mult), (3, 0, 0, 1, 1.0));
         let warrior = &d.guilds[1];
-        assert_eq!((warrior.hp_per_level, warrior.hp_cap, warrior.hp_after, warrior.fighting), (6, 28, 2, 1.2));
+        assert_eq!((warrior.hp_per_level, warrior.hp_cap, warrior.hp_after, warrior.abilities[4]), (6, 28, 2, 1.2));
+        // Paladins learn Minor Heal (heal class, spell level 2) at guild level 6.
+        let (paladin, minor) = (&d.guilds[2], d.spells.iter().find(|s| s.name == "Minor Heal").unwrap());
+        assert_eq!((minor.class, minor.level, minor.base, minor.per_level), (9, 2, 5, 2));
+        assert_eq!(f32::from(minor.level) * paladin.spell_rates[minor.class as usize], 6.0);
+        let portal = d.spells.iter().find(|s| s.name == "Ethereal Portal").unwrap();
+        assert_eq!(portal.stat_req, [14, 18, 18, 0, 0, 18]);
         // Giants (race 2) may join Nomad and Warrior; nobody is barred from Nomad.
         assert!(d.guilds[0].races == 511 && warrior.races & 4 != 0);
 
@@ -474,7 +549,7 @@ mod tests {
         assert_eq!((troll.attack, troll.defense, troll.hp, troll.level), (86, 69, 35, 3));
         let kobold = d.monsters.iter().find(|m| m.name == "Kobold").unwrap();
         assert_eq!((kobold.picture, d.monster_types[kobold.kind as usize].as_str()), (2, d.monster_types[0].as_str()));
-        assert_eq!(d.spells.len(), 105);
+        assert_eq!(d.spells.len(), 105 + 1);
         assert_eq!((d.spells[0].name.as_str(), d.spells[104].name.as_str()), ("Charm of Opening", "Shock Lance"));
     }
 }

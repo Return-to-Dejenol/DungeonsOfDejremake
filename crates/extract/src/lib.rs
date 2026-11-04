@@ -178,17 +178,58 @@ pub fn mg_bitmap(dll: &[u8], name: &str) -> Option<(usize, usize, Vec<u8>)> {
     None
 }
 
-/// Decodes an uncompressed 8-bit, bottom-up BMP file.
+/// Decodes an 8-bit BMP file, plain or RLE8-compressed (the monster sheet is).
 fn bmp8(b: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
     let i32_at = |o: usize| Some(i32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?));
-    let (off, w, h) = (i32_at(10)? as usize, i32_at(18)? as usize, i32_at(22)?);
+    let (off, w, h, rle) = (i32_at(10)? as usize, i32_at(18)? as usize, i32_at(22)?, i32_at(30)? == 1);
     let pal = 14 + i32_at(14)? as usize;
-    let (rows, stride) = (h.unsigned_abs() as usize, (w + 3) & !3);
+    let rows = h.unsigned_abs() as usize;
+    // Palette indexes, stored rows first (bottom-up unless the height is negative).
+    let mut idx = vec![0u8; w * rows];
+    if rle {
+        let (mut x, mut y, mut p) = (0, 0, off);
+        while p + 1 < b.len() && y < rows {
+            let (n, v) = (usize::from(b[p]), b[p + 1]);
+            p += 2;
+            match (n, v) {
+                (0, 0) => (x, y) = (0, y + 1),
+                (0, 1) => break,
+                (0, 2) => {
+                    x += usize::from(*b.get(p)?);
+                    y += usize::from(*b.get(p + 1)?);
+                    p += 2;
+                }
+                (0, k) => {
+                    let k = usize::from(k);
+                    for i in 0..k {
+                        if x < w {
+                            idx[y * w + x] = *b.get(p + i)?;
+                        }
+                        x += 1;
+                    }
+                    p += k + (k & 1);
+                }
+                (n, v) => {
+                    for _ in 0..n {
+                        if x < w {
+                            idx[y * w + x] = v;
+                        }
+                        x += 1;
+                    }
+                }
+            }
+        }
+    } else {
+        let stride = (w + 3) & !3;
+        for y in 0..rows {
+            idx[y * w..(y + 1) * w].copy_from_slice(b.get(off + y * stride..off + y * stride + w)?);
+        }
+    }
     let mut out = Vec::with_capacity(w * rows * 4);
     for y in 0..rows {
         let row = if h > 0 { rows - 1 - y } else { y };
-        for x in 0..w {
-            let c = pal + 4 * usize::from(*b.get(off + row * stride + x)?);
+        for &i in &idx[row * w..(row + 1) * w] {
+            let c = pal + 4 * usize::from(i);
             out.extend_from_slice(&[*b.get(c + 2)?, *b.get(c + 1)?, *b.get(c)?, 255]);
         }
     }
@@ -232,5 +273,8 @@ mod tests {
         import(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/MORDOR11.ZIP"), &out).unwrap();
         let (w, h, px) = mg_bitmap(&fs::read(out.join("MG11.DLL")).unwrap(), "MONS").unwrap();
         assert_eq!((w, h, px.len()), (600, 540, 600 * 540 * 4));
+        // The sheet is RLE8-compressed; these match an independent decoder.
+        let at = |x: usize, y: usize| &px[(y * w + x) * 4..(y * w + x) * 4 + 3];
+        assert_eq!((at(5, 87), at(5, 415), at(42, 169), at(90, 30)), (&[108, 60, 12][..], &[12, 156, 252][..], &[108, 156, 204][..], &[120, 120, 120][..]));
     }
 }

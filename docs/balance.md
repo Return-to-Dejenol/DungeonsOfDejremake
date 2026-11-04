@@ -148,7 +148,8 @@ changes floor, going back to town included.
 Where the original's rule isn't known, these are stand-ins close to its spirit. Each
 can be changed in `patches/modern.toml` or here.
 
-- **Combat start values**: hit chance 50% ± (attack − defense)%, clamped to 5-95%.
+- **Combat start values**: hit chance attack / (attack + defense), clamped to 5-95%
+  (a ratio, since the original's A/D runs from about 6 on floor 1 to 900 on floor 15).
   Weapon damage is 1 to power × 6 plus (STR − 10) / 2; bare hands count as power 2.
   Monster damage is 1 to level × 2 + attack / 20. A kill is worth
   hp × level × 1.5 + attack / 2 XP. Gold is level × 5-25 per monster, and a cleared
@@ -165,3 +166,67 @@ can be changed in `patches/modern.toml` or here.
   half price.
 - **Dungeon view**: the original's stone, floor and door textures on a 3D view up to
   four squares deep, instead of its 50 pre-drawn frames, so it scales to any window.
+- **Party**: you plus up to three saved characters as allies, as upstream; Good and Evil
+  won't travel together. Kill XP is split evenly, then each member gets the catch-up
+  bonus for levels behind the party's best; gold is split evenly. Dead members are
+  carried and reach the morgue when the party returns. If the character you control
+  dies, control passes to the next living member.
+- **Party AI**: each character has macros (ordered "when ... do ..." rules, first match
+  that can be done wins) with Fighter, Healer, Caster and Thief starting sets, and a
+  default decision tree behind them: leave peaceful monsters alone, raise, mass-heal,
+  heal, cure, drink a potion when low, group spells on groups, a spell on a foe that
+  would take three or more sword rounds, defend when nearly dead, else gang up on the
+  weakest foe.
+- **Spells**: the guild rates from MDATA1, narrowed to the four caster schools (location
+  and Charm of Opening kept for all). Spell power is the best guild's level / rate.
+  Damage is base + 0 to per-level x power (INT +2%/point above 15); healing likewise
+  (WIS +2%). Kill spells slay 25% + 4% per power over the monster's level, less its
+  magic resistance; mind spells put a foe out for 2-4 rounds. Banish and dispel work on
+  their monster type only, 60% + 5% per power over its level. Raise Dead brings a member
+  back with 1 hit (Resurrect: full) 75% + 2%/power of the time. Sorcerers ignore half a
+  monster's resistance with elemental spells; Wizards regain a tenth of their SP for a
+  kill with a Wizard spell.
+- **Spell points**: (INT + WIS) x (5 + 2.5 x (best guild level - 1)) (the original's
+  level 1 gives 5 x (INT + WIS)); 0.5% of max back per step; full in the city.
+- **Healer passive**: with a living Healer in the party, everyone regains 1% of max HP
+  (at least 1) per step. Healer's fighting ability is Villain's (0.8) and it gets 3 HP
+  a level up to its cap.
+- **Nomad's share in practice**: other guilds' ability ratings add 20% of Nomad's
+  rating (counting Nomad levels up to the best other guild's level), and a level in
+  another guild gains 1 extra hit when Nomad is already at that level. Pure Nomads rate
+  at 70%.
+- **Monster specials**: each special lands on one hit in four, against the matching
+  resistance: the race's %, +50 for a resist spell, +3% per CON (WIS for monster spells)
+  point above 12. Poison and disease tick per step; paralysis lasts a few rounds;
+  stoning holds until Restore Flesh or the morgue. Breath (one round in five) hits
+  everyone for level x 2-4. Thieves steal 10-30% of a purse, or a loose item, and flee.
+  Monster casters spend one round in three on a spell for casting level x 1-3.
+- **Peaceful groups**: the monster's peace chance, +3% per CHA point above 10 of the
+  character you control; you can walk on through. Attacking, casting at them or opening
+  their chest makes them hostile; allies leave them alone.
+- **Chests and boxes**: lairs always have a chest; elsewhere a chest at the monster's
+  chest % / 3 and a box at its box % / 2. 30% are untrapped; the rest carry one of the
+  help's ten traps. The best perceiver guesses the trap (right 35% + skill); the best
+  disarmer tries first: 30% + thieving x 4% + 2% per DEX above 12 - 3% per monster
+  level. Chests hold level x 60-240 gold and 1-2 items, boxes level x 20-80 and maybe one.
+  Magic locks follow the floor table.
+- **Items**: found items are known 2% per INT + WIS point (else "Unidentified Potion"
+  and so on); the store identifies for a tenth of the price and takes cursed items off
+  you for half. Stat potions and tomes raise a stat by one, to the race max + 5.
+  Experience potions cost 7,500 (Greater: drop only, 30,000 value); a found item is an
+  experience potion 4% of the time (Greater 30% of those, floor 5+).
+- **Charm of Experience**: 60 SP, needs INT and WIS 14.
+- **Companions**: up to four. Charms take 35% + 5% per power over the monster's level,
+  times the binding strength (Mage members 1.5x; +4% per CHA point above 10). A bind
+  lasts about 100 steps x strength; badly hurt companions may wander off. Holding &
+  Confinement sells tame monsters of floors 1-4 at 100 x level² x hits, buys at a third,
+  and rebinds for a tenth.
+- **City**: the bank pays fees when the purse runs short (as the original). The Seer
+  charges 200 to locate a party member or a monster's lair. Every fifth level a guild
+  may set a quest (half the time): slay a monster from floor level/5 before the next
+  level. Rescuers fail 3% per floor and keep the fee; raises fail 5% plus 1% per year
+  past half the race's lifespan, aging the body a year. Resting in the city ages you a day.
+- **Squares**: water may hurt members wearing 12+ defense of gear (a 1 in 4 chance per
+  step); quicksand hurts and may swallow a loose item; extinguish squares strip spell
+  effects; anti-magic blocks casting; fog hides the view. Random teleporters keep the
+  party together.

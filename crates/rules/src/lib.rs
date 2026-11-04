@@ -3,8 +3,13 @@
 //! Original formulas come from the imported tables; [`Tuning`] is the remake's
 //! rebalance layer on top of them, loaded from `patches/*.toml`.
 
+pub mod ai;
+pub mod combat;
 pub mod game;
+pub mod magic;
 pub mod mdr;
+pub mod monsters;
+pub mod treasure;
 
 use serde::Deserialize;
 
@@ -33,7 +38,7 @@ pub struct Xp {
 #[derive(Debug, Deserialize)]
 pub struct Combat {
     pub round_seconds: f64,
-    pub hit_spread: f64,
+    pub hit_bias: f64,
     pub ad_per_fighting: f64,
     pub weapon_die: u32,
     pub monster_die: u32,

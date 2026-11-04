@@ -28,8 +28,8 @@ sp_potion_vs_heal = 0.85
 [combat]
 # Seconds per combat round; the player can pause.
 round_seconds = 2.0
-# Chance to hit = 0.5 + (attack - defense) / hit_spread, clamped to 5-95%.
-hit_spread = 100.0
+# Chance to hit = A / (A + defense) with A = attack x hit_bias, clamped to 5-95%.
+hit_bias = 1.0
 # Attack and defense a guild level adds, per point of the guild's fighting ability
 # (Warrior 1.2, Nomad 0.7, casters 0.5).
 ad_per_fighting = 3.0

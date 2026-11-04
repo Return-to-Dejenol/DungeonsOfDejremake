@@ -1,35 +1,25 @@
-use std::{
-    fs,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::{fs, path::PathBuf, time::Instant};
 
 use ddj_rules::{
     Tuning,
-    game::{self, Action, Character, Game, Life, Side},
-    mdr::{GameData, square},
+    game::{self, Character, Game, Life},
+    magic,
+    mdr::GameData,
 };
-use eframe::egui::{self, Color32, Key, Rect, Stroke, pos2, vec2};
+use eframe::egui::{self, Color32, Key, Rect, pos2, vec2};
 
 mod art;
+mod dungeon;
+mod party;
+mod town;
 use art::Art;
 
 enum Screen {
     Import,
     Menu,
     Create(Draft),
-    Town(Tab),
+    Town(town::Tab),
     Dungeon,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Tab {
-    Guilds,
-    Store,
-    Morgue,
-    Bank,
-    Seer,
-    Confinement,
 }
 
 struct Draft {
@@ -53,6 +43,13 @@ struct App {
     paused: bool,
     in_fight: bool,
     last_round: Instant,
+    /// The party member shown on the sheet and in the item and spell lists.
+    sel: usize,
+    /// The party member whose macros are open in the editor.
+    editing: Option<usize>,
+    rule: party::RuleDraft,
+    seer_query: String,
+    amount: String,
 }
 
 fn saves() -> PathBuf {
@@ -68,6 +65,10 @@ fn load_tuning() -> Result<Tuning, String> {
     paths.sort();
     let texts: Vec<String> = paths.iter().filter_map(|p| fs::read_to_string(p).ok()).collect();
     Tuning::load(&texts.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|e| e.to_string())
+}
+
+fn load(name: &str) -> std::io::Result<Character> {
+    Character::load(&saves().join(format!("{name}.json")))
 }
 
 impl App {
@@ -86,15 +87,21 @@ impl App {
             paused: false,
             in_fight: false,
             last_round: Instant::now(),
+            sel: 0,
+            editing: None,
+            rule: party::RuleDraft::default(),
+            seer_query: String::new(),
+            amount: String::new(),
         }
     }
 
-    /// Saves after every change; the file is small.
+    /// Saves every party member after each change; the files are small.
     fn persist(&mut self) {
-        if let Some(g) = &self.game
-            && let Err(e) = g.ch.save(&saves())
-        {
-            self.status = format!("Could not save: {e}");
+        let Some(g) = &self.game else { return };
+        for m in &g.party {
+            if let Err(e) = m.save(&saves()) {
+                self.status = format!("Could not save {}: {e}", m.name);
+            }
         }
     }
 
@@ -136,23 +143,47 @@ impl App {
             ui.label(egui::RichText::new("The Depths of Dejenol").italics().color(Color32::from_rgb(128, 0, 0)));
             ui.label(format!("{} dungeon levels imported", d.floors.len()));
             ui.add_space(8.0);
-        if ui.button("Create a character").clicked() {
-            let stats = game::start_stats(d, 0);
-            self.screen = Screen::Create(Draft { name: String::new(), race: 0, female: false, alignment: 1, stats });
-        }
-        ui.add_space(8.0);
-        for name in game::saved(&saves()) {
-            if ui.button(format!("Play {name}")).clicked() {
-                match Character::load(&saves().join(format!("{name}.json"))) {
-                    Ok(ch) => {
-                        self.game = Some(Game::new(ch));
-                        self.screen = Screen::Town(Tab::Guilds);
+            if ui.button("Create a character").clicked() {
+                let stats = game::start_stats(d, 0);
+                self.screen = Screen::Create(Draft { name: String::new(), race: 0, female: false, alignment: 1, stats });
+            }
+            ui.add_space(8.0);
+            egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                for name in game::saved(&saves()) {
+                    if ui.button(format!("Play {name}")).clicked() {
+                        match load(&name) {
+                            Ok(ch) => self.start(ch, d),
+                            Err(e) => self.status = format!("Could not load {name}: {e}"),
+                        }
                     }
-                    Err(e) => self.status = format!("Could not load {name}: {e}"),
                 }
+            });
+        });
+    }
+
+    /// Starts play with a character, bringing its allies along when they can come.
+    fn start(&mut self, ch: Character, d: &GameData) {
+        let allies = ch.allies.clone();
+        let mut g = Game::new(ch);
+        for name in allies {
+            if let Ok(a) = load(&name)
+                && let Err(e) = g.add_ally(a)
+            {
+                self.status = e;
             }
         }
-        });
+        g.party[0].allies = g.party[1..].iter().map(|m| m.name.clone()).collect();
+        if let Ok(t) = load_tuning() {
+            // Loading a game starts everyone in the city, rested (the dungeon repopulates).
+            for m in g.party.iter_mut().filter(|m| m.alive()) {
+                m.pos = game::Pos::default();
+                m.hp = m.max_hp;
+                m.sp = m.max_sp(d, &t);
+            }
+        }
+        self.game = Some(g);
+        self.sel = 0;
+        self.screen = Screen::Town(town::Tab::Guilds);
     }
 
     fn create(&mut self, ui: &mut egui::Ui, d: &GameData) {
@@ -170,6 +201,9 @@ impl App {
         });
         if dr.race != race {
             dr.stats = game::start_stats(d, dr.race);
+            if d.races[dr.race].alignments & (1 << dr.alignment) == 0 {
+                dr.alignment = (0..3).find(|a| d.races[dr.race].alignments & (1 << a) != 0).unwrap_or(1);
+            }
         }
         ui.horizontal(|ui| {
             ui.selectable_value(&mut dr.female, false, "Male");
@@ -216,8 +250,8 @@ impl App {
         } else if create {
             match Character::new(d, &dr.name, dr.race, dr.female, dr.alignment, dr.stats) {
                 Ok(ch) => {
-                    self.game = Some(Game::new(ch));
-                    self.screen = Screen::Town(Tab::Store);
+                    self.start(ch, d);
+                    self.screen = Screen::Town(town::Tab::Store);
                     self.status = "Welcome to Mordor! The store has the standard starting kit.".into();
                     self.persist();
                 }
@@ -226,14 +260,13 @@ impl App {
         }
     }
 
-    fn sheet(ui: &mut egui::Ui, g: &Game, d: &GameData, t: &Tuning) {
-        let c = &g.ch;
+    fn sheet(ui: &mut egui::Ui, c: &Character, d: &GameData, t: &Tuning) {
         ui.heading(&c.name);
         let sex = if c.female { "Female" } else { "Male" };
         let align = ["Good", "Neutral", "Evil"][c.alignment as usize];
-        ui.label(format!("{sex} {} ({align})", d.races[c.race].name));
+        ui.label(format!("{sex} {} ({align}), age {}", d.races[c.race].name, c.age()));
         ui.label(format!("{} level {}", d.guilds[c.guild].name, c.level()));
-        let (a, df) = c.att_def(d);
+        let (a, df) = c.att_def(d, t);
         egui::Grid::new("sheet").show(ui, |ui| {
             let row = |ui: &mut egui::Ui, k: &str, v: String| {
                 ui.label(k);
@@ -241,280 +274,142 @@ impl App {
                 ui.end_row();
             };
             row(ui, "Hits", format!("{}/{}", c.hp, c.max_hp));
+            row(ui, "Spells", format!("{}/{}", c.sp, c.max_sp(d, t)));
             row(ui, "Att/Def", format!("{a}/{df}"));
             row(ui, "Experience", format!("{}/{}", c.xp[c.guild], c.xp_needed(d, t)));
             row(ui, "Gold", c.gold.to_string());
+            row(ui, "Bank", c.bank.to_string());
             row(ui, "Kills", c.kills.to_string());
             for i in 0..6 {
                 row(ui, game::STATS[i], c.stats[i].to_string());
             }
         });
+        let mut notes = Vec::new();
+        let st = &c.status;
+        for (on, s) in [(st.poison > 0, "Poisoned"), (st.disease > 0, "Diseased"), (st.paralysis > 0, "Paralysed"), (st.stoned, "Stoned")] {
+            if on {
+                notes.push(s.to_string());
+            }
+        }
+        if c.buffs.xp_mult > 1.0 {
+            notes.push(format!("Learning {}x", c.buffs.xp_mult));
+        }
+        if c.buffs.levitate {
+            notes.push("Levitating".into());
+        }
+        if c.buffs.protection > 0 {
+            notes.push(format!("Protected +{}", c.buffs.protection));
+        }
+        if let Some(m) = c.quest {
+            notes.push(format!("Quest: slay a {}", d.monsters[m].name));
+        }
         match c.life {
-            Life::Dead(p) => ui.colored_label(Color32::RED, format!("Dead on level {} at {},{}", p.floor, p.x + 1, p.y + 1)),
-            Life::InMorgue => ui.colored_label(Color32::RED, "Dead, in the morgue"),
-            Life::Alive => ui.label(""),
-        };
+            Life::Dead(p) => notes.push(format!("Dead on level {} at {},{}", p.floor, p.x + 1, p.y + 1)),
+            Life::InMorgue => notes.push("Dead, in the morgue".into()),
+            Life::Alive => {}
+        }
+        for n in notes {
+            ui.colored_label(Color32::from_rgb(128, 0, 0), n);
+        }
+        ui.separator();
+        egui::CollapsingHeader::new("Guild abilities").show(ui, |ui| {
+            for (i, name) in game::ABILITIES.iter().enumerate() {
+                ui.label(format!("{name}: {:.0}", c.ability(d, i)));
+            }
+        });
     }
 
-    /// Items with Equip buttons, and Sell when in the store.
-    fn inventory(&mut self, ui: &mut egui::Ui, d: &GameData, store: bool) {
+    /// The selected member's items: Equip, Use, and in the store Sell, Identify and
+    /// Uncurse.
+    fn inventory(&mut self, ui: &mut egui::Ui, d: &GameData, t: &Tuning, store: bool) {
         let Some(g) = self.game.as_mut() else { return };
-        ui.label(format!("Items ({}/40)", g.ch.items.len()));
+        let sel = self.sel.min(g.party.len() - 1);
+        let c = &g.party[sel];
+        ui.label(format!("{}'s items ({}/40)", c.name, c.items.len()));
+        #[derive(Clone, Copy)]
+        enum Do {
+            Equip,
+            Use,
+            Sell,
+            Identify,
+            Uncurse,
+        }
         let mut act = None;
-        egui::ScrollArea::vertical().id_salt("items").max_height(260.0).show(ui, |ui| {
-            for (i, h) in g.ch.items.iter().enumerate() {
+        egui::ScrollArea::vertical().id_salt("items").max_height(240.0).show(ui, |ui| {
+            for (i, h) in c.items.iter().enumerate() {
                 let it = &d.items[h.item];
                 ui.horizontal(|ui| {
-                    if ui.button(if h.equipped { "Unequip" } else { "Equip" }).clicked() {
-                        act = Some((i, false));
+                    if magic::consumable(d, h.item) {
+                        if ui.button("Use").clicked() {
+                            act = Some((i, Do::Use));
+                        }
+                    } else if ui.button(if h.equipped { "Unequip" } else { "Equip" }).clicked() {
+                        act = Some((i, Do::Equip));
                     }
-                    if store && ui.button(format!("Sell {}", it.price / 2)).clicked() {
-                        act = Some((i, true));
+                    if store {
+                        if ui.button(format!("Sell {}", c.sell_price(d, h.item))).clicked() {
+                            act = Some((i, Do::Sell));
+                        }
+                        if !h.known && ui.button(format!("ID {}", Character::identify_cost(d, h.item))).clicked() {
+                            act = Some((i, Do::Identify));
+                        }
+                        if h.equipped && magic::cursed(d, h.item, c.alignment) && ui.button("Uncurse").clicked() {
+                            act = Some((i, Do::Uncurse));
+                        }
                     }
-                    ui.label(format!("{}{} [{}/{}]", if h.equipped { "* " } else { "" }, it.name, it.attack, it.defense));
+                    let ad = if h.known { format!(" [{}/{}]", it.attack, it.defense) } else { String::new() };
+                    ui.label(format!("{}{}{ad}", if h.equipped { "* " } else { "" }, magic::item_name(d, h)));
                 });
             }
         });
-        match act {
-            Some((i, true)) => self.status = g.ch.sell(d, i),
-            Some((i, false)) => self.status = g.ch.toggle_equip(d, i).err().unwrap_or_default(),
-            None => return,
-        }
+        let Some((i, what)) = act else { return };
+        let c = &mut g.party[sel];
+        self.status = match what {
+            Do::Equip => c.toggle_equip(d, i).err().unwrap_or_default(),
+            Do::Sell => c.sell(d, i),
+            Do::Identify => c.identify(d, i).unwrap_or_else(|e| e),
+            Do::Uncurse => c.uncurse(d, i).unwrap_or_else(|e| e),
+            Do::Use => {
+                let item = c.items[i].item;
+                magic::use_item(g, d, t, sel, item);
+                String::new()
+            }
+        };
         self.persist();
     }
 
-    fn town(&mut self, ui: &mut egui::Ui, d: &GameData, t: &Tuning, mut tab: Tab) {
+    /// The selected member's spells, castable outside combat (heals, cures, travel);
+    /// in combat, choosing one sets the controlled character's order.
+    fn spells(&mut self, ui: &mut egui::Ui, d: &GameData, t: &Tuning) {
         let Some(g) = self.game.as_mut() else { return };
-        if let Some(a) = &self.art {
-            art::tile(ui.painter(), &a.stucco, ui.max_rect());
-        }
-        // The original's eight buildings, pictures where imported.
-        let places = [("General Store", Some(Tab::Store)), ("Morgue", Some(Tab::Morgue)), ("Guilds", Some(Tab::Guilds)), ("Dungeon", None), ("Confinement", Some(Tab::Confinement)), ("Seer", Some(Tab::Seer)), ("Bank", Some(Tab::Bank)), ("Exit", None)];
-        let mut picked = None;
-        egui::Grid::new("city").spacing(vec2(8.0, 4.0)).show(ui, |ui| {
-            for (i, (label, _)) in places.iter().enumerate() {
-                let pic = self.art.as_ref().and_then(|a| a.city.iter().find(|(l, _)| l == label));
-                let clicked = ui
-                    .vertical_centered(|ui| {
-                        let img = pic.map(|(_, t)| ui.add(egui::Button::image(egui::Image::new(t).fit_to_exact_size(vec2(120.0, if *label == "Exit" { 42.0 } else { 87.0 })))).clicked());
-                        let text = ui.button(egui::RichText::new(*label).strong()).clicked();
-                        img.unwrap_or(false) || text
-                    })
-                    .inner;
-                if clicked {
-                    picked = Some(i);
-                }
-                if i == 3 {
-                    ui.end_row();
-                }
+        let sel = self.sel.min(g.party.len() - 1);
+        let c = &g.party[sel];
+        let known = magic::known(c, d);
+        ui.label(format!("{}'s spells ({} SP)", c.name, c.sp));
+        let mut cast = None;
+        egui::ScrollArea::vertical().id_salt("spells").max_height(240.0).show(ui, |ui| {
+            for s in known {
+                let sp = &d.spells[s];
+                let ok = magic::castable(c, d, t, s);
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(ok, egui::Button::new("Cast")).clicked() {
+                        cast = Some(s);
+                    }
+                    ui.label(format!("{} ({} SP, {}/{})", sp.name, sp.sp, sp.base, sp.per_level));
+                });
             }
         });
-        // The original's mnemonics: General Store, Morgue, Guilds, Dungeon, Confinement, sEer, Bank, eXit.
-        let keys = [Key::S, Key::M, Key::G, Key::D, Key::C, Key::E, Key::B, Key::X];
-        if let Some(i) = ui.input(|inp| keys.iter().position(|&k| inp.key_pressed(k))) {
-            picked = Some(i);
-        }
-        match picked.map(|i| places[i]) {
-            Some((_, Some(t))) => tab = t,
-            Some(("Dungeon", _)) => match g.enter_dungeon(d) {
-                Ok(()) => self.screen = Screen::Dungeon,
-                Err(e) => self.status = e,
-            },
-            Some(("Exit", _)) => self.screen = Screen::Menu,
-            _ => {}
-        }
-        if let Screen::Town(_) = self.screen {
-            self.screen = Screen::Town(tab);
-        }
-        ui.add_space(6.0);
-        // Services sit in a gray window, as the original's did.
-        egui::Frame::new().fill(Color32::from_gray(192)).stroke(Stroke::new(1.0, Color32::from_gray(64))).inner_margin(8.0).show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            let g = self.game.as_mut().unwrap();
-            let mut changed = false;
-            match tab {
-                Tab::Guilds => {
-                    let (need, gold) = (g.ch.xp_needed(d, t), Tuning::level_gold(g.ch.level()));
-                    ui.label(format!("The {} guild asks {need} experience and {gold} gold for level {}.", d.guilds[g.ch.guild].name, g.ch.level() + 1));
-                    if ui.button("Make level").clicked() {
-                        self.status = g.ch.make_level(d, t).unwrap_or_else(|e| e);
-                        changed = true;
-                    }
-                    ui.add_space(6.0);
-                    ui.label(format!("Joining a new guild costs {} gold.", g.ch.join_cost()));
-                    egui::Grid::new("guilds").show(ui, |ui| {
-                        for (i, gd) in d.guilds.iter().enumerate() {
-                            ui.label(&gd.name);
-                            let lv = g.ch.levels[i];
-                            ui.label(if lv > 0 { format!("level {lv}") } else { String::new() });
-                            let label = if i == g.ch.guild { None } else if lv > 0 { Some("Act as") } else { Some("Join") };
-                            if let Some(l) = label
-                                && ui.button(l).clicked()
-                            {
-                                self.status = g.ch.join(d, i).unwrap_or_else(|e| e);
-                                changed = true;
-                            }
-                            ui.end_row();
-                        }
-                    });
-                }
-                Tab::Store => {
-                    ui.columns(2, |cols| {
-                        cols[0].label("For sale [att/def] (power)");
-                        egui::ScrollArea::vertical().id_salt("stock").show(&mut cols[0], |ui| {
-                            for i in game::stock(d) {
-                                let it = &d.items[i];
-                                ui.horizontal(|ui| {
-                                    if ui.button(format!("Buy {}", it.price)).clicked() {
-                                        self.status = g.ch.buy(d, i).unwrap_or_else(|e| e);
-                                        changed = true;
-                                    }
-                                    let usable = it.guilds & (1 << g.ch.guild) != 0;
-                                    let text = format!("{} [{}/{}]{}", it.name, it.attack, it.defense, if it.power > 0 { format!(" ({})", it.power) } else { String::new() });
-                                    ui.label(if usable { egui::RichText::new(text).strong() } else { egui::RichText::new(text).weak() });
-                                });
-                            }
-                        });
-                    });
-                }
-                Tab::Bank | Tab::Seer | Tab::Confinement => {
-                    ui.label("Closed for now.");
-                }
-                Tab::Morgue => match g.ch.life {
-                    Life::Alive => {
-                        ui.label("The morgue workers eye you hopefully.");
-                    }
-                    Life::Dead(p) => {
-                        ui.label(format!("Your body lies on level {}.", p.floor));
-                        if ui.button(format!("Hire rescuers ({} gold)", g.rescue_cost())).clicked() {
-                            g.rescue();
-                            changed = true;
-                        }
-                    }
-                    Life::InMorgue => {
-                        if ui.button(format!("Raise ({} gold)", g.raise_cost())).clicked() {
-                            g.raise(d);
-                            changed = true;
-                        }
-                    }
-                },
-            }
-            if changed {
-                self.persist();
-            }
-            if tab == Tab::Store {
-                ui.separator();
-                self.inventory(ui, d, true);
-            }
-        });
-    }
-
-    fn dungeon(&mut self, ui: &mut egui::Ui, d: &GameData, t: &Tuning) {
-        let g = self.game.as_mut().unwrap();
-        let before = (g.ch.pos, g.fight.is_some());
-        let keys = ui.input(|i| [Key::ArrowUp, Key::ArrowLeft, Key::ArrowRight, Key::ArrowDown, Key::T, Key::F, Key::D, Key::R, Key::Space].map(|k| i.key_pressed(k)));
-        let press = |ui: &mut egui::Ui, label: &str, key: bool| ui.button(label).clicked() || key;
-        ui.horizontal(|ui| {
-            if press(ui, "Left", keys[1]) {
-                g.turn(3);
-            }
-            if press(ui, "Forward", keys[0]) {
-                g.step(d);
-            }
-            if press(ui, "Right", keys[2]) {
-                g.turn(1);
-            }
-            if press(ui, "Turn around", keys[3]) {
-                g.turn(2);
-            }
-            if press(ui, "Take stairs (T)", keys[4]) {
-                g.take_stairs(d);
-            }
-            ui.separator();
-            if let Some(f) = g.fight.as_mut() {
-                for (label, a, k) in [("Fight (F)", Action::Fight, keys[5]), ("Defend (D)", Action::Defend, keys[6]), ("Run (R)", Action::Run, keys[7])] {
-                    if ui.selectable_label(f.action == a, label).clicked() || k {
-                        f.action = a;
-                    }
-                }
-                if ui.selectable_label(self.paused, "Pause (Space)").clicked() || keys[8] {
-                    self.paused = !self.paused;
-                }
-            }
-        });
-        // Timed rounds: the first one comes a full round after the fight starts.
-        if g.fight.is_some() != self.in_fight {
-            self.in_fight = g.fight.is_some();
-            self.last_round = Instant::now();
-        }
-        let round = Duration::from_secs_f64(t.combat.round_seconds);
-        if self.in_fight && !self.paused && self.last_round.elapsed() >= round {
-            g.round(d, t);
-            self.last_round = Instant::now();
-        }
-        if self.in_fight {
-            ui.ctx().request_repaint_after(Duration::from_millis(100));
-        }
-        let p = g.ch.pos;
-        if p.floor > 0 {
-            let flags = d.floors[p.floor - 1].square(p.x, p.y).flags;
-            let stairs = match (flags & square::STAIRS_UP != 0, flags & square::STAIRS_DOWN != 0) {
-                (true, _) => " - stairs up",
-                (_, true) => " - stairs down",
-                _ => "",
-            };
-            ui.label(format!("{},{},{} {}{stairs}", p.x + 1, p.y + 1, p.floor, ["North", "East", "South", "West"][p.facing as usize]));
-            art::dungeon_view(ui, self.art.as_ref(), d, self.game.as_ref().unwrap());
-        }
-        let g = self.game.as_ref().unwrap();
-        let (changed, life) = ((g.ch.pos, g.fight.is_some()) != before, g.ch.life);
-        if g.ch.pos.floor == 0 {
-            self.screen = Screen::Town(if life == Life::Alive { Tab::Guilds } else { Tab::Morgue });
-        }
-        if changed {
+        let Some(s) = cast else { return };
+        let target = if magic::kind(&d.spells[s]).is_some_and(|k| matches!(k, magic::Magic::Damage | magic::Magic::MassDamage | magic::Magic::Sleep)) { ddj_rules::ai::Target::Strongest } else { ddj_rules::ai::Target::LowestAlly };
+        if let (Some(f), 0) = (g.fight.as_mut(), sel) {
+            f.order = Some(ddj_rules::ai::Act::Cast(s, target));
+            self.status = format!("You will cast {} next round.", d.spells[s].name);
+        } else if g.fight.is_some() {
+            self.status = "Allies cast by their macros in combat.".into();
+        } else {
+            magic::cast(g, d, t, sel, s, target);
             self.persist();
         }
-    }
-
-    /// Seen squares of the current floor, north up.
-    fn automap(ui: &mut egui::Ui, d: &GameData, g: &Game) {
-        let p = g.ch.pos;
-        let Some(f) = (p.floor > 0).then(|| &d.floors[p.floor - 1]) else { return };
-        let Some(seen) = g.ch.seen.get(p.floor - 1) else { return };
-        ui.label(format!("Automap (level {})", p.floor));
-        let cell = (ui.available_width().min(360.0) / f.width as f32).floor().max(6.0);
-        let (rect, _) = ui.allocate_exact_size(vec2(cell * f.width as f32, cell * f.height as f32), egui::Sense::hover());
-        let paint = ui.painter_at(rect);
-        paint.rect_filled(rect, 0.0, Color32::BLACK);
-        let corner = |x: usize, y: usize| pos2(rect.left() + x as f32 * cell, rect.bottom() - y as f32 * cell);
-        for y in 0..f.height {
-            for x in 0..f.width {
-                if !seen.get(y * f.width + x).copied().unwrap_or(false) {
-                    continue;
-                }
-                let r = Rect::from_two_pos(corner(x, y), corner(x + 1, y + 1));
-                let fl = f.square(x, y).flags;
-                let fill = if fl & square::STAIRS_UP != 0 {
-                    Color32::DARK_GREEN
-                } else if fl & square::STAIRS_DOWN != 0 {
-                    Color32::DARK_RED
-                } else {
-                    Color32::from_gray(45)
-                };
-                paint.rect_filled(r, 0.0, fill);
-                for (dir, a, b) in [(0, corner(x, y + 1), corner(x + 1, y + 1)), (1, corner(x + 1, y), corner(x + 1, y + 1)), (2, corner(x, y), corner(x + 1, y)), (3, corner(x, y), corner(x, y + 1))] {
-                    match game::side(f, x, y, dir) {
-                        Side::Wall => paint.line_segment([a, b], Stroke::new(1.0, Color32::WHITE)),
-                        Side::Door => paint.line_segment([a, b], Stroke::new(1.5, Color32::YELLOW)),
-                        Side::Open => continue,
-                    };
-                }
-            }
-        }
-        let c = Rect::from_two_pos(corner(p.x, p.y), corner(p.x + 1, p.y + 1)).center();
-        let dir = [vec2(0.0, -1.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(-1.0, 0.0)][p.facing as usize] * cell * 0.4;
-        let side = vec2(-dir.y, dir.x);
-        paint.add(egui::Shape::convex_polygon(vec![c + dir, c - dir + side, c - dir - side], Color32::LIGHT_BLUE, Stroke::NONE));
     }
 }
 
@@ -537,22 +432,32 @@ impl eframe::App for App {
             self.art = Art::load(ui.ctx(), &ddj_extract::data_dir());
         }
         let playing = matches!(self.screen, Screen::Town(_) | Screen::Dungeon);
-        if let (true, Some(d), Some(g)) = (playing, &data, &self.game) {
-            egui::Panel::left("sheet").resizable(false).show(ui, |ui| Self::sheet(ui, g, d, &tuning));
-            egui::Panel::bottom("log").resizable(true).default_size(140.0).show(ui, |ui| {
-                ui.label(&self.status);
-                egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                    for l in g.log.iter().rev().take(200).rev().filter(|l| !l.is_empty()) {
-                        ui.label(l);
-                    }
+        if let (true, Some(d)) = (playing, &data) {
+            let g = self.game.as_ref().unwrap();
+            self.sel = self.sel.min(g.party.len() - 1);
+            egui::Panel::left("sheet").resizable(false).show(ui, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| Self::sheet(ui, &self.game.as_ref().unwrap().party[self.sel], d, &tuning));
+            });
+            egui::Panel::bottom("party").resizable(true).default_size(190.0).show(ui, |ui| {
+                ui.columns(2, |cols| {
+                    self.party_panel(&mut cols[0], d, &tuning);
+                    cols[1].label(&self.status);
+                    let g = self.game.as_ref().unwrap();
+                    egui::ScrollArea::vertical().id_salt("log").stick_to_bottom(true).show(&mut cols[1], |ui| {
+                        for l in g.log.iter().rev().take(200).rev().filter(|l| !l.is_empty()) {
+                            ui.label(l);
+                        }
+                    });
                 });
             });
         }
         if let (Screen::Dungeon, Some(d)) = (&self.screen, &data) {
-            egui::Panel::right("map").resizable(false).show(ui, |ui| {
-                Self::automap(ui, d, self.game.as_ref().unwrap());
+            egui::Panel::right("map").resizable(false).default_size(300.0).show(ui, |ui| {
+                dungeon::automap(ui, d, self.game.as_ref().unwrap());
                 ui.separator();
-                self.inventory(ui, d, false);
+                self.inventory(ui, d, &tuning, false);
+                ui.separator();
+                self.spells(ui, d, &tuning);
             });
         }
         egui::CentralPanel::default().show(ui, |ui| match (&self.screen, &data) {
@@ -562,6 +467,9 @@ impl eframe::App for App {
             (Screen::Town(tab), Some(d)) => self.town(ui, d, &tuning, *tab),
             (Screen::Dungeon, Some(d)) => self.dungeon(ui, d, &tuning),
         });
+        if let (Some(i), Some(d)) = (self.editing, &data) {
+            self.macro_editor(ui.ctx(), d, i);
+        }
         if !playing {
             egui::Panel::bottom("status").show(ui, |ui| ui.label(&self.status));
         }

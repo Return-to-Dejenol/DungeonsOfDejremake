@@ -35,8 +35,9 @@ impl Art {
         let dll = fs::read(dir.join("MG11.DLL")).ok()?;
         let mg = |n| ddj_extract::mg_bitmap(&dll, n);
         let (mons, maze, door) = (mg("MONS")?, mg("MAZE")?, mg("DOOR")?);
+        // Only the tiled surfaces repeat; pictures are sampled once.
         let tex = |name: &str, img: ColorImage| ctx.load_texture(name, img, TextureOptions::NEAREST_REPEAT);
-        let whole = |name: &str, (w, h, px): Rgba| tex(name, ColorImage::from_rgba_unmultiplied([w, h], &px));
+        let whole = |name: &str, (w, h, px): Rgba| ctx.load_texture(name, ColorImage::from_rgba_unmultiplied([w, h], &px), TextureOptions::NEAREST);
         let menu = ddj_extract::picture(dir, "MENU");
         let city = [
             ("General Store", "CITY_STORE"),
@@ -131,7 +132,7 @@ fn side(f: &Floor, (x, y): (usize, usize), dir: u8) -> Side {
 
 /// The first-person view: up to four squares ahead, nearer walls brighter.
 pub fn dungeon_view(ui: &mut egui::Ui, art: Option<&Art>, d: &GameData, g: &Game) {
-    let p = g.ch.pos;
+    let p = g.pos();
     let f = &d.floors[p.floor - 1];
     let size = vec2(ui.available_width().min(560.0), 360.0);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
