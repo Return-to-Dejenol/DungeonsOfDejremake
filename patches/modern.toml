@@ -28,23 +28,7 @@ sp_potion_vs_heal = 0.85
 [combat]
 # Seconds per combat round; the player can pause.
 round_seconds = 2.0
-# Chance to hit = A / (A + defense) with A = attack x hit_bias, clamped to 5-95%.
-hit_bias = 1.0
-# Attack and defense a guild level adds, per point of the guild's fighting ability
-# (Warrior 1.2, Nomad 0.7, casters 0.5).
-ad_per_fighting = 3.0
-# A character's damage: 1 to (weapon power x weapon_die) + (STR - 10) / 2, times the
-# weapon's damage multiplier. Bare hands count as power 2.
-weapon_die = 6
-# A monster's damage: 1 to (level x monster_die + attack / 20).
-monster_die = 2
-# A kill is worth hp x level x xp_per_hp_level + attack / 2 XP, before depth bonuses.
-xp_per_hp_level = 1.5
-# Gold per monster: level x gold_min to level x gold_max.
-gold_min = 5
-gold_max = 25
-# Chance a cleared group leaves an item found on this floor or shallower.
-item_chance = 0.15
+# The rest of combat is MORDOR.EXE's own rules (docs/balance.md, "Original rules").
 
 [boxes]
 # Chance a chest is magically locked, by floor (1-based); the last value repeats.

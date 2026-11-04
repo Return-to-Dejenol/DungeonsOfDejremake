@@ -168,7 +168,8 @@ pub(crate) fn resolve(g: &Game, d: &GameData, t: &Tuning, i: usize, act: Act) ->
         return None;
     }
     match act {
-        Act::Fight(_) => (!f.over()).then_some(act),
+        // Melee needs a weapon (MORDOR.EXE); without one a member defends.
+        Act::Fight(_) => (!f.over() && me.weapon(d).is_some()).then_some(act),
         Act::CastBest(kind, target) => magic::best(g, d, t, i, kind).map(|s| Act::Cast(s, target)),
         Act::Cast(s, _) => magic::castable(me, d, t, s).then_some(act),
         Act::Use(item) => me.items.iter().any(|h| h.item == item && !h.equipped).then_some(act),
@@ -223,5 +224,9 @@ fn fallback(g: &Game, d: &GameData, t: &Tuning, i: usize) -> Act {
             return a;
         }
     }
-    if f.peaceful { Act::Wait } else { Act::Fight(Target::Weakest) }
+    if f.peaceful {
+        Act::Wait
+    } else {
+        try_(Act::Fight(Target::Weakest)).unwrap_or(Act::Defend)
+    }
 }

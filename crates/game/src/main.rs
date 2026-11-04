@@ -115,6 +115,9 @@ impl App {
                 self.status = format!("Could not save {}: {e}", m.name);
             }
         }
+        if let Err(e) = g.store.save(&saves()) {
+            self.status = format!("Could not save the store: {e}");
+        }
     }
 
     fn import(&mut self, ui: &mut egui::Ui) {
@@ -188,6 +191,7 @@ impl App {
     fn start(&mut self, ch: Character, d: &GameData) {
         let allies = ch.allies.clone();
         let mut g = Game::new(ch);
+        g.store = ddj_rules::store::Store::load(&saves(), d);
         for name in allies {
             if let Ok(a) = load(&name)
                 && let Err(e) = g.add_ally(a)
@@ -348,6 +352,7 @@ impl App {
     fn inventory(&mut self, ui: &mut egui::Ui, d: &GameData, t: &Tuning, store: bool) {
         let Some(g) = self.game.as_mut() else { return };
         let sel = self.sel.min(g.party.len() - 1);
+        let prices: Vec<(u64, u64)> = if store { (0..g.party[sel].items.len()).map(|s| (g.sell_price(d, sel, s), g.identify_price(d, sel, s))).collect() } else { Vec::new() };
         let c = &g.party[sel];
         ui.label(format!("{}'s items ({}/40)", c.name, c.items.len()));
         #[derive(Clone, Copy)]
@@ -371,10 +376,10 @@ impl App {
                         act = Some((i, Do::Equip));
                     }
                     if store {
-                        if ui.button(format!("Sell {}", c.sell_price(d, h.item))).clicked() {
+                        if ui.button(format!("Sell {}", prices[i].0)).clicked() {
                             act = Some((i, Do::Sell));
                         }
-                        if !h.known && ui.button(format!("ID {}", Character::identify_cost(d, h.item))).clicked() {
+                        if !h.known && ui.button(format!("ID {}", prices[i].1)).clicked() {
                             act = Some((i, Do::Identify));
                         }
                         if h.equipped && magic::cursed(d, h.item, c.alignment) && ui.button("Uncurse").clicked() {
@@ -387,14 +392,13 @@ impl App {
             }
         });
         let Some((i, what)) = act else { return };
-        let c = &mut g.party[sel];
         self.status = match what {
-            Do::Equip => c.toggle_equip(d, i).err().unwrap_or_default(),
-            Do::Sell => c.sell(d, i),
-            Do::Identify => c.identify(d, i).unwrap_or_else(|e| e),
-            Do::Uncurse => c.uncurse(d, i).unwrap_or_else(|e| e),
+            Do::Equip => g.party[sel].toggle_equip(d, i).err().unwrap_or_default(),
+            Do::Sell => g.sell(d, sel, i),
+            Do::Identify => g.identify(d, sel, i).unwrap_or_else(|e| e),
+            Do::Uncurse => g.uncurse(d, sel, i).unwrap_or_else(|e| e),
             Do::Use => {
-                let item = c.items[i].item;
+                let item = g.party[sel].items[i].item;
                 magic::use_item(g, d, t, sel, item);
                 String::new()
             }

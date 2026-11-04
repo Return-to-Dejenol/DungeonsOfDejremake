@@ -10,8 +10,9 @@ use crate::{
     Tuning,
     ai::{self, Rule},
     combat::Fight,
-    mdr::{Floor, GameData, square},
+    mdr::{Floor, GameData, Words, square},
     monsters::Companion,
+    store::{self, Store},
     treasure::Chest,
 };
 
@@ -32,9 +33,9 @@ pub(crate) const HEALER: usize = 11;
 /// Slots of `Guild::abilities`.
 pub const ABILITIES: [&str; 6] = ["Thieving", "Backstab", "Critical hit", "Multiple swings", "Fighting", "Perception"];
 pub(crate) const THIEVING: usize = 0;
+pub(crate) const BACKSTAB: usize = 1;
 pub(crate) const CRITICAL: usize = 2;
 pub(crate) const FIGHTING: usize = 4;
-pub(crate) const PERCEPTION: usize = 5;
 
 /// Floor 0 is the town. Facing runs clockwise from 0 = north; x is east, y is north.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -239,6 +240,16 @@ impl Character {
         f64::from(self.roll(10_000)) < p * 10_000.0
     }
 
+    /// VB's `Rnd`: uniform on [0, 1).
+    pub(crate) fn rnd(&mut self) -> f64 {
+        f64::from(self.roll(1 << 24)) / f64::from(1 << 24)
+    }
+
+    /// `Int(Rnd * 100) + 1`, the original's percentile roll.
+    pub(crate) fn d100(&mut self) -> i32 {
+        self.roll(100) as i32 + 1
+    }
+
     pub fn alive(&self) -> bool {
         self.life == Life::Alive
     }
@@ -261,37 +272,86 @@ impl Character {
         t.xp_needed(self.level(), data.races[self.race].xp_factor, data.guilds[self.guild].xp_factor)
     }
 
-    /// A guild's ability rating, before the character's other guilds are weighed.
-    fn guild_ability(data: &GameData, g: usize, i: usize) -> f32 {
+    /// A guild's ability rate (the table's value, Warrior fighting 1.2).
+    pub(crate) fn guild_ability(data: &GameData, g: usize, i: usize) -> f32 {
         // Healers are decent in melee (docs/balance.md): Villain's fighting.
         if g == HEALER && i == FIGHTING { 0.8 } else { data.guilds[g].abilities[i] }
     }
 
-    /// Ability rating (thieving, fighting...): the best guild's level x its ability.
-    /// Nomad passes a 20% share to the other guilds, counting no more Nomad levels than
-    /// the best other guild has; a pure Nomad gets 70% of its own rating.
-    pub fn ability(&self, data: &GameData, i: usize) -> f32 {
-        let lv = |g: usize| self.levels[g].saturating_sub(1) as f32;
-        let best_other = (0..self.levels.len()).filter(|&g| g != NOMAD && self.levels[g] > 0).map(|g| lv(g) * Self::guild_ability(data, g, i)).fold(0.0, f32::max);
+    /// The best guild's value of `f(guild, level)`, as the original takes the best
+    /// guild. Nomad passes a 20% share to the other guilds, counting no more Nomad
+    /// levels than the best other guild has; a pure Nomad gets 70% (docs/balance.md).
+    pub(crate) fn guild_best(&self, f: impl Fn(usize, u32) -> f64) -> f64 {
         let other_level = (0..self.levels.len()).filter(|&g| g != NOMAD).map(|g| self.levels[g]).max().unwrap_or(0);
-        let nomad = Self::guild_ability(data, NOMAD, i);
+        let nomad = |l: u32| if l > 0 { f(NOMAD, l) } else { 0.0 };
         if other_level == 0 {
-            return 0.7 * lv(NOMAD) * nomad;
+            return 0.7 * nomad(self.levels[NOMAD]);
         }
-        let share = 0.2 * lv(NOMAD).min(other_level as f32) * nomad;
-        best_other.max(lv(NOMAD) * nomad * 0.7) + share
+        let best_other = (0..self.levels.len()).filter(|&g| g != NOMAD && self.levels[g] > 0).map(|g| f(g, self.levels[g])).fold(0.0, f64::max);
+        best_other.max(0.7 * nomad(self.levels[NOMAD])) + 0.2 * nomad(self.levels[NOMAD].min(other_level))
     }
 
-    /// Melee rating (2 x STR + DEX) / 3 sets to-hit; STR above 15 adds defense.
-    pub fn att_def(&self, data: &GameData, t: &Tuning) -> (i32, i32) {
-        let rating = (2 * i32::from(self.stats[STR]) + i32::from(self.stats[DEX])) / 3;
-        let ad = (self.ability(data, FIGHTING) as f64 * t.combat.ad_per_fighting) as i32;
-        let (mut a, mut d) = (ad + rating, 10 + ad + (i32::from(self.stats[STR]) - 15).max(0) + self.buffs.protection);
+    /// Ability rating (thieving, fighting...): the best guild's level - 1 x its rate.
+    pub fn ability(&self, data: &GameData, i: usize) -> f32 {
+        self.guild_best(|g, l| f64::from(l - 1) * f64::from(Self::guild_ability(data, g, i))) as f32
+    }
+
+    /// The best guild's (rate, level) for ability `i`, by rate x level (MORDOR.EXE's
+    /// choice for critical hits and backstabs).
+    pub(crate) fn best_rate(&self, data: &GameData, i: usize) -> (f64, f64) {
+        (0..self.levels.len())
+            .filter(|&g| self.levels[g] > 0)
+            .map(|g| (f64::from(Self::guild_ability(data, g, i)), f64::from(self.levels[g])))
+            .max_by(|a, b| (a.0 * a.1).total_cmp(&(b.0 * b.1)))
+            .unwrap_or((0.0, 0.0))
+    }
+
+    /// The fighting multiplier and the level it comes from: 0.6 + (ln(100 + L) / 1.75 -
+    /// 2.3) x rate² / 2 for the best guild (MORDOR.EXE).
+    pub(crate) fn fighting(&self, data: &GameData) -> (f64, f64) {
+        let f = |g: usize, l: u32| 0.6 + ((100.0 + f64::from(l)).ln() / 1.75 - 2.3) * f64::from(Self::guild_ability(data, g, FIGHTING)).powi(2) / 2.0;
+        let level = (0..self.levels.len()).filter(|&g| self.levels[g] > 0).max_by(|&a, &b| f(a, self.levels[a]).total_cmp(&f(b, self.levels[b]))).map_or(1, |g| self.levels[g]);
+        (self.guild_best(f), f64::from(level))
+    }
+
+    /// Melee rating (2 x STR + DEX) / 3, the decided stand-in for STR (docs/balance.md).
+    pub(crate) fn melee_rating(&self) -> i32 {
+        (2 * i32::from(self.stats[STR]) + i32::from(self.stats[DEX])) / 3
+    }
+
+    /// Attack and defense as MORDOR.EXE keeps them: 10 each, the stat bonus, the best
+    /// guild's A/D and the equipped items. The stat bonus is the original's (+4 a point
+    /// of STR and DEX above 12, -4 below 8) on the melee rating, and STR above 15 adds
+    /// defense (docs/balance.md).
+    pub fn att_def(&self, data: &GameData, _t: &Tuning) -> (i32, i32) {
+        let r = self.melee_rating();
+        let bonus = 4 * ((r - 12).max(0) - (8 - r).max(0));
+        let ad = |k: usize| self.guild_best(|g, l| guild_ad(data, g, l)[k]) as i32;
+        let (mut a, mut d) = (10 + bonus + ad(0), 10 + bonus + ad(1) + (i32::from(self.stats[STR]) - 15).max(0) + self.buffs.protection);
         for h in self.items.iter().filter(|h| h.equipped) {
             a += i32::from(data.items[h.item].attack);
             d += i32::from(data.items[h.item].defense);
         }
         (a, d)
+    }
+
+    /// Swings a round before the weapon's: the best guild's (MORDOR.EXE: the first
+    /// comes at level ln(11 - rate) x 50, each next at ln(11 - rate) x 2 x the last).
+    pub(crate) fn swings(&self, data: &GameData) -> i32 {
+        (0..self.levels.len())
+            .map(|g| {
+                let k = (11.0 - f64::from(Self::guild_ability(data, g, 3))).ln();
+                let (mut t, mut n) = ((k * 50.0).round_ties_even(), 0);
+                for i in 1..=self.levels[g] {
+                    if f64::from(i) > t {
+                        n += 1;
+                        t = (k * 2.0 * t).round_ties_even();
+                    }
+                }
+                n
+            })
+            .max()
+            .unwrap_or(0)
     }
 
     pub(crate) fn weapon(&self, data: &GameData) -> Option<usize> {
@@ -315,7 +375,7 @@ impl Character {
     }
 
     pub fn make_level(&mut self, data: &GameData, t: &Tuning) -> Result<String, String> {
-        let (need, gold) = (self.xp_needed(data, t), Tuning::level_gold(self.level()));
+        let (need, gold) = (self.xp_needed(data, t), Tuning::level_gold(self.level(), data.guilds[self.guild].gold_factor));
         if let Some(m) = self.quest {
             return Err(format!("The guild wants you to slay a {} first.", data.monsters[m].name));
         }
@@ -340,8 +400,13 @@ impl Character {
             };
             let past_cap = level > cap as u32;
             let avg = if past_cap { g.hp_after } else { per };
+            // MORDOR.EXE: the guild's hits, two times in three Int(Rnd x hits / 5) + 1 more,
+            // and CON above 16 adds Int(Rnd x (CON - 16)) + 1 (half past the cap).
+            let avg = i32::from(avg.max(1));
+            let extra = if self.roll(3) < 2 { (self.rnd() * f64::from(avg) / 5.0) as i32 + 1 } else { 0 };
             let con = (i32::from(self.stats[CON]) - 16).max(0);
-            let mut gain = (i32::from(avg) - 1 + self.roll(3) as i32).max(1) + if past_cap { con / 2 } else { con };
+            let con = if con > 0 { (self.rnd() * f64::from(con)) as i32 + 1 } else { 0 };
+            let mut gain = avg + extra + if past_cap { con / 2 } else { con };
             // Nomad's share: other guilds gain a hit per level Nomad has already reached.
             if self.guild != NOMAD && self.levels[NOMAD] >= level {
                 gain += 1;
@@ -350,8 +415,8 @@ impl Character {
             self.hp += gain;
             msg += &format!(" You gain {gain} hits.");
         }
-        // Every few levels a guild may set a quest (the original's pinning by quest).
-        if level % 5 == 0 && self.chance(0.5) {
+        // From level 5 a guild may set a quest at its quest chance (w32, MORDOR.EXE).
+        if level >= 5 && (self.rnd() * 100.0).round_ties_even() <= f64::from(g.w(32)) {
             let floor = (level / 5).clamp(1, 15) as i16;
             let fits: Vec<usize> = (0..data.monsters.len()).filter(|&m| data.monsters[m].level == floor).collect();
             if !fits.is_empty() {
@@ -370,9 +435,18 @@ impl Character {
         self.bank = self.bank.saturating_sub(gold - from_purse);
     }
 
-    /// Joining is free for the first guild after Nomad, then 5,000 gold per guild held.
-    pub fn join_cost(&self) -> u64 {
-        5_000 * (self.levels.iter().filter(|&&l| l > 0).count() as u64 - 1)
+    /// Joining guild `g` (MORDOR.EXE): free for a guild you belong to, or while you
+    /// belong to no guild but your current one; otherwise A² x 5356, where A sums
+    /// (rate + 1) x 1.25 over the guild's abilities and max spell level / 3 over its
+    /// spell classes (Nomad 1.7 million, Ninja 10.9 million).
+    pub fn join_cost(&self, data: &GameData, g: usize) -> u64 {
+        if self.levels[g] > 0 || (0..self.levels.len()).all(|o| o == self.guild || self.levels[o] == 0) {
+            return 0;
+        }
+        let gd = &data.guilds[g];
+        let a: f64 = gd.abilities.iter().filter(|&&v| v > 0.0).map(|&v| (f64::from(v) + 1.0) * 1.25).sum::<f64>()
+            + (0..19).map(|c| f64::from(gd.single(71 + 2 * c))).filter(|&l| l > 0.0).map(|l| l / 3.0).sum::<f64>();
+        (a * a * 5356.0).round_ties_even() as u64
     }
 
     pub fn join(&mut self, data: &GameData, g: usize) -> Result<String, String> {
@@ -390,7 +464,7 @@ impl Character {
         if guild.races & (1 << self.race) == 0 {
             return Err(format!("The guild won't take a {}.", data.races[self.race].name));
         }
-        let cost = self.join_cost();
+        let cost = self.join_cost(data, g);
         if self.gold + self.bank < cost {
             return Err(format!("Joining costs {cost} gold."));
         }
@@ -400,40 +474,6 @@ impl Character {
         self.items.iter_mut().filter(|h| data.items[h.item].guilds & (1 << g) == 0).for_each(|h| h.equipped = false);
         self.macros = ai::preset(ai::Role::of(g));
         Ok(format!("Welcome to the {} guild!", guild.name))
-    }
-
-    /// CHA above 10 gets 1% better prices per point, buying and selling.
-    fn cha_bonus(&self) -> f64 {
-        f64::from(self.stats[CHA] - 10).max(0.0) / 100.0
-    }
-
-    pub fn buy_price(&self, data: &GameData, item: usize) -> u64 {
-        (f64::from(data.items[item].price) * (1.0 - self.cha_bonus())).round() as u64
-    }
-
-    /// The store pays half price.
-    pub fn sell_price(&self, data: &GameData, item: usize) -> u64 {
-        (f64::from(data.items[item].price) / 2.0 * (1.0 + self.cha_bonus())).round() as u64
-    }
-
-    pub fn buy(&mut self, data: &GameData, item: usize) -> Result<String, String> {
-        let price = self.buy_price(data, item);
-        if self.gold + self.bank < price {
-            return Err("You can't afford that.".into());
-        }
-        if self.items.len() >= 40 {
-            return Err("You can't carry any more.".into());
-        }
-        self.pay(price);
-        self.items.push(crate::magic::new_held(data, item, true));
-        Ok(format!("You bought {} for {price} gold.", data.items[item].name))
-    }
-
-    pub fn sell(&mut self, data: &GameData, slot: usize) -> String {
-        let h = self.items.remove(slot);
-        let price = self.sell_price(data, h.item);
-        self.gold += price;
-        format!("Sold {} for {price} gold.", data.items[h.item].name)
     }
 
     /// One weapon, and one item of each other kind, may be equipped at a time.
@@ -474,32 +514,6 @@ impl Character {
         self.gold += n;
     }
 
-    /// The store identifies for a tenth of the price (25 at least).
-    pub fn identify_cost(data: &GameData, item: usize) -> u64 {
-        (u64::from(data.items[item].price) / 10).max(25)
-    }
-
-    pub fn identify(&mut self, data: &GameData, slot: usize) -> Result<String, String> {
-        let cost = Self::identify_cost(data, self.items[slot].item);
-        if self.gold + self.bank < cost {
-            return Err(format!("Identifying costs {cost} gold."));
-        }
-        self.pay(cost);
-        self.items[slot].known = true;
-        Ok(format!("It is {}.", data.items[self.items[slot].item].name))
-    }
-
-    /// Uncursing costs half the price (100 at least) and frees the item.
-    pub fn uncurse(&mut self, data: &GameData, slot: usize) -> Result<String, String> {
-        let cost = (u64::from(data.items[self.items[slot].item].price) / 2).max(100);
-        if self.gold + self.bank < cost {
-            return Err(format!("Uncursing costs {cost} gold."));
-        }
-        self.pay(cost);
-        let h = self.items.remove(slot);
-        Ok(format!("The store takes the cursed {} off your hands.", data.items[h.item].name))
-    }
-
     pub(crate) fn see(&mut self, data: &GameData) {
         let Pos { x, y, floor, .. } = self.pos;
         if floor == 0 {
@@ -530,6 +544,26 @@ impl Character {
     }
 }
 
+/// A guild's accumulated (attack, defense) at `level` (MORDOR.EXE): w114 and w116 are
+/// added every Int(w119) levels up to the HP cap (w1), then at the gaps
+/// CInt((w1 / 2 + L / 18) / (w119 + 3 for Nomad)) apart, until level w118.
+pub(crate) fn guild_ad(data: &GameData, g: usize, level: u32) -> [f64; 2] {
+    let gd = &data.guilds[g];
+    let (cap, every, last) = (i32::from(gd.hp_cap), gd.single(119), u32::try_from(gd.w(118)).unwrap_or(0));
+    let level = level.min(last) as i32;
+    let mut steps = (level.min(cap) / (every as i32).max(1)).max(0);
+    let mut l = cap;
+    loop {
+        let gap = ((f64::from(cap / 2) + f64::from(l) / 18.0) / (f64::from(every) + if g == NOMAD { 3.0 } else { 0.0 })).round_ties_even() as i32;
+        l += gap.max(1);
+        if l > level {
+            break;
+        }
+        steps += 1;
+    }
+    [f64::from(steps) * f64::from(gd.single(114)), f64::from(steps) * f64::from(gd.single(116))]
+}
+
 /// Names of the characters saved in `dir`.
 pub fn saved(dir: &Path) -> Vec<String> {
     let mut v: Vec<String> = fs::read_dir(dir)
@@ -539,13 +573,6 @@ pub fn saved(dir: &Path) -> Vec<String> {
     v
 }
 
-/// The store's stock: store-only items at ordinary prices (the Potion of Experience
-/// among them), cheapest first.
-pub fn stock(data: &GameData) -> Vec<usize> {
-    let mut v: Vec<usize> = (0..data.items.len()).filter(|&i| data.items[i].level == 0 && (1..=100_000).contains(&data.items[i].price)).collect();
-    v.sort_by_key(|&i| data.items[i].price);
-    v
-}
 
 /// A running game: the party plus what isn't saved (the fight, cleared rooms, log).
 /// `party[0]` is the character the player controls.
@@ -557,11 +584,13 @@ pub struct Game {
     /// (floor, area) cleared since the last visit to town.
     pub cleared: Vec<(usize, i16)>,
     pub log: Vec<String>,
+    /// The store's and Confinement's shared stock (saves/store.json).
+    pub store: Store,
 }
 
 impl Game {
     pub fn new(lead: Character) -> Self {
-        Self { party: vec![lead], fight: None, chest: None, cleared: Vec::new(), log: Vec::new() }
+        Self { party: vec![lead], fight: None, chest: None, cleared: Vec::new(), log: Vec::new(), store: Store::default() }
     }
 
     pub fn lead(&self) -> &Character {
@@ -634,6 +663,7 @@ impl Game {
     /// Moves everyone, carried bodies included.
     pub(crate) fn set_pos(&mut self, data: &GameData, p: Pos) {
         let floor_changed = p.floor != self.pos().floor;
+        self.store.deepest = self.store.deepest.max(p.floor);
         if (p.x, p.y, p.floor) != (self.pos().x, self.pos().y, self.pos().floor) {
             self.chest = None;
         }
@@ -654,19 +684,30 @@ impl Game {
     /// Arriving in town: the living rest (healed, cured, aged a little), carried bodies
     /// go to the morgue, and the dungeon repopulates.
     pub(crate) fn to_town(&mut self, data: &GameData, t: &Tuning) {
+        // Resting ages a day per 3.25% of hits missing (MORDOR.EXE), and the leader's
+        // rest restocks the store.
+        let lead = &self.party[0];
+        let days = (100.0 - 100.0 * f64::from(lead.hp) / f64::from(lead.max_hp.max(1))) / 3.25;
+        let days = if lead.alive() { days.round_ties_even() as u32 } else { 0 };
         for m in &mut self.party {
             m.pos = Pos::default();
             m.buffs = Buffs::default();
             match m.life {
                 Life::Alive => {
+                    let missing = 100.0 - 100.0 * f64::from(m.hp) / f64::from(m.max_hp.max(1));
+                    m.age_days += (missing / 3.25).round_ties_even() as u32;
                     m.hp = m.max_hp;
                     m.sp = m.max_sp(data, t);
                     m.status = Status::default();
-                    m.age_days += 1;
                 }
                 Life::Dead(_) => m.life = Life::InMorgue,
                 Life::InMorgue => {}
             }
+        }
+        if days > 0 {
+            let mut store = std::mem::take(self.stock(data));
+            store.restock(data, &mut self.party[0], days);
+            self.store = store;
         }
         self.cleared.clear();
         self.fight = None;
@@ -732,14 +773,17 @@ impl Game {
             if healer {
                 m.hp = (m.hp + (m.max_hp / 100).max(1)).min(m.max_hp);
             }
-            if m.status.poison > 0 {
-                m.status.poison -= 1;
-                hurt.push((i, 1 + m.max_hp / 30));
-            }
-            if m.status.disease > 0 {
-                m.status.disease -= 1;
-                if m.status.disease % 3 == 0 {
-                    hurt.push((i, 1));
+            // MORDOR.EXE: d200 + 2 (CON - 10) - 2 x strength above 185 (195 for disease)
+            // throws it off; otherwise poison takes 2 hits a step and disease 1.
+            let con = 2 * i32::from(m.stats[CON] - 10);
+            for (k, cure, dmg) in [(0, 185, 2), (1, 195, 1)] {
+                let strength = [m.status.poison, m.status.disease][k];
+                if strength > 0 {
+                    if m.roll(200) as i32 + con - 2 * i32::from(strength) > cure {
+                        if k == 0 { m.status.poison = 0 } else { m.status.disease = 0 }
+                    } else {
+                        hurt.push((i, dmg));
+                    }
                 }
             }
             m.status.paralysis = m.status.paralysis.saturating_sub(1);
@@ -904,18 +948,36 @@ impl Game {
         }
     }
 
-    /// The Seer, for 200 gold: where a lost party member lies, or which floor holds a
-    /// monster's lair (handy for quests).
-    pub fn seer(&mut self, data: &GameData, name: &str) -> String {
-        let lead = &mut self.party[0];
-        if lead.gold + lead.bank < 200 {
-            return "The Seer wants 200 gold.".into();
+    /// The Seer (MORDOR.EXE's fees): where a party member lies, for
+    /// 132,567.52 x ln(F + 1) x F on floor F; or where a monster keeps its lair, for
+    /// half of that at the monster's level, give or take an eighth (up to level 12).
+    pub fn seer_cost(&mut self, data: &GameData, name: &str) -> Option<u64> {
+        let fee = |f: f64| 132_567.52 * (f + 1.0).ln() * f;
+        let name = name.trim().to_lowercase();
+        if let Some(m) = self.party.iter().find(|m| m.name.to_lowercase() == name) {
+            return Some(match m.life {
+                Life::Dead(p) => fee(p.floor as f64).round_ties_even() as u64,
+                _ => 0,
+            });
         }
-        lead.pay(200);
+        let m = data.monsters.iter().find(|m| m.name.to_lowercase() == name)?;
+        (m.level <= 12).then(|| {
+            let c = fee(f64::from(m.level.max(1)));
+            ((c + self.party[0].rnd() * c / 4.0) / 2.0).round_ties_even() as u64
+        })
+    }
+
+    pub fn seer(&mut self, data: &GameData, name: &str) -> String {
+        let Some(cost) = self.seer_cost(data, name) else { return "The Seer has never heard of it, or it lies too deep to see.".into() };
+        let lead = &mut self.party[0];
+        if lead.gold + lead.bank < cost {
+            return format!("The Seer wants {cost} gold.");
+        }
+        lead.pay(cost);
         let name = name.trim().to_lowercase();
         if let Some(m) = self.party.iter().find(|m| m.name.to_lowercase() == name) {
             return match m.life {
-                Life::Dead(p) => format!("{} lies at {},{} on level {}.", m.name, p.x + 1, p.y + 1, p.floor),
+                Life::Dead(p) => format!("{} lies at {},{} on level {} ({cost} gold).", m.name, p.x + 1, p.y + 1, p.floor),
                 Life::InMorgue => format!("{} is in the morgue.", m.name),
                 Life::Alive => format!("{} is alive and well.", m.name),
             };
@@ -924,23 +986,106 @@ impl Game {
         let id = data.monsters[m].id;
         let lairs: Vec<String> = data.floors.iter().filter(|f| f.areas.iter().any(|a| a.lair == id)).map(|f| f.level.to_string()).collect();
         if lairs.is_empty() {
-            format!("The {} wanders level {}.", data.monsters[m].name, data.monsters[m].level)
+            format!("The {} wanders level {} ({cost} gold).", data.monsters[m].name, data.monsters[m].level)
         } else {
-            format!("The {} keeps a lair on level {}.", data.monsters[m].name, lairs.join(" and "))
+            format!("The {} keeps a lair on level {} ({cost} gold).", data.monsters[m].name, lairs.join(" and "))
         }
     }
 
-    /// Rescuers fetch a corpse: 250 x floor² gold. Deeper is riskier: they fail
-    /// 3% per floor, and keep the fee.
+    /// The store's stock, starting it fresh if none was loaded.
+    pub fn stock(&mut self, data: &GameData) -> &mut Store {
+        if self.store.items.len() != data.items.len() {
+            self.store = Store::fresh(data);
+        }
+        &mut self.store
+    }
+
+    /// Member `i`'s price for an item (CHA's passive included).
+    pub fn buy_price(&mut self, data: &GameData, i: usize, item: usize) -> u64 {
+        let s = self.stock(data).count(item);
+        store::cha_buy(&self.party[i], store::buy_price(data, item, s))
+    }
+
+    pub fn sell_price(&mut self, data: &GameData, i: usize, slot: usize) -> u64 {
+        let h = self.party[i].items[slot].clone();
+        let s = self.stock(data).count(h.item);
+        store::cha_sell(&self.party[i], store::sell_price(data, &h, s))
+    }
+
+    pub fn identify_price(&mut self, data: &GameData, i: usize, slot: usize) -> u64 {
+        let item = self.party[i].items[slot].item;
+        let s = self.stock(data).count(item);
+        store::identify_price(data, item, s)
+    }
+
+    pub fn buy(&mut self, data: &GameData, i: usize, item: usize) -> Result<String, String> {
+        let price = self.buy_price(data, i, item);
+        if self.store.count(item) == 0 {
+            return Err("The store has none left.".into());
+        }
+        let c = &mut self.party[i];
+        if c.gold + c.bank < price {
+            return Err("You can't afford that.".into());
+        }
+        if c.items.len() >= 40 {
+            return Err("You can't carry any more.".into());
+        }
+        c.pay(price);
+        c.items.push(crate::magic::new_held(data, item, true));
+        self.store.take(item);
+        Ok(format!("You bought {} for {price} gold.", data.items[item].name))
+    }
+
+    pub fn sell(&mut self, data: &GameData, i: usize, slot: usize) -> String {
+        let it = &data.items[self.party[i].items[slot].item];
+        if (500..512).contains(&it.w(10)) {
+            return format!("The store won't buy guild items like the {}.", it.name);
+        }
+        let price = self.sell_price(data, i, slot);
+        let h = self.party[i].items.remove(slot);
+        self.party[i].gold += price;
+        self.store.put(data, &h);
+        format!("Sold {} for {price} gold.", data.items[h.item].name)
+    }
+
+    pub fn identify(&mut self, data: &GameData, i: usize, slot: usize) -> Result<String, String> {
+        let cost = self.identify_price(data, i, slot);
+        let c = &mut self.party[i];
+        if c.gold + c.bank < cost {
+            return Err(format!("Identifying costs {cost} gold."));
+        }
+        c.pay(cost);
+        c.items[slot].known = true;
+        Ok(format!("It is {}.", data.items[c.items[slot].item].name))
+    }
+
+    /// Uncursing an equipped item costs 1.6 x its price and takes it off; the item
+    /// stays cursed (MORDOR.EXE).
+    pub fn uncurse(&mut self, data: &GameData, i: usize, slot: usize) -> Result<String, String> {
+        let c = &mut self.party[i];
+        let item = c.items[slot].item;
+        let cost = store::uncurse_price(data, item);
+        if c.gold + c.bank < cost {
+            return Err(format!("Uncursing costs {cost} gold."));
+        }
+        c.pay(cost);
+        c.items[slot].equipped = false;
+        c.items[slot].known = false;
+        Ok(format!("The {} comes off.", data.items[item].name))
+    }
+
+    /// Rescuers fetch a corpse from floor F for 372,567.52 x ln(F + 1) x F (MORDOR.EXE);
+    /// they are lost, and keep the fee, 4% of the time per floor.
     pub fn rescue_cost(&self, i: usize) -> u64 {
         match self.party[i].life {
-            Life::Dead(p) => 250 * (p.floor as u64).pow(2),
+            Life::Dead(p) => (372_567.52 * (p.floor as f64 + 1.0).ln() * p.floor as f64).round_ties_even() as u64,
             _ => 0,
         }
     }
 
+    /// Raising costs 2,912.32 x max hits / 1.5 (MORDOR.EXE).
     pub fn raise_cost(&self, i: usize) -> u64 {
-        100 + 50 * u64::from(self.party[i].levels.iter().sum::<u32>()).pow(2)
+        (2_912.32 * f64::from(self.party[i].max_hp) / 1.5).round_ties_even() as u64
     }
 
     /// The fee comes from the dead character's purse and bank, then the party's.
@@ -958,24 +1103,24 @@ impl Game {
     pub fn rescue(&mut self, i: usize) {
         let Life::Dead(p) = self.party[i].life else { return };
         let paid = self.charge(i, self.rescue_cost(i));
-        if self.party[i].chance(0.03 * p.floor as f64) {
-            return self.say(format!("The rescuers couldn't find {} (fee {paid} gold).", self.party[i].name));
+        if self.party[i].rnd() * 100.0 <= 4.0 * p.floor as f64 {
+            return self.say(format!("The rescuers were lost looking for {} (fee {paid} gold).", self.party[i].name));
         }
         self.party[i].life = Life::InMorgue;
         self.party[i].pos = Pos::default();
         self.say(format!("Rescuers bring {} to the morgue for {paid} gold.", self.party[i].name));
     }
 
-    /// The morgue's workers are good but not perfect: a raise fails 5% of the time,
-    /// more for the old (the original's complications), and often costs a point of CON.
+    /// A raise works clamp(35 x CON / 4.5 + 10, 10, 98)% of the time (MORDOR.EXE);
+    /// a failure ages the body a year, and a success often costs a point of CON.
     pub fn raise(&mut self, data: &GameData, i: usize) {
         if self.party[i].life != Life::InMorgue {
             return;
         }
         let paid = self.charge(i, self.raise_cost(i));
         let m = &mut self.party[i];
-        let old = f64::from(m.age().saturating_sub(data.races[m.race].lifespan.max(1) as u32 / 2)) / 100.0;
-        if m.chance(0.05 + old) {
+        let odds = (35.0 * f64::from(m.stats[CON]) / 4.5 + 10.0).round_ties_even().clamp(10.0, 98.0) as i32;
+        if m.d100() > odds {
             m.age_days += 365;
             let name = m.name.clone();
             return self.say(format!("Complications! {name} ages a year and stays dead (fee {paid} gold)."));
@@ -1011,7 +1156,7 @@ mod tests {
     fn kit(d: &GameData, c: &mut Character) {
         for n in ["Bronze Sword", "Leather Armor", "Leather Gloves", "Leather Boots", "Cloth Cloak", "Wooden Shield", "Leather Cap"] {
             let item = d.items.iter().position(|i| i.name == n).unwrap();
-            c.buy(d, item).unwrap();
+            c.items.push(magic::new_held(d, item, true));
             let slot = c.items.len() - 1;
             let _ = c.toggle_equip(d, slot);
         }
@@ -1093,8 +1238,8 @@ mod tests {
         let (d, t) = (data(), Tuning::load(&[]).unwrap());
         let mut g = Game::new(hero(&d, "Quaffer", 0, 1, 0, 1));
         let potion = d.items.iter().position(|i| i.id == magic::POTION_OF_EXPERIENCE).unwrap();
-        assert!(magic::stock_has(&d, potion));
-        g.party[0].buy(&d, potion).unwrap();
+        assert_eq!(g.stock(&d).count(potion), crate::store::UNLIMITED);
+        g.buy(&d, 0, potion).unwrap();
         g.enter_dungeon(&d).unwrap();
         magic::use_item(&mut g, &d, &t, 0, potion);
         assert_eq!(g.party[0].add_xp(&d, &t, 10), 15);
@@ -1113,7 +1258,7 @@ mod tests {
         g.enter_dungeon(&d).unwrap();
         let kobold = d.monsters.iter().position(|m| m.name == "Kobold").unwrap();
         let foes = vec![crate::combat::Foe { monster: kobold, hp: 50, max_hp: 50, asleep: 0 }];
-        g.fight = Some(crate::combat::Fight { foes, round: 0, order: Some(Act::Defend), back: g.pos(), lair: false, peaceful: false, chest: None, defending: vec![false; 2] });
+        g.fight = Some(crate::combat::Fight { foes, round: 0, order: Some(Act::Defend), back: g.pos(), lair: false, peaceful: false, chest: None, defending: vec![false; 2], gold: 0, opening: None });
         g.party[0].hp = 3;
         let act = crate::ai::decide(&g, &d, &t, 1);
         assert!(matches!(act, Act::Cast(s, Target::LowestAlly) if magic::kind(&d.spells[s]) == Some(Magic::Heal)), "{act:?}");
@@ -1151,14 +1296,43 @@ mod tests {
         let mut g = Game::new(hero(&d, "Picker", 0, 1, 6, 10));
         g.enter_dungeon(&d).unwrap();
         let before = g.party[0].gold;
+        let kobold = d.monsters.iter().position(|m| m.name == "Kobold").unwrap();
         for _ in 0..20 {
             let trap = crate::treasure::Trap::PoisonGas;
-            g.chest = Some(crate::treasure::Chest { chest: true, trap, guess: trap, sure: 2, magic_lock: false, level: 1 });
+            g.chest = Some(crate::treasure::Chest { chest: true, trap, guess: trap, sure: 2, magic_lock: false, unlocked: false, monster: kobold, level: 1, gold: 1000 });
             crate::treasure::open(&mut g, &d, &t, 0);
             g.party[0].hp = g.party[0].max_hp;
         }
         assert!(g.party[0].gold > before && g.chest.is_none());
         assert!(g.log.iter().any(|l| l.contains("disarms")));
+    }
+
+    /// MORDOR.EXE's numbers: the hit roll, A/D, swings, gold and prices.
+    #[test]
+    fn original_rules() {
+        let d = data();
+        let mut c = hero(&d, "Roller", 0, 1, 0, 1);
+        // Attack 20 against defense 10: 75%, and a swing lands when d100 < 75.
+        let hits = (0..20_000).filter(|_| crate::combat::swing(&mut c, 20, 10, 10.0, 15, 1.0) > 0).count();
+        assert!((hits as f64 / 20_000.0 - 0.74).abs() < 0.02, "{hits}");
+        assert!((0..2000).all(|_| crate::combat::swing(&mut c, 10, 1000, 10.0, 15, 1.0) == 0 || c.roll(1) == 0));
+        // Nomad gains 3/3 A/D every 2 levels up to 30; a Warrior swings again at 91.
+        assert_eq!(guild_ad(&d, NOMAD, 30)[0] as i32, 45);
+        c.levels[1] = 91;
+        assert_eq!(c.swings(&d), 1);
+        c.levels[1] = 90;
+        assert_eq!(c.swings(&d), 0);
+        // A second extra guild costs A² x 5356; the first is free.
+        c.levels[1] = 0;
+        assert_eq!(c.join_cost(&d, 1), 0);
+        c.levels[1] = 1;
+        assert_eq!(c.join_cost(&d, 6), 7_465_074);
+        let dagger = d.items.iter().position(|i| i.name == "Iron Dagger").unwrap();
+        let p = f64::from(d.items[dagger].price);
+        assert_eq!(crate::store::buy_price(&d, dagger, 1), (1.5 * p / 1.15).round() as u64);
+        let kobold = &d.monsters[d.monsters.iter().position(|m| m.name == "Kobold").unwrap()];
+        let gold = crate::treasure::gold(&mut c, kobold, 3, false);
+        assert!((400..10_000).contains(&gold), "{gold}");
     }
 
     /// With `DDJ_RETAIL` set: a strong party plays 400 steps on every floor, to shake out

@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    mdr::Words,
     Tuning,
     ai::Target,
     game::{Character, Game, Held, INT, Life, Pos, Status, WIS},
@@ -134,8 +135,7 @@ pub fn healing_potion(c: &Character, d: &GameData) -> Option<usize> {
 }
 
 fn word(it: &Item, w: usize) -> i16 {
-    // `rest` holds the record from w0 (after the name).
-    it.rest.get(2 * w..2 * w + 2).map_or(0, |b| i16::from_le_bytes([b[0], b[1]]))
+    it.w(w)
 }
 
 /// The spell an item casts when used (potions, scrolls, rods): the record's 1-based
@@ -149,14 +149,9 @@ pub fn consumable(d: &GameData, item: usize) -> bool {
     matches!(d.items[item].kind, POTION | SCROLL | TOME) || item_spell(d, item).is_some() && d.items[item].power == 0
 }
 
-/// Whether the store sells this item.
-pub fn stock_has(d: &GameData, item: usize) -> bool {
-    crate::game::stock(d).contains(&item)
-}
-
-/// Negative attack or defense: cursed, and sticks once equipped.
+/// Cursed (w40, MORDOR.EXE): it sticks once equipped.
 pub fn cursed(d: &GameData, item: usize, _alignment: u8) -> bool {
-    d.items[item].attack < 0 || d.items[item].defense < 0
+    d.items[item].w(40) != 0
 }
 
 /// STR, INT, WIS, CON, CHA, DEX needed to equip (w26-31).
@@ -416,7 +411,7 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f32, ta
                 let level = f32::from(d.monsters[g.fight.as_ref().unwrap().foes[fi].monster].level);
                 if g.party[i].chance(f64::from(0.6 + 0.05 * (p - level)).clamp(0.1, 0.95)) {
                     let hp = g.fight.as_ref().unwrap().foes[fi].hp;
-                    g.damage_foe(d, t, i, fi, hp, "banishes");
+                    g.damage_foe(d, t, i, fi, hp, "banishes", 1.0);
                 }
             }
         }
@@ -456,14 +451,14 @@ fn offensive(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f32,
         }
         if sp.effect == 100 && g.party[i].chance(f64::from((0.25 + 0.04 * (p - f32::from(m.level))) * (1.0 - resist)).clamp(0.02, 0.8)) {
             let hp = f.foes[fi].hp;
-            if g.damage_foe(d, t, i, fi, hp, "slays") && wizard {
+            if g.damage_foe(d, t, i, fi, hp, "slays", 1.0) && wizard {
                 restore_sp(g, d, t, i);
             }
             continue;
         }
         let base = i32::from(sp.base) + g.party[i].roll((f32::from(sp.per_level.max(0)) * p) as u32 + 1) as i32;
         let dmg = ((base as f32 * int_bonus * (1.0 - resist)) as i32).max(if resist >= 1.0 { 0 } else { 1 });
-        if g.damage_foe(d, t, i, fi, dmg, "blasts") && wizard {
+        if g.damage_foe(d, t, i, fi, dmg, "blasts", 1.0) && wizard {
             restore_sp(g, d, t, i);
         }
     }

@@ -27,28 +27,151 @@ Numbers marked "start" are first guesses, to be tuned in `patches/modern.toml`.
   drain life and stats, and older characters are more likely to suffer them.
   Waiting for a rescue party ages the character.
 
-## Original guild level cost (measured 2026-11-03)
+## Original rules (read from MORDOR.EXE, 2026-11-04)
 
-Read from the guild's "Exp. Info" box in v1.1 under winevdm, after editing the save's
-guild level and the MDATA1 XP factors (73 readings, levels 1-250). To go from level L to
-L+1 a character needs XP(L) in total, the cumulative amount, not the cost of that level
-alone:
+How these were read: docs/formats.md, "Reading MORDOR.EXE". The remake uses them as below.
+Each place it departs from them is marked "remake", and the original's bugs that it fixes
+are listed at the end. Notation:
+- L is a guild level and r that guild's ability rate from the table (Warrior fighting 1.2).
+- d100 is a roll of 1-100.
+- "w" fields are table words (docs/formats.md).
 
-    XP(L) ≈ R(race) × (G × L² + 8.256 × L − 4.155)        G = guild XP factor (8-32)
+**Melee** (`combat.rs`):
+- **One swing:**
+  - hit% = 50 + 50 (att − def) / att when att > def, else 50 − 50 (def − att) / def, clamped to 2-98.
+  - Damage = (ln(L + 5) + 1) / ln 1.2 × s / 30 × a roll of 0.6-1.6 around (s + 10) / 20 × mult. Here s is STR, compressed: s − ln s (ln s − 2.4) 2.25 + 1.
+  - The attack/defense gap takes up to (def − att) / 8 off, or adds it when the attacker is stronger.
+  - mult above 1 is compressed to mult − ln(mult)².
+- **Swings:** a character swings its swings plus the weapon's (w9). A miss, or a hit that doesn't kill, ends the turn; a kill moves on to the next foe. There is no melee without a weapon.
+- **Guild swings:** the first extra one comes at level ln(11 − r) × 50, and each next at ln(11 − r) × 2 × the last. A Warrior gets them at 91 and 324.
+- **Multiplier:**
+  - Fighting: 0.6 + (ln(100 + L) / 1.75 − 2.3) × r² / 2, times the weapon's w18.
+  - A critical hit adds 5 and a backstab 2. Their chances are (ln(L/999 + 1) × 100 × ln(r + 1) / 3 − ln(monster level / 999 + 1) × 100) / 2, capped at 50%. Backstab divides by 2 instead of 3 and caps at 75%. Weapons with the critical or backstab flag add more.
+  - Size: ±0.1 per step of race size against monster size.
+  - An invisible monster halves the multiplier unless you see invisible.
+  - Weapon-resistant monsters ignore weapons below half their level, and weapon-immune monsters ignore all weapons.
+- **Attack and defense:**
+  - 10 each, plus the stat bonus, plus the best guild's A/D, plus items.
+  - The stat bonus is +2 per point of STR and DEX above 12, +1 per point of INT and WIS above 14, with mirror penalties below 8. In the remake it is +4 per point of the melee rating above 12 (or below 8).
+  - Guild A/D: each guild adds its w114/w116 every Int(w119) levels up to its HP cap (w1). After that the gap is CInt((w1 / 2 + L / 18) / (w119, + 3 for Nomad)) levels, up to level w118. Nomad reaches 45/45 by level 30.
+- **Monsters:**
+  - Each group attacks one member a round, chosen 100/50/25/12/6 by party position, with up to five of its monsters. Each attacker hits the member, or one of its companions.
+  - Monster swings use its attack (w0), level (w37), STR (w38) and multiplier (w46). Critical adds 2 and backstab 1.
+  - Breath, acid and electrocution are N-based, with N ≈ (ln X + X/15) / ln 1.08 − target level / 20, and resistance takes half off. They come 50% of the time, or 80% (acid and shocks 90%) against targets above 1.25 × the monster's level, and 20% (10%) below 0.75 ×.
+  - Monster spells come from its classes (w24), at a level near its own. Damage = base × (1 + ln(l + 1) / ln 5) + l / 10 × per level, at caster level w37 / 4.
+- **Specials after a hit that hurt:**
+  - Poison, disease and paralysis go past d100 against resistance; paralysis adds CON.
+  - Aging and draining go past d100 against CON × 2.5 − 2 × level.
+  - Stoning: CON × ln CON / ln 2.5 − level saves.
+  - Item destruction and theft need no hit. DEX protects items; thieving and wounds protect purses.
+- **XP** comes per point of damage dealt, to the dealer:
+  - d (0.9 − ln(d + 1)/10)(5 + level/10)(2 − ln d/10) / (1 + 3 L/999).
+  - Less 4% per other party member.
+  - Companions earn their master a quarter.
+  - The remake's depth and catch-up bonuses apply on top.
+- **Peace:** a good group meets a good leader in peace, and a neutral group 40% of the time. Each round a peaceful group turns hostile at a chance set by the two alignments (15-100) minus 7.5 ln CHA.
+- **Leaving** a fight gives the monsters a free attack, 50% + 5% per point of their DEX over the leader's (5% at least).
+- **Ailments:** poison and disease wear off when d200 + 2 (CON − 10) − 2 × strength beats 185 (195 for disease). Until then poison costs 2 hits a step and disease 1.
+- **Level-up HP:** the guild's hits; two times in three, d(hits / 5) more; and d(CON − 16) for CON above 16.
+- **Quests:** from level 5, at the guild's quest chance (w32).
 
-- The fit is within 1 XP at every reading. The L² term scales exactly with G; the
-  L term ignores G.
-- R grows more slowly than the race's XP factor r: about
-  8.756 × r / (r + 0.65) + 0.3185 × r + 2.83.
-  - Measured R: Human 11.01, Morloch 11.65, Dwarf 12.17, Ogre 12.63,
-    Elf/Giant/Gnome 13.05, Osiri 13.45.
-  - Troll is 13.86, from the fit. A Troll pays only 26% more than a Human, though its
-    factor is 3x.
+**Treasure** (`treasure.rs`):
+- **Containers:**
+  - One d99 roll for a chest (w29) or a box (w28), +25 in the monster's lair.
+  - Chests are trapped 89% of the time and boxes 74%, with a trap drawn from the monster's trap list (w35).
+  - Magic locks: remake. Rare on floors 1-5 (the floor table); the original uses w6%.
+- **Gold:**
+  - For gold exponent e, B = e × 10^(e − 0.5) / 4.
+  - Each group carries a quarter to five quarters of B × log2(level + 1), 500 at least.
+  - The total is × ln(n + 1)² / 2 × n / 2 for n monsters, and × 1.5 if magically locked.
+  - It is paid when the fight ends, or from the container (a chest pays half again).
+- **Thieving:**
+  - WIS / 4 + DEX / 2, plus (4.5 + (L + 1)^(1/ln 15)) × r × 1.4 for the best guild.
+  - Less 9.375 × ln(monster level) × ln(floor + 1).
+  - Clamped to 5-98%.
+- **Opening:**
+  - Opening disarms at the opener's thieving %. A slip sets the trap off; disarming gives XP.
+  - In a fight, opening takes CInt(10 − 2 ln(thieving − 10)) rounds (2 at least). While the opener works, monsters hit it harder.
+- **Trap guess:** WIS less ln(level) × ln(DEX) × 2.5 of the monster, plus thieving / 1.2 and ln(thief level)², against d100. A failed guess names a random trap; the confidence bar shows 1-4 bullets.
+- **Trap effects** are scaled by the floor L:
+  - Exploding: 1 to 4L ln(L+2) to everyone.
+  - Fire: 1 to 6L ln(L+2) to everyone, less fire resistance / 2.
+  - Poison and disease: everyone.
+  - Slime: eats a random item of the opener's (50% + 2L).
+  - Fate: re-rolls the opener's hits and SP.
+  - Blackout: strips the opener's spells.
+  - Fear: scares off the opener's companions that aren't fully bound.
+  - Withering: ages the opener 28 days.
+  - Teleporter: moves the party (remake; the original moves only the opener).
+- **Items:**
+  - d100 (−25 for a chest) against the monster's item % (w66), then a tenth of it for each further item.
+  - Each item comes from one of the monster's ten classes (w51-60), at a level from half its item level (w65) to all of it, weighted by rarity (w6).
+  - The finder knows it when the item's difficulty, 25 + (ln(mult + 1) + 0.3) ln(w17 + 1) × level, is within (INT + WIS)/2 × ln((best level + 5)/10 + 1), and only for items up to level 5.
+
+**City** (`store.rs`, `game.rs`, `monsters.rs`):
+- **Stock:**
+  - The store's and Confinement's stock is shared by every character (saves/store.json). Store-only (level 0) items never run out.
+  - Buying costs 1.5 P / (ln s + 1.15) with s in stock (1.3 P for the last one, 0.45 P with nine); store-only items cost P.
+  - The store pays 0.9 P / (s + 1.15), a third of that unidentified, less for used charges, and nothing for known cursed items. Items sold go back on the shelf.
+  - Resting in the city ages a day per 3.25% of hits missing, and restocks: while d100 ≤ days (up to 50), one more event. Each event is 60% new stock from the floors reached and 40% sold off.
+- **Item services:**
+  - Identify: 0.23 P / ((s/2 + 1) × 0.9) per step (two steps).
+  - Uncurse: 1.6 P, and the item comes off.
+  - CHA's passive (remake) takes 1% a point above 10 off every buy and sell price.
+- **Guilds:**
+  - Joining: free while you belong only to your current guild; otherwise A² × 5356. A sums (rate + 1) × 1.25 over the guild's abilities and max spell level / 3 over its classes: Nomad 1.7 million, Ninja 10.9 million.
+  - Level gold: see "Original guild level cost" above.
+- **Morgue:**
+  - Raise: 2,912.32 × max hits / 1.5. It works clamp(35 CON / 4.5 + 10, 10, 98)% of the time.
+  - Rescue from floor F: 372,567.52 ln(F + 1) F. The rescuers are lost 4% of the time per floor.
+- **Seer:** a party member costs 132,567.52 ln(F + 1) F; a monster's lair costs half that at its level, up to level 12.
+- **Confinement:**
+  - A companion's value is (500 att + 500 def + 250 hits) × ln(STR + DEX) × ln(level + 1), plus its specials, spells and resistances.
+  - It sells for 1.5 × value / (ln s + 1.15) and is bought back at 0.9 × value / (s + 1.15).
+  - Bound companions start at binding level 5 + level (10 at most).
+  - The bindsmen add 4 levels (12 at most) for power level × 1237 × new level × old level / 4.
+
+**Original bugs the remake fixes:**
+1. The player's hit roll passes defense 0 (players hit 97%); the monster's defense is used.
+2. Defend's ×1.5 defense was computed and then thrown away; it counts.
+3. Poison and disease traps caught only resistant characters. Now resistance / 2 is the chance to shrug them off.
+4. After a trap, the death check looked at party slot 0 but killed the opener; it checks the opener.
+5. Disarm XP used party slot 0's level; it uses the opener's.
+6. Draining never lowered STR; it can.
+7. Item destruction counted DEX twice. Theft used the controlled character's thieving instead of the victim's.
+8. An item's 90% resistance replaced a higher race value; the higher counts.
+9. Disease recovery read the poison strength.
+10. Gold used ln((level + 1) / ln 2), a misplaced bracket for log2(level + 1).
+11. Every charged item bought got a discount (an uninitialised index); prices no longer do.
+12. Restocking only ever sold off unaligned stock, and Confinement could pass 9 of a monster.
+13. The last binding step was cheap; the cost uses the new level.
+14. Opening in a fight with thieving 10 or less raised a run-time error; it takes 10 rounds.
+15. The rescue fee used the floor the player typed; it uses the real floor.
+
+## Original guild level cost (measured 2026-11-03, read from MORDOR.EXE 2026-11-04)
+
+To go from level L to L+1 a character needs XP(L) in total, the cumulative amount, not
+the cost of that level alone. MORDOR.EXE computes it as follows (`original_xp`):
+
+    XP(L) = (500 × 2LG / 12 × L + 344 × (2L − 1) − 2) / 10 × (ln r / ln(r + 1) + 0.3 + r / 25)
+          ≈ 8.333 × (G × L² + 8.256 × L − 4.152) × race term
+
+- G is the guild XP factor (8-32). r is the race's XP factor + 1.
+- Every step is rounded to 4 decimals (VB Currency). The total is rounded half to even.
+- It reproduces all 73 readings taken under winevdm exactly; the earlier fit was within 1 XP.
+- The race term × 8.333: Human 11.01, Morloch 11.65, Dwarf 12.17, Ogre 12.63, Elf, Giant
+  and Gnome 13.05, Osiri 13.45, Troll 13.86. A Troll pays only 26% more than a Human,
+  though its factor is 3x.
 - Examples for a Human:
   - Nomad: 133 XP for level 2, 9,672 at level 10, 322,000 at level 60.
   - Healer: 1.27 million at level 60.
-- Gold to level ≈ 39.13 × L², whatever the race or guild (39 for level 2, 391,313 at level
-  100).
+
+Gold to make a level (`Tuning::level_gold`):
+- The sum over l = 1..L of round(30.1 × (2l − 1)), about 30.1 × L².
+- Then × (1 + guild w111 / 10). By guild, w111 is: Warrior 1; Paladin 2; Nomad, Seeker,
+  Mage and Sorcerer 3; Wizard and Healer 4; Ninja and Villain 5; Scavenger 7; Thief 9.
+- So Nomad pays 39 for level 2 and 391,313 at level 100, and a Thief 57.19 × L². (The
+  measured "39.13 × L² for every guild" came from Nomad only.)
 
 ## Decided
 
@@ -148,22 +271,6 @@ changes floor, going back to town included.
 Where the original's rule isn't known, these are stand-ins close to its spirit. Each
 can be changed in `patches/modern.toml` or here.
 
-- **Combat start values**: hit chance attack / (attack + defense), clamped to 5-95%
-  (a ratio, since the original's A/D runs from about 6 on floor 1 to 900 on floor 15).
-  Weapon damage is 1 to power × 6 plus (STR − 10) / 2; bare hands count as power 2.
-  Monster damage is 1 to level × 2 + attack / 20. A kill is worth
-  hp × level × 1.5 + attack / 2 XP. Gold is level × 5-25 per monster, and a cleared
-  group leaves an item 15% of the time.
-- **Guild A/D**: each level adds 3 × the guild's fighting ability to attack and
-  defense, and the best guild counts (Nomad reaches about 71 by level 30; the help
-  says 75).
-- **Joining guilds**: the first guild after Nomad is free, as in the original; after
-  that each costs 5,000 gold × the guilds already joined.
-- **Morgue**: rescuers charge 250 × floor², raising 100 + 50 × (total levels)², or
-  all your gold if you have less. Raising always works, and loses a point of CON
-  half the time.
-- **Store stock**: the store-only items (level 0) at their listed prices; it buys at
-  half price.
 - **Dungeon view**: the original's stone, floor and door textures on a 3D view up to
   four squares deep, instead of its 50 pre-drawn frames, so it scales to any window.
 - **Party**: you plus up to three saved characters as allies, as upstream; Good and Evil
@@ -195,37 +302,19 @@ can be changed in `patches/modern.toml` or here.
   rating (counting Nomad levels up to the best other guild's level), and a level in
   another guild gains 1 extra hit when Nomad is already at that level. Pure Nomads rate
   at 70%.
-- **Monster specials**: each special lands on one hit in four, against the matching
-  resistance: the race's %, +50 for a resist spell, +3% per CON (WIS for monster spells)
-  point above 12. Poison and disease tick per step; paralysis lasts a few rounds;
-  stoning holds until Restore Flesh or the morgue. Breath (one round in five) hits
-  everyone for level x 2-4. Thieves steal 10-30% of a purse, or a loose item, and flee.
-  Monster casters spend one round in three on a spell for casting level x 1-3.
-- **Peaceful groups**: the monster's peace chance, +3% per CHA point above 10 of the
-  character you control; you can walk on through. Attacking, casting at them or opening
-  their chest makes them hostile; allies leave them alone.
-- **Chests and boxes**: lairs always have a chest; elsewhere a chest at the monster's
-  chest % / 3 and a box at its box % / 2. 30% are untrapped; the rest carry one of the
-  help's ten traps. The best perceiver guesses the trap (right 35% + skill); the best
-  disarmer tries first: 30% + thieving x 4% + 2% per DEX above 12 - 3% per monster
-  level. Chests hold level x 60-240 gold and 1-2 items, boxes level x 20-80 and maybe one.
-  Magic locks follow the floor table.
-- **Items**: found items are known 2% per INT + WIS point (else "Unidentified Potion"
-  and so on); the store identifies for a tenth of the price and takes cursed items off
-  you for half. Stat potions and tomes raise a stat by one, to the race max + 5.
+- **Items**: unidentified finds show as "Unidentified Potion" and so on. Stat potions and tomes raise a stat by one, to the race max + 5.
   Experience potions cost 7,500 (Greater: drop only, 30,000 value); a found item is an
   experience potion 4% of the time (Greater 30% of those, floor 5+).
 - **Charm of Experience**: 60 SP, needs INT and WIS 14.
 - **Companions**: up to four. Charms take 35% + 5% per power over the monster's level,
   times the binding strength (Mage members 1.5x; +4% per CHA point above 10). A bind
-  lasts about 100 steps x strength; badly hurt companions may wander off. Holding &
-  Confinement sells tame monsters of floors 1-4 at 100 x level² x hits, buys at a third,
-  and rebinds for a tenth.
-- **City**: the bank pays fees when the purse runs short (as the original). The Seer
-  charges 200 to locate a party member or a monster's lair. Every fifth level a guild
-  may set a quest (half the time): slay a monster from floor level/5 before the next
-  level. Rescuers fail 3% per floor and keep the fee; raises fail 5% plus 1% per year
-  past half the race's lifespan, aging the body a year. Resting in the city ages you a day.
+  lasts 30 steps x binding level x strength (the original's leaving rule isn't read
+  yet); badly hurt companions may wander off.
+- **City**: the bank pays fees when the purse runs short (as the original). A guild's
+  quest asks for a monster from floor level/5 (the original's choice isn't read yet). A
+  failed raise ages the body a year, and a success loses a point of CON half the time.
+- **Paralysis** lasts 3 + level/2 rounds or steps (the original's wear-off isn't read
+  yet). The Teleporter trap moves the whole party, and the container is lost.
 - **Squares**: water may hurt members wearing 12+ defense of gear (a 1 in 4 chance per
   step); quicksand hurts and may swallow a loose item; extinguish squares strip spell
   effects; anti-magic blocks casting; fog hides the view. Random teleporters keep the

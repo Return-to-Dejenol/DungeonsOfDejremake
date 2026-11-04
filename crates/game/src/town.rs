@@ -90,7 +90,7 @@ impl App {
         let g = self.game.as_mut().unwrap();
         let c = &mut g.party[self.sel];
         let mut changed = false;
-        let (need, gold) = (c.xp_needed(d, t), Tuning::level_gold(c.level()));
+        let (need, gold) = (c.xp_needed(d, t), Tuning::level_gold(c.level(), d.guilds[c.guild].gold_factor));
         ui.label(format!("{}: the {} guild asks {need} experience and {gold} gold for level {}.", c.name, d.guilds[c.guild].name, c.level() + 1));
         ui.label(format!("{} has {} experience.", c.name, c.xp[c.guild]));
         if let Some(m) = c.quest {
@@ -101,12 +101,11 @@ impl App {
             changed = true;
         }
         ui.add_space(6.0);
-        ui.label(format!("Joining a new guild costs {} gold.", c.join_cost()));
         egui::Grid::new("guilds").show(ui, |ui| {
             for (i, gd) in d.guilds.iter().enumerate() {
                 ui.label(&gd.name);
                 let lv = c.levels[i];
-                ui.label(if lv > 0 { format!("level {lv}") } else { String::new() });
+                ui.label(if lv > 0 { format!("level {lv}") } else { format!("joining {} gold", c.join_cost(d, i)) });
                 let label = if i == c.guild { None } else if lv > 0 { Some("Act as") } else { Some("Join") };
                 if let Some(l) = label
                     && ui.button(l).clicked()
@@ -124,18 +123,21 @@ impl App {
         let mut changed = false;
         ui.columns(2, |cols| {
             let g = self.game.as_mut().unwrap();
-            let c = &mut g.party[self.sel];
-            cols[0].label(format!("For sale to {} [att/def] (power)", c.name));
+            let sel = self.sel;
+            let list: Vec<(usize, u64, u8)> = g.stock(d).listed(d).into_iter().map(|i| (i, 0, g.store.count(i))).collect();
+            let list: Vec<(usize, u64, u8)> = list.into_iter().map(|(i, _, n)| (i, g.buy_price(d, sel, i), n)).collect();
+            cols[0].label(format!("For sale to {} [att/def] (swings), in stock", g.party[sel].name));
             egui::ScrollArea::vertical().id_salt("stock").max_height(300.0).show(&mut cols[0], |ui| {
-                for i in game::stock(d) {
+                for (i, price, n) in list {
                     let it = &d.items[i];
                     ui.horizontal(|ui| {
-                        if ui.button(format!("Buy {}", c.buy_price(d, i))).clicked() {
-                            self.status = c.buy(d, i).unwrap_or_else(|e| e);
+                        if ui.button(format!("Buy {price}")).clicked() {
+                            self.status = g.buy(d, sel, i).unwrap_or_else(|e| e);
                             changed = true;
                         }
-                        let usable = it.guilds & (1 << c.guild) != 0;
-                        let text = format!("{} [{}/{}]{}", it.name, it.attack, it.defense, if it.power > 0 { format!(" ({})", it.power) } else { String::new() });
+                        let usable = it.guilds & (1 << g.party[sel].guild) != 0;
+                        let stock = if n >= ddj_rules::store::UNLIMITED { String::new() } else { format!(" x{n}") };
+                        let text = format!("{} [{}/{}]{}{stock}", it.name, it.attack, it.defense, if it.power > 0 { format!(" ({})", it.power) } else { String::new() });
                         ui.label(if usable { egui::RichText::new(text).strong() } else { egui::RichText::new(text).weak() });
                     });
                 }
@@ -225,14 +227,16 @@ impl App {
         ui.columns(2, |cols| {
             cols[0].label("Creatures for sale");
             egui::ScrollArea::vertical().id_salt("conf").max_height(300.0).show(&mut cols[0], |ui| {
-                for (m, price) in monsters::confinement_stock(d) {
+                let stock: Vec<(usize, u8)> = (0..d.monsters.len()).filter_map(|m| g.store.companions.get(m).filter(|&&n| n > 0).map(|&n| (m, n))).collect();
+                for (m, n) in stock {
+                    let price = monsters::companion_buy_price(d, m, n);
                     ui.horizontal(|ui| {
                         if ui.button(format!("Buy {price}")).clicked() {
                             self.status = g.buy_companion(d, m).unwrap_or_else(|e| e);
                             changed = true;
                         }
                         let mon = &d.monsters[m];
-                        ui.label(format!("{} (level {}, {}/{})", mon.name, mon.level, mon.attack, mon.defense));
+                        ui.label(format!("{} (level {}, {}/{}) x{n}", mon.name, mon.level, mon.attack, mon.defense));
                     });
                 }
             });
@@ -246,7 +250,7 @@ impl App {
                     if ui.button("Rebind").clicked() {
                         act = Some((k, true));
                     }
-                    ui.label(format!("{} {}/{} hits, bound {}", d.monsters[c.monster].name, c.hp, c.max_hp, c.bound));
+                    ui.label(format!("{} {}/{} hits, binding level {}", d.monsters[c.monster].name, c.hp, c.max_hp, c.bind));
                 });
             }
             match act {

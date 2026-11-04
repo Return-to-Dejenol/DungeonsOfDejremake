@@ -38,6 +38,21 @@ gitignored). The bundled shareware covers floors 1-3; point the importer at a re
 for all 15. Music needs the GeneralUser GS SoundFont in `vendor/soundfont/` (see
 `scripts/build-installer.ps1`); without it the game runs silent but for effects.
 
+## Edit saves
+
+`ddj-save` shows and edits the remake's saves and the original's character file
+(MDATA4.MDR), for testing:
+
+```
+cargo run -p ddj-rules --bin ddj-save -- show saves/Ann.json
+cargo run -p ddj-rules --bin ddj-save -- set saves/Ann.json gold 50000
+cargo run -p ddj-rules --bin ddj-save -- set C:/MORDOR/DATA/MDATA4.MDR Ann.guild.0.level 30
+```
+
+Remake fields are JSON paths (`stats.0`, `items.2.charges`); the original's are
+`NAME.field`, listed by `show`. A remake save is checked before it is written.
+`scripts/re/` holds the tools that read the original's rules out of MORDOR.EXE.
+
 ## Build the installer
 
 ```

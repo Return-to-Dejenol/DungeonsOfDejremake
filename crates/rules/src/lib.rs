@@ -7,8 +7,10 @@ pub mod ai;
 pub mod combat;
 pub mod game;
 pub mod magic;
+pub mod mdata4;
 pub mod mdr;
 pub mod monsters;
+pub mod store;
 pub mod treasure;
 
 use serde::Deserialize;
@@ -38,14 +40,6 @@ pub struct Xp {
 #[derive(Debug, Deserialize)]
 pub struct Combat {
     pub round_seconds: f64,
-    pub hit_bias: f64,
-    pub ad_per_fighting: f64,
-    pub weapon_die: u32,
-    pub monster_die: u32,
-    pub xp_per_hp_level: f64,
-    pub gold_min: u32,
-    pub gold_max: u32,
-    pub item_chance: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -86,9 +80,13 @@ impl Tuning {
         total.round() as u64
     }
 
-    /// Gold the guild charges to make the next level (the original's, unchanged).
-    pub fn level_gold(level: u32) -> u64 {
-        (39.13 * f64::from(level).powi(2)).round() as u64
+    /// Gold the guild charges to make the next level (the original's, unchanged):
+    /// MORDOR.EXE sums round(30.1 (2l - 1)) over the levels, then adds the guild's
+    /// `gold_factor` tenths (Nomad 3: 39.13 L²).
+    pub fn level_gold(level: u32, gold_factor: i16) -> u64 {
+        let l = f64::from(level);
+        let sum = (1..=level).fold(0.0, |acc: f64, i| (acc + l / 2.0 * f64::from(2 * i - 1) * 60.2 / l).round_ties_even());
+        (sum + sum * f64::from(gold_factor) / 10.0).round_ties_even() as u64
     }
 
     /// XP for one character from a kill worth `monster_xp` on `floor`.
@@ -104,21 +102,15 @@ impl Tuning {
     }
 }
 
-/// The original v1.1 total XP to make level `level + 1`, measured from the game
-/// (docs/balance.md): within 1 XP of every reading.
+/// The original v1.1 total XP to make level `level + 1`, as MORDOR.EXE computes it:
+/// 8.33 (G L² + 8.256 L - 4.152) times a race term, with the VB Currency rounding
+/// (4 decimals) of each step. It matches every reading taken in the game.
 pub fn original_xp(level: u32, race_xp: f32, guild_xp: f32) -> f64 {
-    let (r, l) = (f64::from(race_xp), f64::from(level));
-    // Measured for the factors the races use; the fit (within 0.03) covers the rest.
-    let race = match race_xp {
-        3.0 => 11.0113,
-        4.0 => 11.652,
-        5.0 => 12.1732,
-        6.0 => 12.6315,
-        7.0 => 13.053,
-        8.0 => 13.452,
-        _ => 8.756 * r / (r + 0.65) + 0.3185 * r + 2.83,
-    };
-    race * (f64::from(guild_xp) * l * l + 8.256 * l - 4.155)
+    let cur = |x: f64| (x * 10_000.0).round_ties_even() / 10_000.0;
+    let (l, g, r) = (f64::from(level), f64::from(guild_xp), f64::from(race_xp + 1.0));
+    let (a2, a4) = (cur(2.0 * l * g), cur(2.0 * l - 1.0));
+    let base = if level == 0 { 0.0 } else { cur((a2 / 12.0 * 500.0 * l + 344.0 * a4 - 2.0) / 10.0) };
+    cur(base * (r.ln() / (r + 1.0).ln() + 1.0 - 0.7 + r / 25.0)).round_ties_even()
 }
 
 /// Key-by-key overlay: tables merge recursively, anything else replaces.
@@ -150,8 +142,9 @@ mod tests {
     #[test]
     fn xp_matches_original_and_divisor() {
         for (level, want) in [(1, 133.0), (10, 9672.0), (100, 889947.0)] {
-            assert!((original_xp(level, 3.0, 8.0) - want).abs() < 3.0, "level {level}");
+            assert_eq!(original_xp(level, 3.0, 8.0), want, "level {level}");
         }
+        assert_eq!((Tuning::level_gold(1, 3), Tuning::level_gold(10, 3)), (39, 3913));
         let t = Tuning::load(&[]).unwrap();
         let warrior = |l| t.xp_needed(l, 3.0, 16.0) as f64;
         assert!((warrior(60) / original_xp(60, 3.0, 16.0) - 0.4).abs() < 0.001);

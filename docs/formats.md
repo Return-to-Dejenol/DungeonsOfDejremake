@@ -33,31 +33,43 @@ MS-DOS `COMPRESS.EXE` (SZDD); the importer expands it. MDATA11 has no version re
 - **Race**: w0-5 stat minimums (STR INT WIS CON CHA DEX), w6 unused; w7-12 maximums, w13
   unused; w14-25 resistance % (fire, cold, electric, mind, disease, poison, magic, stone,
   paralysis, drain, acid, unused); w26 alignment mask (1 good, 2 neutral, 4 evil); w27
-  unknown; w28 size (1 small, 2 normal, 3 big, 4 very big); w29 unknown; w30 lifespan;
+  unknown; w28 size (1 small, 2 normal, 3 big, 4 very big; against monster w64); w29 unknown; w30 lifespan;
   w31-32 f32 XP factor.
 - **Guild**: w0 average HP per level up to w1; w1 that level cap; w2 HP per level after it;
   w3-4 f32 XP factor; w5 unknown (Nomad 90, others 1); w6-11 stat requirements; w13
-  alignment mask; w15-26 six f32 abilities, each x10 as the refcard shows (thieving,
-  backstab, critical hit, multiple swings, fighting, perception); w32 quest chance %;
-  w33-68 eighteen f32 spell rates, one per spell class: a spell is taught at guild level
-  `spell level x rate` (Paladin heal rate 3: Minor Heal at 6, Heal at 12, as the help's
-  lists); w69-108 eighteen more f32, unknown; w109 race mask (bit n = race n); w111-118
-  unknown.
-- **Item**: w0 id; w1-2 attack/defense (negative on cursed items); w3-4 u32 price; w5
-  level found (0 = sold in the store only); w6 probably rarity; w9 weapon power (the
-  bracketed number in item info); w11 the 1-based number of the spell it casts
-  (potions, scrolls, rods); w13 charges (potions 3, scrolls 4, rods 25); w15 guild-usable
-  bitmask (bit n = guild n; 4095 = all); w18-19 f32 damage multiplier; w23 index into
-  item types; w26-31 stats required (probable).
-- **Monster**: w0 attack; w1 defense; w2 id (0-400); w3 hit points; w5 portrait (1-based
-  tile of MG11's `MONS` sheet, 60x60, ten to a row); w7 level found (1-16); w8-19
-  resistances (race order); w20 casting level and w24 the spell classes it casts (mages,
-  priests); w22 special attacks (bits: 1 poison, 2 disease, 4 paralysis, 8 fire breath,
-  16 cold breath, 32 acid, 64 electric breath, 128 drain, 256 stoning, 512 aging
-  (probable), 1024 critical hits, 2048 steal gold, 4096 destroy items, 8192 steal
-  items; checked against the help's examples); w26 % chance a group is peaceful
-  (Clean-Ups 66, "usually docile"); w27-29 % box, chest and item chances (probable);
-  w32 group size; w45 monster type (rooms spawn by it).
+  alignment mask; w15-26 six f32 ability rates as the refcard shows them (thieving,
+  backstab, critical hit, multiple swings, fighting, perception; Warrior fighting 1.2);
+  w32 quest chance %; w33-68 eighteen f32 spell rates, one per spell class: a spell is
+  taught at guild level `spell level x rate` (Paladin heal rate 3: Minor Heal at 6, Heal
+  at 12, as the help's lists); w71+2c f32 the max spell level of class c; w109 race mask
+  (bit n = race n); w111 gold factor (tenths added to the level fee); w114 and w116 f32
+  attack and defense gained per A/D step; w118 the last level that gains A/D; w119 f32
+  levels between A/D steps.
+- **Item**: w0 id; w1-2 attack/defense; w3-4 u32 price; w5 level found (0 = sold in the
+  store only); w6 rarity (the weight among items of its type and level); w7-8 flags
+  (1 levitate, 2 invisible, 4 protect, 8 see invisible, 16 better criticals, 32 better
+  backstabs); w9 swings it adds (the bracketed number in item info); w10 500-511 a guild
+  item; w11 the 1-based number of the spell it casts (potions, scrolls, rods); w13 full
+  charges (potions 3, scrolls 4, rods 25); w15 guild-usable bitmask (bit n = guild n;
+  4095 = all); w17 used in its identification difficulty; w18-19 f32 damage multiplier;
+  w20-21 alignment mask (1 unaligned only); w23 index into item types; w24-25 resistance
+  mask (each bit gives 90% while worn); w26-31 stats required (probable); w33-38 stat
+  modifiers while worn; w40 cursed (2 = sticks on by itself).
+- **Monster**: w0 attack; w1 defense; w2 id (0-400); w3 hit points (each new one ± a
+  quarter); w5 portrait (1-based tile of MG11's `MONS` sheet, 60x60, ten to a row); w6
+  magic-lock %; w7 level found (1-16); w8-19 resistances (race order); w20-21 flags (1
+  sees invisible, 2 invisible, 4 resists all magic, 8 resists charms, 16 resists weapons
+  below half its level, 32 immune to weapons); w22-23 special attacks (1 poison, 2
+  disease, 4 paralyze, 8 fire breath, 16 cold breath, 32 acid, 64 electrocute, 128
+  drain, 256 stone, 512 age, 1024 critical hit, 2048 backstab, 4096 destroy item, 8192
+  steal); w24-25 the spell classes it casts; w26 its spawn weight within its type
+  (Clean-Ups 66); w27 unused; w28 box % and w29 chest % (one roll, the chest wins); w31
+  alignment (0 good, 1 neutral, 2 evil); w32 group size; w33 gold exponent; w35-36 trap
+  mask (bit n = trap n, bit 0 = not trapped); w37 its power level (damage, traps,
+  companion prices); w38-44 stats (STR..DEX, then a spare); w45 monster type (rooms
+  spawn by it); w46-47 f32 damage multiplier; w51-60 the item classes its treasure comes
+  from (-1 any, below -1 one item, id = -c - 2); w64 size (against race w28); w65 its
+  highest item level; w66 item % in its containers.
 - **Spell**: w0 id; w1 class (the help's 18: fire, cold, electric, mind, damage,
   element, kill, charm, bind, heal, movement, banish, dispel, resistant, visual,
   magical, location, protection); w2 spell level; w3 SP cost; w6 monsters and w7 groups
@@ -78,18 +90,24 @@ form pictures; the importer writes only these out.
 
 ## Characters (MDATA4)
 
-Created at run time; MDATA9 lists the names. Record size not worked out yet. Offsets are
-from the start of the name, a fixed 30-byte space-padded string. Confirmed by editing a
-save and reading the result in the game:
-- +30 race (0 = Human)
-- +36 age in days, as an f32
-- +56-66 the six stats
-- +1646 XP, as a VB Currency (i64 × 10,000)
-- +1654 gold, also a Currency
-- +1662 current HP, then max HP
-- +1678 Nomad level
+Created at run time; MDATA9 lists the names. VB3 random-access records of 2900 bytes:
+record 0 holds the version, record 1 the character count, then one character per record
+(the last can be cut short). The layout comes from the type descriptors in MORDOR.EXE's
+global data (see [Reading MORDOR.EXE](#reading-mordorexe)), so every offset and type is
+exact; meanings marked ? are guesses. `ddj-save` (crates/rules/src/mdata4.rs) shows and
+edits these fields.
 
-Other guild levels probably follow +1678; unverified.
+- +0 name (30 chars, space padded); +30 race; +32 alignment?; +34 sex?; +36 age in days (f32)
+- +48 attack, +52 defense (both f32, kept up to date as items, levels and stats change)
+- +56-68 seven stats (STR INT WIS CON CHA DEX, one spare); +70-82 seven stat modifiers
+- +84 carried items: 41 entries of nine Integers (@0 the item); +822 a second list of 41
+- +1646 XP and +1654 gold (VB Currency, i64 / 10,000); +1662 HP, +1664 max HP
+- +1674 swings per round
+- +1678 sixteen guild entries of 24 bytes: @0 level, @2 XP (Currency), three Integers, two f32
+- +2062 five companions of 33 bytes: a 15-character name, then nine Integers
+- +2347 eight Integers, probably ailments; +2841 the two equipped weapons (carried-item
+  slots, -1 for none)
+- The record ends at +2883; the other fields are named by offset in `ddj-save`.
 
 ## Dungeon floors (MDATA11)
 
@@ -111,3 +129,17 @@ north/east/south/west, 10 extinguish, 11 pit, 12 stairs up, 13 stairs down, 14
 teleporter, 15 water, 16 quicksand, 17 rotator, 18 anti-magic, 19 rock, 20 fog, 21
 chute, 22 "stud" (unknown). Walls and doors line up with area edges, which confirms
 bits 0-3 and the axis directions. Floor 8 has two teleporter squares with no slot.
+
+## Reading MORDOR.EXE
+
+MORDOR.EXE is VB3 p-code. Its procedure and variable names were not kept, but its strings,
+constants and record layouts were:
+- Each record field reference in the p-code points at an 8-byte descriptor in the VB3
+  global data: name hash, next descriptor, type (1 Integer, 2 Long, 3 Single, 4 Double,
+  5 Currency, 7 String, 8 fixed String, larger values point at a nested type), and byte
+  offset. Array fields have 24-byte descriptors with the element count after the offset.
+- Module-level constants are kept as initialised module data.
+- Error handlers name their own procedures ("occurred in MONSMOD:monGetGold").
+`scripts/re/` rebuilds readable pseudo-source from a local copy of the game with
+ghidra-vb3; its output is never committed.
+

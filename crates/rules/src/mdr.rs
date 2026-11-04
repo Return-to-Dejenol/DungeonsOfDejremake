@@ -77,6 +77,30 @@ impl<'a> Cur<'a> {
     }
 }
 
+/// Raw words of a record (`rest` starts at w0, after the name), for the fields the
+/// original's code reads by number: `w(9)` is w9, `long(35)` the Long at w35-36.
+pub trait Words {
+    fn raw(&self) -> &[u8];
+    fn w(&self, n: usize) -> i16 {
+        self.raw().get(2 * n..2 * n + 2).map_or(0, |b| i16::from_le_bytes([b[0], b[1]]))
+    }
+    fn long(&self, n: usize) -> i32 {
+        self.raw().get(2 * n..2 * n + 4).map_or(0, |b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }
+    fn single(&self, n: usize) -> f32 {
+        f32::from_bits(self.long(n) as u32)
+    }
+}
+
+macro_rules! words {
+    ($($t:ty),*) => {$(impl Words for $t {
+        fn raw(&self) -> &[u8] {
+            &self.rest
+        }
+    })*};
+}
+words!(Race, Guild, Item, Monster);
+
 /// Alignment bitmask: 1 good, 2 neutral, 4 evil.
 pub type Alignments = i16;
 
@@ -116,6 +140,8 @@ pub struct Guild {
     pub spell_rates: [f32; 18],
     /// Bit n set: race n (in `GameData::races` order) may join.
     pub races: u16,
+    /// Tenths added to the gold for making a level (w111).
+    pub gold_factor: i16,
     pub rest: Vec<u8>,
 }
 
@@ -129,7 +155,8 @@ pub struct Item {
     pub price: u32,
     /// Probable: deepest-first floor it is found on; 0 means sold in the store only.
     pub level: i16,
-    /// Probable: weapon power (the bracketed number in item info); 0 for non-weapons.
+    /// Swings a weapon adds per round (w9, the bracketed number in item info); 0 for
+    /// non-weapons.
     pub power: i16,
     /// Bit n set: guild n (in `GameData::guilds` order) may use it.
     pub guilds: u16,
@@ -153,20 +180,35 @@ pub struct Monster {
     pub resist: [i16; 12],
     /// How many can appear together.
     pub group: i16,
-    /// Special attacks, bits: 1 poison, 2 disease, 4 paralysis, 8 fire breath, 16 cold
-    /// breath, 32 acid, 64 electric breath, 128 drain, 256 stoning, 512 aging
-    /// (probable), 1024 critical hits, 2048 steal gold, 4096 destroy items, 8192 steal
-    /// items. Checked against the help's examples (spiders poison, gorgons stone...).
+    /// Special attacks (w22), bits as MORDOR.EXE names them: 1 poison, 2 disease, 4
+    /// paralyze, 8 fire breath, 16 cold breath, 32 acid, 64 electrocute, 128 drain, 256
+    /// stone, 512 age, 1024 critical hit, 2048 backstab, 4096 destroy item, 8192 steal.
     pub specials: u16,
-    /// Spell-casting level and the spell classes it casts (bit n = class n); 0 = none.
-    pub magic_level: i16,
+    /// Flags (w20): 1 sees invisible, 2 invisible, 4 resists all magic, 8 resists
+    /// charms, 16 resists weapons, 32 immune to weapons.
+    pub flags: i16,
+    /// The spell classes it casts (bit n = class n), at level `power_level / 4`.
     pub spells: u16,
-    /// Percent chance a group is peaceful (Clean-Ups 66, "usually docile").
-    pub peaceful: i16,
-    /// Percent chances of carrying a box, a chest, and an item.
+    /// Spawn weight within its monster type (w26; Clean-Ups 66).
+    pub weight: i16,
+    /// Percent chances of leaving a box (w28) or a chest (w29); MORDOR.EXE rolls both
+    /// against one number, so the chest wins. w27 is unused.
     pub box_chance: i16,
     pub chest_chance: i16,
+    /// Percent chance a container holds an item (w66), then a tenth of it for each more.
     pub item_chance: i16,
+    /// Gold exponent (w33): a group's gold grows as 10^w33.
+    pub gold_exp: i16,
+    /// Bit n set: the container can carry trap n (w35-36; bit 0 = not trapped).
+    pub traps: u32,
+    /// The level used for damage, traps and companion prices (w37).
+    pub power_level: i16,
+    /// STR, INT, WIS, CON, CHA, DEX and a spare (w38-44).
+    pub stats: [i16; 7],
+    /// Item classes its treasure is drawn from (w51-60): -1 any, below -1 one item.
+    pub item_classes: [i16; 10],
+    /// Highest item level it leaves (w65).
+    pub item_level: i16,
     /// 1-based tile in the `MONS` bitmap of MG11.DLL (60x60, ten per row).
     pub picture: i16,
     /// Dungeon level it appears on (lairs on each floor hold monsters of that level).
@@ -380,7 +422,9 @@ impl GameData {
             let spell_rates = std::array::from_fn(|_| c.f32());
             c.skip(40);
             let races = c.i16() as u16;
-            Guild { name, hp_per_level, hp_cap, hp_after, xp_factor, stat_req, alignments, abilities, spell_rates, races, rest: c.rest(start) }
+            c.skip(1);
+            let gold_factor = c.i16();
+            Guild { name, hp_per_level, hp_cap, hp_after, xp_factor, stat_req, alignments, abilities, spell_rates, races, gold_factor, rest: c.rest(start) }
         }).collect();
         let mut names = |n: usize| section(n).map(|i| t.rec(i).str()).collect::<Vec<_>>();
         let (item_types, item_classes, monster_types, monster_families) =
@@ -414,9 +458,15 @@ impl GameData {
             c.skip(1);
             let level = c.i16();
             let resist = c.words();
-            let [magic_level, _, specials, _, spells, _, peaceful, box_chance, chest_chance, item_chance, _, _, group] = c.words();
-            c.skip(12);
+            let [flags, _, specials, _, spells, _, weight, _, box_chance, chest_chance, _, _, group, gold_exp, _] = c.words();
+            let traps = c.u32();
+            let power_level = c.i16();
+            let stats = c.words();
             let kind = c.i16();
+            c.skip(5);
+            let item_classes = c.words();
+            c.skip(4);
+            let [item_level, item_chance] = c.words();
             Monster {
                 name,
                 id,
@@ -426,12 +476,18 @@ impl GameData {
                 resist,
                 group: group.max(1),
                 specials: specials as u16,
-                magic_level,
+                flags,
                 spells: spells as u16,
-                peaceful,
+                weight,
                 box_chance,
                 chest_chance,
                 item_chance,
+                gold_exp,
+                traps,
+                power_level,
+                stats,
+                item_classes,
+                item_level,
                 picture,
                 level,
                 kind,
@@ -549,6 +605,7 @@ mod tests {
         assert_eq!((troll.attack, troll.defense, troll.hp, troll.level), (86, 69, 35, 3));
         let kobold = d.monsters.iter().find(|m| m.name == "Kobold").unwrap();
         assert_eq!((kobold.picture, d.monster_types[kobold.kind as usize].as_str()), (2, d.monster_types[0].as_str()));
+        assert_eq!((kobold.box_chance, kobold.chest_chance, kobold.item_chance, kobold.traps, kobold.power_level, kobold.stats[5]), (40, 5, 50, 31, 2, 7));
         assert_eq!(d.spells.len(), 105 + 1);
         assert_eq!((d.spells[0].name.as_str(), d.spells[104].name.as_str()), ("Charm of Opening", "Shock Lance"));
     }

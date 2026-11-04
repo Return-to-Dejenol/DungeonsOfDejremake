@@ -1,12 +1,12 @@
-//! Encounters and combat rounds: the party acts (the player's orders for the controlled
-//! character, macros for the rest), then the monsters. Start values are in
-//! `patches/modern.toml`; see docs/balance.md.
+//! Encounters and combat rounds as MORDOR.EXE runs them (docs/balance.md, "Original
+//! rules"): the party acts (the player's orders for the controlled character, macros for
+//! the rest), then the companions, then the monsters. XP comes from damage dealt.
 
 use crate::{
     Tuning,
     ai::{self, Act, Target},
-    game::{CRITICAL, DEX, Game, Held, Pos, STR},
-    mdr::GameData,
+    game::{BACKSTAB, CRITICAL, Character, DEX, Game, Held, Pos},
+    mdr::{GameData, Words},
     treasure::Chest,
 };
 
@@ -23,7 +23,7 @@ pub struct Fight {
     pub round: u32,
     /// The player's order for the controlled character; `None` lets its macros decide.
     pub order: Option<Act>,
-    /// Where the party came from, for running away.
+    /// Where the party came from, for leaving.
     pub back: Pos,
     pub lair: bool,
     /// Peaceful monsters leave you be until provoked (attacked, or a chest opened).
@@ -31,6 +31,10 @@ pub struct Fight {
     pub chest: Option<Chest>,
     /// Who chose Defend this round.
     pub defending: Vec<bool>,
+    /// The group's gold, paid when the fight is won or its container opened.
+    pub gold: u64,
+    /// A member opening the chest mid-fight, and the rounds it still takes.
+    pub opening: Option<(usize, u32)>,
 }
 
 impl Fight {
@@ -53,10 +57,44 @@ impl Fight {
     }
 }
 
-pub(crate) fn hit_chance(c: &crate::Combat, att: i32, def: i32) -> f64 {
-    // A ratio scales from floor 1 (A/D near 20) to floor 15 (several hundred).
-    let a = f64::from(att.max(1)) * c.hit_bias;
-    (a / (a + f64::from(def.max(1)))).clamp(0.05, 0.95)
+/// One swing, MORDOR.EXE's hit-and-damage routine. The hit chance is 50% moved by the
+/// attack/defense gap relative to the larger of the two (2-98%); damage grows with the
+/// attacker's level and strength, times the multiplier.
+pub(crate) fn swing(c: &mut Character, att: i32, def: i32, level: f64, strength: i32, mult: f64) -> i32 {
+    let (a, d) = (f64::from(att.max(0)), f64::from(def.max(0)));
+    let h = match () {
+        _ if a == 0.0 && d == 0.0 => 0.5,
+        _ if a > d => 0.5 + 0.5 * (a - d) / a,
+        _ => 0.5 - 0.5 * (d - a) / d,
+    };
+    let h = (h * 100.0).clamp(2.0, 98.0);
+    let s = f64::from(strength.max(1));
+    let s = (s - s.ln() * (s.ln() - 2.4) * 2.25 + 1.0).round_ties_even();
+    let mut m = if mult <= 0.0 { 0.1 } else { mult };
+    if m > 1.0 {
+        m -= m.ln().powi(2);
+    }
+    let lvl = ((level + 5.0).ln() + 1.0) / 1.2f64.ln();
+    let roll = (c.rnd() * (s + 10.0) / 2.0 + (s + 10.0) / 4.0).floor() / 10.0;
+    let mut dmg = (lvl * s / 30.0 * roll * m).floor() as i32;
+    // The defense gap takes damage off (or adds it when the attacker is stronger).
+    let gap = ((d - a) / 8.0).floor();
+    let gap = gap - (c.rnd() * (gap + 1.0)).floor() + 1.0;
+    if c.roll(1000) > 0 {
+        dmg -= gap as i32;
+    }
+    if dmg < 1 || f64::from(c.d100()) >= h { 0 } else { dmg }
+}
+
+/// A critical-hit or backstab chance in percent (MORDOR.EXE): the guild's level and
+/// rate against the monster's level.
+fn knack(rate: f64, level: f64, div: f64, monster_level: f64) -> f64 {
+    ((level / 999.0 + 1.0).ln() * 100.0 * (rate + 1.0).ln() / div - (monster_level / 999.0 + 1.0).ln() * 100.0) / 2.0
+}
+
+/// The size gap's effect on a multiplier: +0.1 a step for the bigger side.
+pub(crate) fn size_term(data: &GameData, c: &Character, monster: usize) -> f64 {
+    f64::from(data.races[c.race].w(28) - data.monsters[monster].w(64)) / 10.0
 }
 
 impl Game {
@@ -64,7 +102,9 @@ impl Game {
     pub(crate) fn spawn(&mut self, data: &GameData, area: i16, stud: bool, back: Pos) {
         let floor = self.pos().floor;
         // A few squares name a room past the floor's room list; nothing lives there.
-        let Some(a) = data.floors[floor - 1].areas.get(area as usize) else { return };
+        let Some(a) = data.floors[floor - 1].areas.get(area as usize) else {
+            return;
+        };
         let level = floor as i16 + i16::from(stud);
         let lair = a.lair != 0;
         let pick = if lair {
@@ -74,9 +114,7 @@ impl Game {
                 self.cleared.push((floor, area));
                 return;
             }
-            let fits: Vec<usize> = (0..data.monsters.len())
-                .filter(|&i| a.monster_types >> data.monsters[i].kind & 1 != 0 && data.monsters[i].level == level.min(16))
-                .collect();
+            let fits: Vec<usize> = (0..data.monsters.len()).filter(|&i| a.monster_types >> data.monsters[i].kind & 1 != 0 && data.monsters[i].level == level.min(16)).collect();
             (!fits.is_empty()).then(|| fits[self.party[0].roll(fits.len() as u32) as usize])
         };
         let Some(m) = pick else { return };
@@ -84,14 +122,10 @@ impl Game {
         // Bigger parties meet bigger groups.
         let extra = self.party.len() as u32 / 2;
         let n = if lair { 1 } else { 1 + self.party[0].roll(mon.group.max(1) as u32 + extra) };
-        let foes = (0..n)
-            .map(|_| {
-                let hp = (i32::from(mon.hp) * (75 + self.party[0].roll(51) as i32) / 100).max(1);
-                Foe { monster: m, hp, max_hp: hp, asleep: 0 }
-            })
-            .collect();
+        let foes = (0..n).map(|_| Foe { monster: m, hp: new_hp(&mut self.party[0], i32::from(mon.hp)), max_hp: 0, asleep: 0 }).map(|f| Foe { max_hp: f.hp, ..f }).collect();
         let peaceful = crate::monsters::peaceful(self, data, m);
         let chest = crate::treasure::chest_for(self, data, m, lair);
+        let gold = crate::treasure::gold(&mut self.party[0], mon, n, chest.as_ref().is_some_and(|c| c.magic_lock));
         self.say(format!(
             "You encounter {n} {}{}{}{}!",
             mon.name,
@@ -99,14 +133,16 @@ impl Game {
             if peaceful { " (peaceful)" } else { "" },
             if chest.is_some() { " guarding a chest" } else { "" }
         ));
-        self.fight = Some(Fight { foes, round: 0, order: None, back, lair, peaceful, chest, defending: vec![false; self.party.len()] });
+        self.fight = Some(Fight { foes, round: 0, order: None, back, lair, peaceful, chest, defending: vec![false; self.party.len()], gold, opening: None });
     }
 
-    /// One combat round: each able party member acts, then the monsters.
+    /// One combat round: each able party member acts, then the companions, then the
+    /// monsters.
     pub fn round(&mut self, data: &GameData, t: &Tuning) {
         let Some(f) = self.fight.as_mut() else { return };
         f.round += 1;
         f.defending = vec![false; self.party.len()];
+        crate::monsters::turn_hostile(self, data);
         for i in 0..self.party.len() {
             if self.fight.as_ref().is_none_or(Fight::over) {
                 break;
@@ -116,6 +152,13 @@ impl Game {
             }
             let order = if i == 0 { self.fight.as_ref().unwrap().order } else { None };
             let act = order.unwrap_or_else(|| ai::decide(self, data, t, i));
+            // Anything but opening cancels an opening under way.
+            if act != Act::Open
+                && let Some(f) = self.fight.as_mut()
+                && f.opening.is_some_and(|(j, _)| j == i)
+            {
+                f.opening = None;
+            }
             self.act(data, t, i, act);
         }
         self.companions_act(data, t);
@@ -141,29 +184,44 @@ impl Game {
     pub(crate) fn act(&mut self, data: &GameData, t: &Tuning, i: usize, act: Act) {
         match act {
             Act::Fight(target) => self.melee(data, t, i, target),
-            Act::Defend => {
-                if let Some(f) = self.fight.as_mut() {
-                    f.defending[i] = true;
-                }
-            }
+            Act::Defend => self.defend(i),
             Act::Cast(spell, target) => crate::magic::cast(self, data, t, i, spell, target),
             Act::Use(item) => crate::magic::use_item(self, data, t, i, item),
             Act::Open => crate::treasure::open(self, data, t, i),
-            Act::Run if i == 0 => {
-                if self.party[0].chance(0.6) {
-                    let back = self.fight.take().unwrap().back;
-                    self.set_pos(data, back);
-                    self.say("You flee back the way you came.");
-                } else {
-                    self.say("You fail to get away!");
-                }
-            }
+            Act::Run if i == 0 => self.leave(data, t),
             Act::CastBest(..) | Act::Quaff => {
                 if let Some(a) = ai::resolve(self, data, t, i, act) {
                     self.act(data, t, i, a);
                 }
             }
             Act::Run | Act::Wait => {}
+        }
+    }
+
+    fn defend(&mut self, i: usize) {
+        if let Some(f) = self.fight.as_mut() {
+            f.defending[i] = true;
+        }
+    }
+
+    /// Walking away: the monsters get a free attack, 50% + 5% per point their DEX beats
+    /// the leader's (5% at least), as the original's leaving combat.
+    fn leave(&mut self, data: &GameData, t: &Tuning) {
+        let Some(f) = self.fight.as_ref() else { return };
+        let m = f.alive().next().map(|fi| f.foes[fi].monster);
+        let (peaceful, back) = (f.peaceful, f.back);
+        if let Some(m) = m
+            && !peaceful
+        {
+            let p = (50 + 5 * (i32::from(data.monsters[m].stats[5]) - i32::from(self.party[0].stats[DEX]))).max(5);
+            if self.party[0].d100() <= p {
+                self.say("The monsters strike as you turn to go!");
+                crate::monsters::attack(self, data, t);
+            }
+        }
+        if self.fight.take().is_some() {
+            self.set_pos(data, back);
+            self.say("You leave the way you came.");
         }
     }
 
@@ -177,109 +235,158 @@ impl Game {
         }
     }
 
+    /// The original's melee: swings + the weapon's swings (w9) at one foe. A miss, or a
+    /// hit that doesn't kill, ends the turn; a kill moves on to the next foe.
     fn melee(&mut self, data: &GameData, t: &Tuning, i: usize, target: Target) {
         self.provoke();
-        let c = &t.combat;
-        let Some(fi) = self.fight.as_ref().and_then(|f| f.pick(target)) else { return };
-        let m = &data.monsters[self.fight.as_ref().unwrap().foes[fi].monster];
+        let Some(mut fi) = self.fight.as_ref().and_then(|f| f.pick(target)) else {
+            return;
+        };
+        let name = self.party[i].name.clone();
+        let Some(w) = self.party[i].weapon(data) else {
+            self.say(format!("{name} has no weapon, and defends."));
+            return self.defend(i);
+        };
+        let weapon = &data.items[w];
         let (att, _) = self.party[i].att_def(data, t);
-        // Multiple swings: a second swing at swings-rating / 30 (Ninja ~ 1 in 4 at level 10).
-        let swing_odds = f64::from(self.party[i].ability(data, 3)) / 30.0;
-        let swings = 1 + usize::from(self.party[i].chance(swing_odds));
+        let (fighting, flevel) = self.party[i].fighting(data);
+        let swings = (self.party[i].swings(data) + i32::from(weapon.power)).max(1);
         for _ in 0..swings {
-            if self.fight.as_ref().is_none_or(|f| f.foes[fi].hp <= 0) {
+            let m = self.fight.as_ref().unwrap().foes[fi].monster;
+            let mon = &data.monsters[m];
+            if mon.flags & 32 != 0 || mon.flags & 16 != 0 && weapon.level < mon.level / 2 {
+                self.say(format!("{name}'s weapon has no effect on the {}!", mon.name));
+                return self.defend(i);
+            }
+            let c = &mut self.party[i];
+            let mut mult = fighting * f64::from(weapon.damage_mult);
+            let flags = weapon.long(7);
+            let wl = (f64::from(weapon.level) + 1.0).ln();
+            let mlevel = f64::from(mon.power_level);
+            let (rc, lc) = c.best_rate(data, CRITICAL);
+            let mut crit = knack(rc, lc, 3.0, mlevel);
+            if flags & 16 != 0 {
+                crit = (crit + wl * 10f64.ln()).max(wl * 10f64.ln());
+            }
+            let crit = if crit < 1.0 && (lc > 0.0 || flags & 16 != 0) { 1.0 } else { crit.min(50.0) };
+            let (rb, lb) = c.best_rate(data, BACKSTAB);
+            let mut stab = knack(rb, lb, 2.0, mlevel);
+            if flags & 32 != 0 {
+                stab = (stab + wl * 100f64.ln()).max(wl * 100f64.ln());
+            }
+            let stab = if stab < 2.0 && (lb > 0.0 || flags & 32 != 0) { 2.0 } else { stab.min(75.0) };
+            let (critical, backstab) = (f64::from(c.roll(100)) < crit, f64::from(c.roll(100)) < stab);
+            if critical {
+                // DEX passive (docs/balance.md): +3% critical damage a point above 15.
+                mult += 5.0 * (1.0 + 0.03 * f64::from((c.stats[DEX] - 15).max(0)));
+            }
+            if backstab {
+                mult += 2.0;
+            }
+            if mon.flags & 2 != 0 && !c.buffs.see_invisible {
+                mult -= mult / 2.0;
+            }
+            mult += size_term(data, c, m);
+            let dmg = swing(c, att, i32::from(mon.defense), flevel, c.melee_rating(), mult);
+            if dmg == 0 {
+                self.say(format!("{name} misses the {}.", mon.name));
                 return;
             }
-            let ch = &mut self.party[i];
-            if !ch.chance(hit_chance(c, att, i32::from(m.defense))) {
-                let name = ch.name.clone();
-                self.say(format!("{name} misses the {}.", m.name));
-                continue;
+            let verb = match (critical, backstab) {
+                (true, true) => "severs",
+                (false, true) => "backstabs",
+                (true, false) => "critically hits",
+                _ => "hits",
+            };
+            if !self.damage_foe(data, t, i, fi, dmg, verb, 1.0) {
+                return;
             }
-            let (power, mult) = ch.weapon(data).map_or((2, 1.0), |w| (data.items[w].power, data.items[w].damage_mult));
-            let rating = (2 * i32::from(ch.stats[STR]) + i32::from(ch.stats[DEX])) / 3;
-            let mut dmg = ((1 + ch.roll(power.max(1) as u32 * c.weapon_die) as i32 + (rating - 10) / 2).max(1) as f32 * mult) as i32;
-            // Critical hits: 2% per point of the rating; DEX above 15 adds 3% damage per point.
-            let crit = ch.chance(f64::from(ch.ability(data, CRITICAL)) * 0.02);
-            if crit {
-                dmg = (f64::from(dmg) * (2.0 + 0.03 * f64::from(ch.stats[DEX] - 15).max(0.0))) as i32;
+            match self.fight.as_ref().and_then(|f| f.pick(Target::First)) {
+                Some(next) => fi = next,
+                None => return,
             }
-            let name = ch.name.clone();
-            self.damage_foe(data, t, i, fi, dmg, if crit { "critically hits" } else { "hits" });
-            let _ = name;
         }
     }
 
-    /// Applies damage to a foe and handles the kill.
-    pub(crate) fn damage_foe(&mut self, data: &GameData, t: &Tuning, i: usize, fi: usize, dmg: i32, verb: &str) -> bool {
-        let Some(f) = self.fight.as_mut() else { return false };
+    /// Applies damage to a foe, awards the dealer's XP and handles the kill. `share` is
+    /// the XP rate (companions earn a quarter for their master).
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn damage_foe(&mut self, data: &GameData, t: &Tuning, i: usize, fi: usize, dmg: i32, verb: &str, share: f64) -> bool {
+        let Some(f) = self.fight.as_mut() else {
+            return false;
+        };
         let foe = &mut f.foes[fi];
-        let m = &data.monsters[foe.monster];
+        let (m, dealt) = (foe.monster, dmg.min(foe.hp));
         foe.hp -= dmg;
         let killed = foe.hp <= 0;
+        let xp = self.award(data, t, i, m, dealt, share);
         let name = self.party[i].name.clone();
-        self.say(format!("{name} {verb} the {} for {dmg}{}", m.name, if killed { " and kills it!" } else { "." }));
+        let mon = &data.monsters[m].name;
+        self.say(format!("{name} {verb} the {mon} for {dmg}{} (+{xp} XP)", if killed { " and kills it!" } else { "." }));
         if killed {
-            self.kill(data, t, i, foe_monster(self, fi));
+            self.kill(data, i, m);
         }
         killed
     }
 
-    /// Experience and gold for a kill, shared by the living: XP split evenly, members
-    /// behind the party's best level get the catch-up bonus.
-    pub(crate) fn kill(&mut self, data: &GameData, t: &Tuning, killer: usize, monster: usize) {
-        let c = &t.combat;
-        let m = &data.monsters[monster];
+    /// XP for damage dealt (MORDOR.EXE): d (0.9 - ln(d+1)/10) (5 + level/10)
+    /// (2 - ln d/10) / (1 + 3 L/999), less 4% per other party member, then the remake's
+    /// depth and catch-up bonuses.
+    pub(crate) fn award(&mut self, data: &GameData, t: &Tuning, i: usize, m: usize, dealt: i32, share: f64) -> u64 {
+        let d = f64::from(dealt.max(1));
+        let lcur = f64::from(self.party[i].level());
+        let base = d * (0.9 - (d + 1.0).ln() / 10.0) * (5.0 + f64::from(data.monsters[m].power_level) / 10.0) * (2.0 - d.ln() / 10.0) * share / (1.0 + 3.0 * lcur / 999.0);
+        let base = (base * (1.0 - 0.04 * (self.party.len() as f64 - 1.0))).max(0.0).round_ties_even() as u64;
+        let best = self.party.iter().map(Character::level).max().unwrap_or(1);
+        let xp = t.xp_award(base, self.pos().floor as u32, best - self.party[i].level());
+        self.party[i].add_xp(data, t, xp)
+    }
+
+    /// A kill: the kill count and the guild's quest.
+    pub(crate) fn kill(&mut self, _data: &GameData, killer: usize, monster: usize) {
         self.party[killer].kills += 1;
-        let living = self.living();
-        let floor = self.pos().floor as u32;
-        let base = (f64::from(m.hp) * f64::from(m.level.max(1)) * c.xp_per_hp_level + f64::from(m.attack) / 2.0) as u64 / living.len() as u64;
-        let best = living.iter().map(|&j| self.party[j].level()).max().unwrap_or(1);
-        let gold = u64::from(m.level.max(1) as u32 * (c.gold_min + self.party[killer].roll(c.gold_max - c.gold_min + 1)));
-        let mut gained = Vec::new();
-        for &j in &living {
-            let xp = t.xp_award(base, floor, best - self.party[j].level());
-            let xp = self.party[j].add_xp(data, t, xp);
-            self.party[j].gold += gold / living.len() as u64;
-            gained.push(xp);
+        for j in self.living() {
             if self.party[j].quest == Some(monster) {
                 self.party[j].quest = None;
                 let name = self.party[j].name.clone();
                 self.say(format!("{name} has completed the guild's quest!"));
             }
         }
-        let xp = gained.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("/");
-        self.say(format!("The party gains {xp} experience and {gold} gold."));
     }
 
-    fn win(&mut self, data: &GameData, t: &Tuning) {
-        let lair = self.fight.as_ref().is_some_and(|f| f.lair);
-        let chest = self.fight.as_mut().and_then(|f| f.chest.take());
-        self.fight = None;
+    /// Gold split evenly among the living (the original's divvying up).
+    pub(crate) fn share_gold(&mut self, gold: u64) {
+        let living = self.living();
+        for &j in &living {
+            self.party[j].gold += gold / living.len().max(1) as u64;
+        }
+        self.say(format!("The party finds {gold} gold."));
+    }
+
+    fn win(&mut self, _data: &GameData, _t: &Tuning) {
+        let Some(f) = self.fight.take() else { return };
         let Pos { x, y, floor, .. } = self.pos();
-        let area = data.floors[floor - 1].square(x, y).area;
+        let area = _data.floors[floor - 1].square(x, y).area;
         self.cleared.push((floor, area));
         self.say("The room is clear.");
-        match chest {
-            // Items mostly come in chests (the original); the party opens it now.
-            Some(chest) => crate::treasure::leave_chest(self, chest),
-            None if self.party[0].chance(t.combat.item_chance * if lair { 3.0 } else { 0.3 }) => {
-                let item = crate::treasure::random_item(self, data, floor);
-                self.give(data, item);
+        match f.chest {
+            // A container keeps the gold until it is opened.
+            Some(mut chest) => {
+                chest.gold = f.gold;
+                crate::treasure::leave_chest(self, chest);
             }
-            None => {}
+            None => self.share_gold(f.gold),
         }
     }
 
-    /// Gives an item to the first living member with room.
+    /// Gives an item to the first living member with room; what they know of it follows
+    /// the original's identification roll.
     pub(crate) fn give(&mut self, data: &GameData, item: Option<usize>) {
         let Some(item) = item else { return };
         let Some(j) = self.living().into_iter().find(|&j| self.party[j].items.len() < 40) else {
-            return self.say("Nobody has room to carry it.");
+            return self.say("An item was found, but nobody had room to carry it.");
         };
-        // A sharp mind may know what it found (INT + WIS); otherwise the store can tell.
-        let wits = f64::from(self.party[j].stats[crate::game::INT] + self.party[j].stats[crate::game::WIS]) / 50.0;
-        let known = self.party[j].chance(wits);
+        let known = crate::treasure::identifies(&self.party[j], data, item);
         let held: Held = crate::magic::new_held(data, item, known);
         let name = self.party[j].name.clone();
         self.say(format!("{name} finds {}!", crate::magic::item_name(data, &held)));
@@ -287,6 +394,8 @@ impl Game {
     }
 }
 
-fn foe_monster(g: &Game, fi: usize) -> usize {
-    g.fight.as_ref().map_or(0, |f| f.foes[fi].monster)
+/// A new monster's hits: the table's, give or take a quarter (MORDOR.EXE).
+fn new_hp(c: &mut Character, hp: i32) -> i32 {
+    let v = (c.rnd() * f64::from(hp) * 0.25).floor() as i32 + 1;
+    (if c.chance(0.5) { hp + v } else { hp - v }).max(1)
 }
