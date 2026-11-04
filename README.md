@@ -24,9 +24,10 @@ apply on top of those tables; the rules it changes are in [docs/balance.md](docs
 
 ## Play
 
-Install with `DejenolRemake-Setup-<version>.exe` and start it: it opens on the shareware.
-For all 15 floors, choose *Import your registered copy* and drop your copy of the
-original (its ZIP, `MORDOR.WIP` or install folder) on the window. Imported data, saves
+Install with `DejenolRemake-Setup-<version>.exe` and start it: it opens on the shareware,
+in the original's own windows ([docs/ui.md](docs/ui.md)). For all 15 floors, open
+*Options...*, choose *Import Game...* and drop your copy of the original (its ZIP,
+`MORDOR.WIP` or install folder) on the window. Imported data, saves
 and patches live in `%LOCALAPPDATA%\DejenolRemake`; uninstalling leaves them.
 
 In the browser version the import screen also has *Choose files* and *Choose folder*.

@@ -4,7 +4,7 @@
 //! `.WIP` installer archive, or an installed game folder. Files packed with
 //! MS-DOS `COMPRESS.EXE` (`*.MD_`, as the registered dungeon ships) are expanded.
 //! Only data, music, sound and picture files are copied out; executables are never
-//! extracted (MORDOR.EXE is only scanned for its embedded pictures). Nothing produced
+//! extracted (MORDOR.EXE is only read for its windows and their pictures). Nothing produced
 //! here may be committed or redistributed.
 
 use std::fs;
@@ -13,53 +13,22 @@ use std::path::{Path, PathBuf};
 
 use zip::ZipArchive;
 
+pub mod forms;
 pub mod vfs;
+
+thread_local!(static EXE_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
 
 /// Files the remake reads. `MG11.DLL` holds the original monster bitmaps.
 fn wanted(name: &str) -> bool {
     let n = name.to_ascii_uppercase();
+    if EXE_ONLY.get() {
+        return n == "MORDOR.EXE";
+    }
     (n.starts_with("MDATA") && (n.ends_with(".MDR") || n.ends_with(".MD_")))
         || n.ends_with(".MID")
         || n.ends_with(".WAV")
         || n == "MG11.DLL"
         || n == "MORDOR.EXE"
-}
-
-/// The city and menu pictures VB3 embedded in MORDOR.EXE, by (width, height) in file
-/// order. Only these bitmaps are written out; the program itself never is.
-const EXE_PICTURES: [(&str, i32, i32); 11] = [
-    ("CITY_EXIT", 120, 42),
-    ("CITY_DUNGEON", 120, 87),
-    ("CITY_GUILDS", 120, 87),
-    ("CITY_SEER", 120, 87),
-    ("CITY_MORGUE", 120, 87),
-    ("CITY_BANK", 120, 87),
-    ("CITY_STORE", 120, 87),
-    ("CITY_CONFINEMENT", 120, 87),
-    ("SPLASH", 300, 300),
-    ("MENU", 600, 400),
-    ("PORTRAIT", 150, 150),
-];
-
-fn exe_pictures(exe: &[u8], out: &Path, got: &mut Vec<String>) -> io::Result<()> {
-    let at = |o: usize| exe.get(o..o + 4).map(|b| i32::from_le_bytes(b.try_into().unwrap()));
-    let mut want = EXE_PICTURES.iter().peekable();
-    for o in (0..exe.len().saturating_sub(54)).filter(|&o| &exe[o..o + 2] == b"BM") {
-        let (Some(size), Some(hdr), Some(w), Some(h)) = (at(o + 2), at(o + 14), at(o + 18), at(o + 22)) else { continue };
-        let Some(&&(name, ww, wh)) = want.peek() else { break };
-        if hdr == 40 && (w, h) == (ww, wh) && exe.get(o..o + size as usize).is_some() {
-            let file = format!("{name}.BMP");
-            vfs::write(out.join(&file), &exe[o..o + size as usize])?;
-            got.push(file);
-            want.next();
-        }
-    }
-    Ok(())
-}
-
-/// Decodes a picture saved by the importer (e.g. `CITY_STORE.BMP`) as (width, height, RGBA).
-pub fn picture(dir: &Path, name: &str) -> Option<(usize, usize, Vec<u8>)> {
-    bmp8(&vfs::read(dir.join(format!("{name}.BMP"))).ok()?)
 }
 
 /// Copies every wanted file from `src` (a ZIP, `.WIP` or game folder) into `out`,
@@ -98,6 +67,14 @@ pub fn import_files(files: Vec<(String, Vec<u8>)>, out: &Path) -> io::Result<Vec
     Ok(got)
 }
 
+/// Imports only what MORDOR.EXE holds (its windows and pictures), leaving the rest.
+pub fn import_forms(files: Vec<(String, Vec<u8>)>, out: &Path) -> io::Result<Vec<String>> {
+    EXE_ONLY.set(true);
+    let got = import_files(files, out);
+    EXE_ONLY.set(false);
+    got
+}
+
 fn archive(name: &str) -> bool {
     let n = name.to_ascii_uppercase();
     n.ends_with(".WIP") || n.ends_with(".ZIP")
@@ -126,7 +103,7 @@ fn unzip<R: Read + Seek>(r: R, out: &Path, got: &mut Vec<String>) -> io::Result<
 /// Writes one file, expanding `COMPRESS.EXE` output (name ending in `_`).
 fn store(name: String, data: Vec<u8>, out: &Path, got: &mut Vec<String>) -> io::Result<()> {
     if name == "MORDOR.EXE" {
-        return exe_pictures(&data, out, got);
+        return forms::extract(&data, out, got);
     }
     let (name, data) = match name.strip_suffix('_') {
         Some(stem) => {
@@ -190,7 +167,7 @@ pub fn mg_bitmap(dll: &[u8], name: &str) -> Option<(usize, usize, Vec<u8>)> {
         for e in (0..count).map(|j| p + 8 + 12 * j) {
             let id = u16_at(e + 6)?;
             if id & 0x8000 == 0 && pstr(id)? == name.as_bytes() {
-                return bmp8(dll.get(u16_at(e)? << shift..)?);
+                return bmp(dll.get(u16_at(e)? << shift..)?);
             }
         }
         p += 8 + 12 * count;
@@ -198,14 +175,17 @@ pub fn mg_bitmap(dll: &[u8], name: &str) -> Option<(usize, usize, Vec<u8>)> {
     None
 }
 
-/// Decodes an 8-bit BMP file, plain or RLE8-compressed (the monster sheet is).
-fn bmp8(b: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
+/// Decodes a BMP file: 1, 4 or 8 bits a pixel (8 plain or RLE8, as the monster sheet
+/// is), or 24.
+pub fn bmp(b: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
     let i32_at = |o: usize| Some(i32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?));
     let (off, w, h, rle) = (i32_at(10)? as usize, i32_at(18)? as usize, i32_at(22)?, i32_at(30)? == 1);
+    let bpp = usize::from(u16::from_le_bytes(b.get(28..30)?.try_into().ok()?));
     let pal = 14 + i32_at(14)? as usize;
     let rows = h.unsigned_abs() as usize;
-    // Palette indexes, stored rows first (bottom-up unless the height is negative).
-    let mut idx = vec![0u8; w * rows];
+    // Palette indexes (or packed colours at 24 bits), rows first, bottom-up unless the height is negative.
+    let px = if bpp == 24 { 3 } else { 1 };
+    let mut idx = vec![0u8; w * rows * px];
     if rle {
         let (mut x, mut y, mut p) = (0, 0, off);
         while p + 1 < b.len() && y < rows {
@@ -240,10 +220,26 @@ fn bmp8(b: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
             }
         }
     } else {
-        let stride = (w + 3) & !3;
+        let stride = (w * bpp).div_ceil(32) * 4;
         for y in 0..rows {
-            idx[y * w..(y + 1) * w].copy_from_slice(b.get(off + y * stride..off + y * stride + w)?);
+            let row = b.get(off + y * stride..off + (y + 1) * stride)?;
+            for x in 0..w * px {
+                idx[y * w * px + x] = match bpp {
+                    1 | 4 => row[x * bpp / 8] >> (8 - bpp - x * bpp % 8) & ((1 << bpp) - 1) as u8,
+                    _ => row[x],
+                };
+            }
         }
+    }
+    if bpp == 24 {
+        let mut out = Vec::with_capacity(w * rows * 4);
+        for y in 0..rows {
+            let row = if h > 0 { rows - 1 - y } else { y };
+            for c in idx[row * w * 3..(row + 1) * w * 3].chunks(3) {
+                out.extend_from_slice(&[c[2], c[1], c[0], 255]);
+            }
+        }
+        return Some((w, rows, out));
     }
     let mut out = Vec::with_capacity(w * rows * 4);
     for y in 0..rows {
@@ -284,12 +280,26 @@ mod tests {
         let _ = fs::remove_dir_all(&out);
         let zip = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/MORDOR11.ZIP");
         let got = import(&zip, &out).unwrap();
-        for f in ["MDATA1.MDR", "MDATA11.MDR", "DUNGEON.MID", "MG11.DLL", "CITY_STORE.BMP", "MENU.BMP"] {
+        for f in ["MDATA1.MDR", "MDATA11.MDR", "DUNGEON.MID", "MG11.DLL", "FORMS.JSON", "frmMenu_0.BMP"] {
             assert!(got.iter().any(|g| g == f), "missing {f}");
         }
         assert_eq!(got.iter().filter(|g| g.ends_with(".MID")).count(), 16);
         assert!(got.iter().any(|g| g.ends_with(".WAV")));
         assert!(!got.iter().any(|g| g.ends_with(".EXE")));
+    }
+
+    #[test]
+    fn reads_forms() {
+        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ddj-extract-forms");
+        import(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/MORDOR11.ZIP"), &out).unwrap();
+        let f = forms::load(&out).unwrap();
+        let city = &f["frmCityMain"];
+        let store = city.controls.iter().find(|c| c.name == "lblSelection" && c.index == Some(0)).unwrap();
+        assert_eq!((store.kind.as_str(), store.rect), ("Label", [3, 79, 115, 17]));
+        assert_eq!(store.props["Caption"], forms::Val::S("General &Store".into()));
+        let pic = f["frmCreateChar"].controls.iter().find(|c| c.name == "lblGuild").unwrap();
+        assert_eq!(f["frmCreateChar"].controls[pic.parent.unwrap()].name, "picPicture");
+        assert!(f.len() >= 30, "{}", f.len());
     }
 
     #[test]

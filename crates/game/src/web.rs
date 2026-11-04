@@ -59,6 +59,8 @@ pub fn picked() -> Option<Files> {
 pub fn start() {
     spawn_local(ddj_extract::vfs::fetch("sound/GeneralUser-GS.sf2", "sound/GeneralUser-GS.sf2"));
     spawn_local(async {
+        #[cfg(debug_assertions)]
+        ddj_extract::vfs::fetch("fonts/sserife.fon", "fonts/sserife.fon").await;
         ddj_extract::vfs::mount().await;
         let canvas = web_sys::window().and_then(|w| w.document()).and_then(|d| d.get_element_by_id("game")).and_then(|c| c.dyn_into::<web_sys::HtmlCanvasElement>().ok());
         let Some(canvas) = canvas else { return web_sys::console::error_1(&"no canvas".into()) };

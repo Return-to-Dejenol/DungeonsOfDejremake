@@ -84,9 +84,20 @@ MS-DOS `COMPRESS.EXE` (SZDD); the importer expands it. MDATA11 has no version re
 MG11.DLL keeps 8-bit BMP files as resources of type "MORDOR": `MAZE` (50 pre-drawn
 50x100 corridor views), `MONS` (the portraits, RLE8-compressed), `DOOR`, `WATR`, `QSND`,
 `FOG`, `MISC` (combat icons), `PICS` (toolbar icons), `BLNK` and `ASMO`. MORDOR.EXE holds
-the city buildings (120x87, in the order Dungeon, Guilds, Seer, Morgue, Bank, Store,
-Confinement), the Exit sign, the main menu panel (600x400) and two portraits, as VB3
-form pictures; the importer writes only these out.
+its windows' pictures (the city buildings, the menu panel, toolbar icons, arrow buttons)
+inside its VB3 forms.
+
+## Windows (MORDOR.EXE's VB3 forms)
+
+RC_DATA 1 is the project directory, listing each form's stream id; RC_DATA <id> is the
+form (magic FF CC 2C: the form record, then tagged control records), RC_DATA <id + 1>
+its control names. A control record is <len:4 (bit 31: an array member)><id:1>
+[<index:2>]<name><type: a built-in id, or FF and a VBX class name><properties>; each
+property is <id:1><value>, sized by the class's property table (`vb3props.txt`), with
+Left/Top/Width/Height together in twips (15 a pixel). Tags between records: 1 opens a
+container's children, 2 closes them, 3 is the next sibling, 4 ends the form. Pictures
+are whole BMP (or ICO) files. The importer writes the forms to `FORMS.JSON` and their
+BMPs to `<form>_<n>.BMP`; see [ui.md](ui.md).
 
 ## Characters (MDATA4)
 

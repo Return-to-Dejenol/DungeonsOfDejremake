@@ -18,10 +18,6 @@ pub struct Art {
     wall: TextureHandle,
     backdrop: TextureHandle,
     door: TextureHandle,
-    pub stucco: TextureHandle,
-    pub menu: Option<TextureHandle>,
-    /// City buildings in the original's order, with their captions; the last is Exit.
-    pub city: Vec<(&'static str, TextureHandle)>,
 }
 
 fn crop((w, _, px): &Rgba, x: usize, y: usize, cw: usize, ch: usize) -> ColorImage {
@@ -40,33 +36,12 @@ impl Art {
         // Only the tiled surfaces repeat; pictures are sampled once.
         let tex = |name: &str, img: ColorImage| ctx.load_texture(name, img, TextureOptions::NEAREST_REPEAT);
         let whole = |name: &str, (w, h, px): Rgba| ctx.load_texture(name, ColorImage::from_rgba_unmultiplied([w, h], &px), TextureOptions::NEAREST);
-        let menu = ddj_extract::picture(dir, "MENU");
-        let city = [
-            ("General Store", "CITY_STORE"),
-            ("Morgue", "CITY_MORGUE"),
-            ("Guilds", "CITY_GUILDS"),
-            ("Dungeon", "CITY_DUNGEON"),
-            ("Confinement", "CITY_CONFINEMENT"),
-            ("Seer", "CITY_SEER"),
-            ("Bank", "CITY_BANK"),
-            ("Exit", "CITY_EXIT"),
-        ]
-        .into_iter()
-        .filter_map(|(label, f)| Some((label, whole(f, ddj_extract::picture(dir, f)?))))
-        .collect();
         Some(Self {
             // The big brick face and the ceiling-to-floor backdrop from the maze sheet.
             wall: tex("wall", crop(&maze, 752, 16, 78, 68)),
             backdrop: tex("backdrop", crop(&maze, 2, 0, 28, 100)),
             door: tex("door", crop(&door, 11, 2, 44, 50)),
-            // The plaster between the menu portraits, tiled behind the city.
-            stucco: tex("stucco", match &menu {
-                Some(m) => crop(m, 230, 60, 140, 140),
-                None => ColorImage::new([1, 1], vec![Color32::GRAY]),
-            }),
             mons: whole("mons", mons),
-            menu: menu.map(|m| whole("menu", m)),
-            city,
         })
     }
 
@@ -100,15 +75,6 @@ pub fn style(ctx: &egui::Context) {
     ctx.set_visuals(v);
 }
 
-/// Tiles `tex` over `rect`.
-pub fn tile(paint: &egui::Painter, tex: &TextureHandle, rect: Rect) {
-    let s = tex.size_vec2() * 2.0;
-    let uv = Rect::from_min_max(Pos2::ZERO, pos2(rect.width() / s.x, rect.height() / s.y));
-    let mut m = Mesh::with_texture(tex.id());
-    m.add_rect_with_uv(rect, uv, Color32::WHITE);
-    paint.add(m);
-}
-
 /// A textured quad (corners clockwise from top-left), cut into vertical strips so
 /// the perspective trapezoids don't warp diagonally. `reps` repeats the texture.
 fn quad(paint: &egui::Painter, tex: &TextureHandle, c: [Pos2; 4], reps: f32, tint: Color32) {
@@ -132,13 +98,10 @@ fn side(f: &Floor, (x, y): (usize, usize), dir: u8) -> Side {
     game::side(f, x, y, dir)
 }
 
-/// The first-person view: up to four squares ahead, nearer walls brighter.
-pub fn dungeon_view(ui: &mut egui::Ui, art: Option<&Art>, d: &GameData, g: &Game) {
+/// The first-person view into `rect`: up to four squares ahead, nearer walls brighter.
+pub fn dungeon_view(paint: &egui::Painter, rect: Rect, art: Option<&Art>, d: &GameData, g: &Game) {
     let p = g.pos();
     let f = &d.floors[p.floor - 1];
-    let size = vec2(ui.available_width().min(560.0), 360.0);
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let paint = ui.painter_at(rect);
     let Some(art) = art else {
         paint.rect_filled(rect, 0.0, Color32::BLACK);
         return;
@@ -157,13 +120,13 @@ pub fn dungeon_view(ui: &mut egui::Ui, art: Option<&Art>, d: &GameData, g: &Game
     }
     let tint = |k: usize| Color32::from_gray(255 - 45 * k.min(4) as u8);
     let face = |c: [Pos2; 4], s: Side, k: usize, reps: f32| {
-        quad(&paint, &art.wall, c, reps, tint(k));
+        quad(paint, &art.wall, c, reps, tint(k));
         if s == Side::Door {
             // The door fills the middle of the wall, from the floor up.
             let lerp = |a: Pos2, b: Pos2, t: f32| a.lerp(b, t);
             let (tl, tr) = (lerp(c[0], c[1], 0.25), lerp(c[0], c[1], 0.75));
             let (bl, br) = (lerp(c[3], c[2], 0.25), lerp(c[3], c[2], 0.75));
-            quad(&paint, &art.door, [lerp(bl, tl, 0.8), lerp(br, tr, 0.8), br, bl], 1.0, tint(k));
+            quad(paint, &art.door, [lerp(bl, tl, 0.8), lerp(br, tr, 0.8), br, bl], 1.0, tint(k));
         }
     };
     for (k, &sq) in squares.iter().enumerate().rev() {
@@ -187,16 +150,21 @@ pub fn dungeon_view(ui: &mut egui::Ui, art: Option<&Art>, d: &GameData, g: &Game
             face(c, s, k + usize::from(side(f, sq, dir) == Side::Open), 1.0);
         }
     }
-    if let Some(fight) = &g.fight {
-        let alive: Vec<_> = fight.foes.iter().filter(|f| f.hp > 0).collect();
-        let w = (rect.width() / alive.len().max(1) as f32).min(140.0);
-        for (i, foe) in alive.iter().enumerate() {
-            let m = &d.monsters[foe.monster];
-            let (id, uv) = art.portrait(m.picture);
-            let x = rect.center().x - w * alive.len() as f32 / 2.0 + w * i as f32;
-            let r = Rect::from_min_size(pos2(x + 6.0, rect.bottom() - w - 20.0), vec2(w - 12.0, w - 12.0));
-            paint.image(id, r, uv, Color32::WHITE);
-            paint.text(pos2(r.center().x, r.bottom() + 8.0), egui::Align2::CENTER_CENTER, &m.name, egui::FontId::proportional(13.0), Color32::WHITE);
+}
+
+/// The monster box: one portrait for each kind of foe still standing, left to right.
+pub fn monsters(paint: &egui::Painter, rect: Rect, s: f32, art: Option<&Art>, d: &GameData, g: &Game) {
+    let (Some(art), Some(fight)) = (art, &g.fight) else { return };
+    let mut kinds: Vec<usize> = Vec::new();
+    for f in fight.foes.iter().filter(|f| f.hp > 0) {
+        if !kinds.contains(&f.monster) {
+            kinds.push(f.monster);
         }
+    }
+    let size = 60.0 * s;
+    for (i, &m) in kinds.iter().take(4).enumerate() {
+        let (id, uv) = art.portrait(d.monsters[m].picture);
+        let x = rect.left() + (rect.width() - size * kinds.len().min(4) as f32 - 6.0 * s * (kinds.len().min(4) as f32 - 1.0)) / 2.0 + i as f32 * (size + 6.0 * s);
+        paint.image(id, Rect::from_min_size(pos2(x, rect.top() + 4.0 * s), vec2(size, size)), uv, Color32::WHITE);
     }
 }

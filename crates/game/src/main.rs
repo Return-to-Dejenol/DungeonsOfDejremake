@@ -7,35 +7,66 @@ use web_time::Instant;
 
 use ddj_rules::{
     Tuning,
-    game::{self, Character, Game, Life},
-    magic,
+    game::{self, Character, Game},
     mdr::GameData,
 };
-use eframe::egui::{self, Color32, Key, Rect, pos2, vec2};
+use eframe::egui::{self, Color32};
 
 mod art;
 mod audio;
 mod dungeon;
 mod party;
+mod stats;
 mod town;
+mod win;
 #[cfg(target_arch = "wasm32")]
 mod web;
 use art::Art;
+use win::{Desk, View};
 
 /// The free shareware release (floors 1-3), which its publisher lets anyone pass on.
 /// The game starts with it until the player imports their registered copy.
 const SHAREWARE: &[u8] = include_bytes!("../../../tests/fixtures/MORDOR11.ZIP");
 
+#[derive(Clone, Copy, PartialEq)]
 enum Screen {
-    Import,
     Menu,
-    Create(Draft),
-    Town(town::Tab),
+    Create,
+    /// The Character List.
+    List,
+    Town,
     Dungeon,
 }
 
+/// A window open over the current screen.
+#[derive(Clone, PartialEq)]
+enum Dialog {
+    Options,
+    About,
+    Import,
+    /// A message box: title, text.
+    Msg(String, String),
+    /// "Load which character?" (the original's Pickup Character window).
+    Load,
+    /// "Delete this character?"
+    Delete(String),
+    /// A yes/no question before a costly service: the question, then what Yes does.
+    Confirm(String, Deed),
+    /// The original's "Pickup Character": add a saved character to the party.
+    Recruit,
+    /// A question for the Seer (character or monster name).
+    Seer,
+    Macros(usize),
+}
+
+/// A service done once the player confirms it.
+#[derive(Clone, Copy, PartialEq)]
+enum Deed {
+    Raise(usize),
+    Rescue(usize),
+}
+
 struct Draft {
-    name: String,
     race: usize,
     female: bool,
     alignment: u8,
@@ -47,22 +78,22 @@ struct App {
     data: Option<GameData>,
     /// The original pictures, once imported.
     art: Option<Art>,
+    desk: Option<Desk>,
     styled: bool,
-    #[cfg(not(target_arch = "wasm32"))]
-    import_path: String,
-    status: String,
     screen: Screen,
+    dialog: Option<Dialog>,
+    /// The character the menu would run ("Run "Name""), once loaded.
+    loaded: Option<String>,
+    /// The city building whose window is open.
+    building: Option<&'static str>,
+    draft: Draft,
     game: Option<Game>,
     paused: bool,
     in_fight: bool,
     last_round: Instant,
-    /// The party member shown on the sheet and in the item and spell lists.
+    /// The party member shown in the character windows.
     sel: usize,
-    /// The party member whose macros are open in the editor.
-    editing: Option<usize>,
     rule: party::RuleDraft,
-    seer_query: String,
-    amount: String,
     audio: Option<audio::Audio>,
     /// The web build opens audio after the first click, as browsers require.
     audio_tried: bool,
@@ -99,141 +130,56 @@ impl App {
             let _ = ddj_extract::import_files(vec![("MORDOR11.ZIP".into(), SHAREWARE.to_vec())], &dir);
             data = GameData::load(&dir).ok();
         }
-        let screen = if data.is_some() { Screen::Menu } else { Screen::Import };
         Self {
             tuning: load_tuning(),
             data,
             art: None,
+            desk: None,
             styled: false,
-            #[cfg(not(target_arch = "wasm32"))]
-            import_path: String::new(),
-            status: String::new(),
-            screen,
+            screen: Screen::Menu,
+            dialog: None,
+            loaded: None,
+            building: None,
+            draft: Draft { race: 0, female: false, alignment: 1, stats: [0; 6] },
             game: None,
             paused: false,
             in_fight: false,
             last_round: Instant::now(),
             sel: 0,
-            editing: None,
             rule: party::RuleDraft::default(),
-            seer_query: String::new(),
-            amount: String::new(),
             audio: None,
             audio_tried: false,
             heard: 0,
         }
     }
 
+    /// A message: into the Messages window while playing, else a message box.
+    fn say(&mut self, s: impl Into<String>) {
+        let s = s.into();
+        if s.is_empty() {
+            return;
+        }
+        match self.game.as_mut() {
+            Some(g) => g.log.push(s),
+            None => self.dialog = Some(Dialog::Msg("Mordor".into(), s)),
+        }
+    }
+
     /// Saves every party member after each change; the files are small.
     fn persist(&mut self) {
         let Some(g) = &self.game else { return };
+        let mut err = None;
         for m in &g.party {
             if let Err(e) = m.save(&saves()) {
-                self.status = format!("Could not save {}: {e}", m.name);
+                err = Some(format!("Could not save {}: {e}", m.name));
             }
         }
         if let Err(e) = g.store.save(&saves()) {
-            self.status = format!("Could not save the store: {e}");
+            err = Some(format!("Could not save the store: {e}"));
         }
-    }
-
-    fn import(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Import your registered copy");
-        ui.label("The full game's 15 dungeon levels come from your own copy of Mordor: The Depths of Dejenol. Drop its ZIP, MORDOR.WIP or install folder's files on this window, or choose them:");
-        let dropped = ui.input(|i| i.raw.dropped_files.clone());
-        #[cfg(not(target_arch = "wasm32"))]
-        let (files, mut path) = (Vec::new(), dropped.first().map(|f| f.path().to_path_buf()));
-        #[cfg(not(target_arch = "wasm32"))]
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.import_path).desired_width(480.0));
-            if ui.button("Import").clicked() {
-                path = Some(PathBuf::from(self.import_path.trim()));
-            }
-        });
-        #[cfg(target_arch = "wasm32")]
-        let (files, path) = {
-            if !dropped.is_empty() {
-                web::read_dropped(dropped, ui.ctx().clone());
-            }
-            ui.horizontal(|ui| {
-                if ui.button("Choose files...").clicked() {
-                    web::choose(false, ui.ctx().clone());
-                }
-                if ui.button("Choose folder...").clicked() {
-                    web::choose(true, ui.ctx().clone());
-                }
-            });
-            (web::picked().unwrap_or_default(), None::<PathBuf>)
-        };
-        if ui.button("Back").clicked() {
-            self.screen = Screen::Menu;
+        if let Some(e) = err {
+            self.say(e);
         }
-        let dir = ddj_extract::data_dir();
-        let done = match (path, files.is_empty()) {
-            (Some(p), _) => ddj_extract::import(&p, &dir),
-            (None, false) => ddj_extract::import_files(files, &dir),
-            (None, true) => return,
-        };
-        self.status = match done.and_then(|_| GameData::load(&dir)) {
-            Ok(d) => {
-                let n = d.floors.len();
-                self.data = Some(d);
-                self.art = None;
-                self.screen = Screen::Menu;
-                if n < 15 { format!("Imported {n} dungeon levels: that's the shareware release.") } else { "Imported the full game.".into() }
-            }
-            Err(e) => format!("Import failed: {e}"),
-        };
-    }
-
-    fn menu(&mut self, ui: &mut egui::Ui, d: &GameData) {
-        if let Some(a) = &self.art {
-            art::tile(ui.painter(), &a.stucco, ui.max_rect());
-        }
-        if let Some(menu) = self.art.as_ref().and_then(|a| a.menu.as_ref()) {
-            let r = Rect::from_center_size(ui.max_rect().center(), vec2(600.0, 400.0));
-            ui.painter().image(menu.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
-            ui.scope_builder(egui::UiBuilder::new().max_rect(Rect::from_center_size(r.center(), vec2(240.0, 380.0))), |ui| self.menu_buttons(ui, d));
-        } else {
-            self.menu_buttons(ui, d);
-        }
-    }
-
-    fn menu_buttons(&mut self, ui: &mut egui::Ui, d: &GameData) {
-        ui.vertical_centered(|ui| {
-            ui.heading(egui::RichText::new("MORDOR").size(32.0).color(Color32::from_rgb(0, 0, 128)));
-            ui.label(egui::RichText::new("The Depths of Dejenol").italics().color(Color32::from_rgb(128, 0, 0)));
-            if d.floors.len() < 15 {
-                ui.label(format!("Shareware: dungeon levels 1-{}", d.floors.len()));
-                if ui.button("Import your registered copy").clicked() {
-                    self.screen = Screen::Import;
-                }
-            } else {
-                ui.label(format!("{} dungeon levels", d.floors.len()));
-            }
-            ui.add_space(8.0);
-            if ui.button("Create a character").clicked() {
-                let stats = game::start_stats(d, 0);
-                self.screen = Screen::Create(Draft { name: String::new(), race: 0, female: false, alignment: 1, stats });
-            }
-            if let Some(a) = self.audio.as_mut() {
-                ui.horizontal(|ui| {
-                    ui.checkbox(&mut a.music_on, "Music");
-                    ui.checkbox(&mut a.sound_on, "Sound");
-                });
-            }
-            ui.add_space(8.0);
-            egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
-                for name in game::saved(&saves()) {
-                    if ui.button(format!("Play {name}")).clicked() {
-                        match load(&name) {
-                            Ok(ch) => self.start(ch, d),
-                            Err(e) => self.status = format!("Could not load {name}: {e}"),
-                        }
-                    }
-                }
-            });
-        });
     }
 
     /// Starts play with a character, bringing its allies along when they can come.
@@ -245,7 +191,7 @@ impl App {
             if let Ok(a) = load(&name)
                 && let Err(e) = g.add_ally(a)
             {
-                self.status = e;
+                g.log.push(e);
             }
         }
         g.party[0].allies = g.party[1..].iter().map(|m| m.name.clone()).collect();
@@ -260,238 +206,376 @@ impl App {
         self.game = Some(g);
         self.heard = 0;
         self.sel = 0;
-        self.screen = Screen::Town(town::Tab::Guilds);
+        self.building = None;
+        self.screen = Screen::Town;
     }
 
-    fn create(&mut self, ui: &mut egui::Ui, d: &GameData) {
-        let Screen::Create(dr) = &mut self.screen else { return };
-        ui.heading("Create a character");
-        ui.horizontal(|ui| {
-            ui.label("Name");
-            ui.text_edit_singleline(&mut dr.name);
-        });
-        let race = dr.race;
-        egui::ComboBox::from_label("Race").selected_text(d.races[race].name.as_str()).show_ui(ui, |ui| {
-            for (i, r) in d.races.iter().enumerate() {
-                ui.selectable_value(&mut dr.race, i, r.name.as_str());
-            }
-        });
-        if dr.race != race {
-            dr.stats = game::start_stats(d, dr.race);
-            if d.races[dr.race].alignments & (1 << dr.alignment) == 0 {
-                dr.alignment = (0..3).find(|a| d.races[dr.race].alignments & (1 << a) != 0).unwrap_or(1);
-            }
+    /// The main window's title and toolbar: the original's tool buttons, gold and
+    /// experience.
+    fn main_window(&mut self, desk: &mut Desk, ui: &mut egui::Ui, d: &GameData, t: &Tuning) {
+        // The original's title: its name and version, "(Limited Version)" for the shareware.
+        let title = format!("Mordor 1.1{}", if d.floors.len() < 15 { " (Limited Version)" } else { "" });
+        let mut v = View::default();
+        // The toolbar: hidden in design, shown across the top while playing, with the
+        // party's gold and the experience still needed at its right.
+        v.show("picToolbar", self.game.is_some()).rect("picToolbar", [0, 0, 800, 32]).show("mciMusic", false).show("picPalette", false);
+        if let Some(g) = &self.game {
+            let c = &g.party[self.sel.min(g.party.len() - 1)];
+            let gold: u64 = g.party.iter().map(|m| m.gold).sum();
+            let need = c.xp_needed(d, t).saturating_sub(c.xp[c.guild]);
+            let (lg, le) = (desk.rect("frmMain", "lblGold"), desk.rect("frmMain", "lblExperience"));
+            v.rect("lblGold", [796 - lg[2], lg[1], lg[2], lg[3]]).rect("lblExperience", [796 - le[2], le[1], le[2], le[3]]);
+            v.text("lblGold", format!("You have a total of {} Gold.", stats::commas(gold))).text("lblExperience", format!("You need {} more experience for level {}.", stats::commas(need), c.level() + 1));
         }
-        ui.horizontal(|ui| {
-            ui.selectable_value(&mut dr.female, false, "Male");
-            ui.selectable_value(&mut dr.female, true, "Female");
-        });
-        ui.horizontal(|ui| {
-            for (a, name) in ["Good", "Neutral", "Evil"].into_iter().enumerate() {
-                if d.races[dr.race].alignments & (1 << a) != 0 {
-                    ui.selectable_value(&mut dr.alignment, a as u8, name);
-                }
-            }
-        });
-        let base = game::start_stats(d, dr.race);
-        let left = game::FREE_POINTS - dr.stats.iter().zip(base).map(|(s, b)| s - b).sum::<i16>();
-        let r = &d.races[dr.race];
-        egui::Grid::new("stats").show(ui, |ui| {
-            for i in 0..6 {
-                ui.label(game::STATS[i]);
-                ui.label(dr.stats[i].to_string());
-                if ui.add_enabled(dr.stats[i] > r.stat_min[i], egui::Button::new("-")).clicked() {
-                    dr.stats[i] -= 1;
-                }
-                if ui.add_enabled(left > 0 && dr.stats[i] < r.stat_max[i], egui::Button::new("+")).clicked() {
-                    dr.stats[i] += 1;
-                }
-                ui.label(format!("({}-{})", r.stat_min[i], r.stat_max[i]));
-                ui.end_row();
-            }
-        });
-        ui.label(format!("{left} points left"));
-        let open: Vec<&str> = d
-            .guilds
-            .iter()
-            .filter(|g| g.races & (1 << dr.race) != 0 && g.alignments & (1 << dr.alignment) != 0 && (0..6).all(|i| dr.stats[i] >= g.stat_req[i]))
-            .map(|g| g.name.as_str())
-            .collect();
-        ui.label(format!("Guilds you could join now: {}", open.join(", ")));
-        let (create, back) = ui.horizontal(|ui| (ui.button("Create").clicked(), ui.button("Back").clicked())).inner;
-        let create = create || (ui.input(|i| i.key_pressed(Key::Enter)) && !dr.name.trim().is_empty());
-        if back {
-            self.screen = Screen::Menu;
-        } else if create && game::saved(&saves()).contains(&dr.name.trim().to_string()) {
-            self.status = "That name is taken.".into();
-        } else if create {
-            match Character::new(d, &dr.name, dr.race, dr.female, dr.alignment, dr.stats) {
-                Ok(ch) => {
-                    self.start(ch, d);
-                    self.screen = Screen::Town(town::Tab::Store);
-                    self.status = "Welcome to Mordor! The store has the standard starting kit.".into();
+        let playing = self.game.is_some();
+        for i in [1, 2, 3, 5, 7] {
+            v.enable(&format!("cmdTool({i})"), playing);
+        }
+        for i in [0, 4, 6, 8] {
+            v.enable(&format!("cmdTool({i})"), false);
+        }
+        let ev = desk.main(ui, &title, v);
+        match ev.index("cmdTool") {
+            // F5: Objects & Spells; F8: the AutoMap; 'A': add a character; F10: options.
+            Some(1) => desk.active = Some("frmCharStat3".into()),
+            Some(2) => desk.active = Some("frmAutoMap".into()),
+            Some(3) => self.dialog = Some(Dialog::Recruit),
+            Some(5) => {
+                // 'P': pool the party's gold to the character shown.
+                if let Some(g) = self.game.as_mut() {
+                    let sel = self.sel.min(g.party.len() - 1);
+                    let pooled: u64 = g.party.iter_mut().enumerate().filter(|(i, _)| *i != sel).map(|(_, m)| std::mem::take(&mut m.gold)).sum();
+                    g.party[sel].gold += pooled;
+                    let msg = format!("Pool of party's on-hand gold to \"{}\" completed!", g.party[sel].name);
+                    g.log.push(msg);
                     self.persist();
                 }
-                Err(e) => self.status = e,
             }
+            Some(7) => self.dialog = Some(Dialog::Options),
+            _ => {}
         }
     }
 
-    fn sheet(ui: &mut egui::Ui, c: &Character, d: &GameData, t: &Tuning) {
-        ui.heading(&c.name);
-        let sex = if c.female { "Female" } else { "Male" };
-        let align = ["Good", "Neutral", "Evil"][c.alignment as usize];
-        ui.label(format!("{sex} {} ({align}), age {}", d.races[c.race].name, c.age()));
-        ui.label(format!("{} level {}", d.guilds[c.guild].name, c.level()));
-        let (a, df) = c.att_def(d, t);
-        egui::Grid::new("sheet").show(ui, |ui| {
-            let row = |ui: &mut egui::Ui, k: &str, v: String| {
-                ui.label(k);
-                ui.label(v);
-                ui.end_row();
-            };
-            row(ui, "Hits", format!("{}/{}", c.hp, c.max_hp));
-            row(ui, "Spells", format!("{}/{}", c.sp, c.max_sp(d, t)));
-            row(ui, "Att/Def", format!("{a}/{df}"));
-            row(ui, "Experience", format!("{}/{}", c.xp[c.guild], c.xp_needed(d, t)));
-            row(ui, "Gold", c.gold.to_string());
-            row(ui, "Bank", c.bank.to_string());
-            row(ui, "Kills", c.kills.to_string());
-            for i in 0..6 {
-                row(ui, game::STATS[i], c.stats[i].to_string());
-            }
-        });
-        let mut notes = Vec::new();
-        let st = &c.status;
-        for (on, s) in [(st.poison > 0, "Poisoned"), (st.disease > 0, "Diseased"), (st.paralysis > 0, "Paralysed"), (st.stoned, "Stoned")] {
-            if on {
-                notes.push(s.to_string());
-            }
-        }
-        if c.buffs.xp_mult > 1.0 {
-            notes.push(format!("Learning {}x", c.buffs.xp_mult));
-        }
-        if c.buffs.levitate {
-            notes.push("Levitating".into());
-        }
-        if c.buffs.protection > 0 {
-            notes.push(format!("Protected +{}", c.buffs.protection));
-        }
-        if let Some(m) = c.quest {
-            notes.push(format!("Quest: slay a {}", d.monsters[m].name));
-        }
-        match c.life {
-            Life::Dead(p) => notes.push(format!("Dead on level {} at {},{}", p.floor, p.x + 1, p.y + 1)),
-            Life::InMorgue => notes.push("Dead, in the morgue".into()),
-            Life::Alive => {}
-        }
-        for n in notes {
-            ui.colored_label(Color32::from_rgb(128, 0, 0), n);
-        }
-        ui.separator();
-        egui::CollapsingHeader::new("Guild abilities").show(ui, |ui| {
-            for (i, name) in game::ABILITIES.iter().enumerate() {
-                ui.label(format!("{name}: {:.0}", c.ability(d, i)));
-            }
-        });
-    }
-
-    /// The selected member's items: Equip, Use, and in the store Sell, Identify and
-    /// Uncurse.
-    fn inventory(&mut self, ui: &mut egui::Ui, d: &GameData, t: &Tuning, store: bool) {
-        let Some(g) = self.game.as_mut() else { return };
-        let sel = self.sel.min(g.party.len() - 1);
-        let prices: Vec<(u64, u64)> = if store { (0..g.party[sel].items.len()).map(|s| (g.sell_price(d, sel, s), g.identify_price(d, sel, s))).collect() } else { Vec::new() };
-        let c = &g.party[sel];
-        ui.label(format!("{}'s items ({}/40)", c.name, c.items.len()));
-        #[derive(Clone, Copy)]
-        enum Do {
-            Equip,
-            Use,
-            Sell,
-            Identify,
-            Uncurse,
-        }
-        let mut act = None;
-        egui::ScrollArea::vertical().id_salt("items").max_height(240.0).show(ui, |ui| {
-            for (i, h) in c.items.iter().enumerate() {
-                let it = &d.items[h.item];
-                ui.horizontal(|ui| {
-                    if magic::consumable(d, h.item) {
-                        if ui.button("Use").clicked() {
-                            act = Some((i, Do::Use));
-                        }
-                    } else if ui.button(if h.equipped { "Unequip" } else { "Equip" }).clicked() {
-                        act = Some((i, Do::Equip));
-                    }
-                    if store {
-                        if ui.button(format!("Sell {}", prices[i].0)).clicked() {
-                            act = Some((i, Do::Sell));
-                        }
-                        if !h.known && ui.button(format!("ID {}", prices[i].1)).clicked() {
-                            act = Some((i, Do::Identify));
-                        }
-                        if h.equipped && magic::cursed(d, h.item, c.alignment) && ui.button("Uncurse").clicked() {
-                            act = Some((i, Do::Uncurse));
-                        }
-                    }
-                    let ad = if h.known { format!(" [{}/{}]", it.attack, it.defense) } else { String::new() };
-                    ui.label(format!("{}{}{ad}", if h.equipped { "* " } else { "" }, magic::item_name(d, h)));
-                });
-            }
-        });
-        let Some((i, what)) = act else { return };
-        self.status = match what {
-            Do::Equip => g.party[sel].toggle_equip(d, i).err().unwrap_or_default(),
-            Do::Sell => g.sell(d, sel, i),
-            Do::Identify => g.identify(d, sel, i).unwrap_or_else(|e| e),
-            Do::Uncurse => g.uncurse(d, sel, i).unwrap_or_else(|e| e),
-            Do::Use => {
-                let item = g.party[sel].items[i].item;
-                magic::use_item(g, d, t, sel, item);
-                String::new()
-            }
+    /// The opening menu (frmMenu); behind the character list and creation it only shows.
+    /// As the original's sub2D2E: with a character loaded the first button runs it and
+    /// the load button unloads; Delete, Exchange and Password show only then.
+    fn menu(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData) {
+        let mut v = View::default();
+        match &self.loaded {
+            Some(name) => v.text("cmdCommand(0)", format!("&Run \"{name}\"")).text("cmdCommand(7)", "&Unload Character"),
+            None => v.text("cmdCommand(0)", "&Create a Character").text("cmdCommand(7)", "&Load Character"),
         };
-        self.persist();
+        for i in [1, 4, 5] {
+            v.show(&format!("cmdCommand({i})"), self.loaded.is_some());
+        }
+        for i in [1, 4] {
+            v.enable(&format!("cmdCommand({i})"), false);
+        }
+        let outer = desk.outer("frmMenu");
+        let at = desk.client.center() - outer / 2.0;
+        desk.pos.entry("frmMenu".into()).or_insert(at);
+        let ev = desk.window(ctx, "frmMenu", v, false);
+        if self.screen != Screen::Menu || self.dialog.is_some() {
+            return;
+        }
+        match ev.index("cmdCommand") {
+            Some(0) => match self.loaded.clone() {
+                Some(name) => match load(&name) {
+                    Ok(ch) => self.start(ch, d),
+                    Err(e) => self.say(format!("Could not load {name}: {e}")),
+                },
+                None => {
+                    let stats = game::start_stats(d, 0);
+                    self.draft = Draft { race: 0, female: false, alignment: 1, stats };
+                    desk.st.retain(|k, _| !k.starts_with("frmCreateChar."));
+                    self.screen = Screen::Create;
+                }
+            },
+            Some(7) if self.loaded.is_some() => self.loaded = None,
+            Some(7) => self.dialog = Some(Dialog::Load),
+            Some(9) => self.screen = Screen::List,
+            Some(3 | 10) => self.say("The HelpLesson and the Hall of Records aren't in the remake yet."),
+            Some(5) => self.dialog = self.loaded.clone().map(Dialog::Delete),
+            Some(6) => self.dialog = Some(Dialog::Options),
+            Some(8) => self.dialog = Some(Dialog::About),
+            Some(2) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            _ => {}
+        }
     }
 
-    /// The selected member's spells, castable outside combat (heals, cures, travel);
-    /// in combat, choosing one sets the controlled character's order.
-    fn spells(&mut self, ui: &mut egui::Ui, d: &GameData, t: &Tuning) {
-        let Some(g) = self.game.as_mut() else { return };
-        let sel = self.sel.min(g.party.len() - 1);
-        let c = &g.party[sel];
-        let known = magic::known(c, d);
-        ui.label(format!("{}'s spells ({} SP)", c.name, c.sp));
-        let mut cast = None;
-        egui::ScrollArea::vertical().id_salt("spells").max_height(240.0).show(ui, |ui| {
-            for s in known {
-                let sp = &d.spells[s];
-                let ok = magic::castable(c, d, t, s);
-                ui.horizontal(|ui| {
-                    if ui.add_enabled(ok, egui::Button::new("Cast")).clicked() {
-                        cast = Some(s);
-                    }
-                    ui.label(format!("{} ({} SP, {}/{})", sp.name, sp.sp, sp.base, sp.per_level));
-                });
+    /// The Character List (frmCharList).
+    fn list(&mut self, desk: &mut Desk, ctx: &egui::Context) {
+        let names = game::saved(&saves());
+        let mut v = View::default();
+        v.items("lstCharacters", names.clone()).text("lblNumber", names.len().to_string());
+        let ev = desk.window(ctx, "frmCharList", v, true);
+        if ev.click("cmdExit") || ev.closed {
+            self.screen = Screen::Menu;
+        }
+    }
+
+    /// "Load which character?": the original's Pickup Character window.
+    fn load_dialog(&mut self, desk: &mut Desk, ctx: &egui::Context) -> bool {
+        let names = game::saved(&saves());
+        // The first character comes up chosen, as in the original.
+        let st = desk.state("frmInteract", "cmbCharacter");
+        st.sel = st.sel.filter(|&i| i < names.len()).or((!names.is_empty()).then_some(0));
+        let mut v = View::default();
+        v.caption = Some("Load Character".into());
+        v.text("lblQuestion", "Load which character?").show("txtQuestion", false).show("cmbCharacter", true).items("cmbCharacter", names.clone());
+        let ev = desk.window(ctx, "frmInteract", v, true);
+        if ev.click("cmdOK") {
+            self.loaded = desk.state("frmInteract", "cmbCharacter").sel.and_then(|i| names.get(i)).cloned().or(self.loaded.take());
+        }
+        ev.click("cmdOK") || ev.click("cmdCancel") || ev.closed
+    }
+
+    /// Character creation (frmCreateChar).
+    fn create(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData) {
+        const F: &str = "frmCreateChar";
+        if desk.state(F, "cmbSex").sel.is_none() {
+            desk.state(F, "cmbSex").sel = Some(0);
+            desk.state(F, "cmbRace").sel = Some(0);
+        }
+        let dr = &mut self.draft;
+        let race = desk.state(F, "cmbRace").sel.unwrap_or(0).min(d.races.len() - 1);
+        if race != dr.race {
+            dr.race = race;
+            dr.stats = game::start_stats(d, race);
+        }
+        dr.female = desk.state(F, "cmbSex").sel == Some(1);
+        let aligns: Vec<u8> = (0..3).filter(|a| d.races[race].alignments & (1 << a) != 0).collect();
+        let a = desk.state(F, "cmbAlignment").sel.unwrap_or(aligns.iter().position(|&a| a == 1).unwrap_or(0)).min(aligns.len().saturating_sub(1));
+        desk.state(F, "cmbAlignment").sel = Some(a);
+        dr.alignment = aligns.get(a).copied().unwrap_or(1);
+        let r = &d.races[race];
+        let base = game::start_stats(d, race);
+        let left = game::FREE_POINTS - dr.stats.iter().zip(base).map(|(s, b)| s - b).sum::<i16>();
+        let mut v = View::default();
+        v.items("cmbRace", d.races.iter().map(|r| r.name.clone()).collect());
+        v.items("cmbSex", vec!["Male".into(), "Female".into()]);
+        v.items("cmbAlignment", aligns.iter().map(|&a| ["Good", "Neutral", "Evil"][a as usize].to_string()).collect());
+        v.text("lblPoints", left.to_string());
+        for (i, b) in base.iter().enumerate() {
+            v.text(&format!("pnlPanel({i})"), dr.stats[i].to_string()).text(&format!("lblStatInfo({i})"), format!("({}-{})", r.stat_min[i], r.stat_max[i]));
+            v.enable(&format!("cmdAdd({i})"), left > 0 && dr.stats[i] < r.stat_max[i]).enable(&format!("cmdSubtract({i})"), dr.stats[i] > *b.max(&r.stat_min[i]));
+        }
+        // The guilds, one a line; those the character could join now in black.
+        let g0 = desk.rect(F, "lblGuild(0)");
+        for (i, gd) in d.guilds.iter().enumerate() {
+            let k = format!("lblGuild({i})");
+            if i > 0 {
+                v.clone_rect("lblGuild(0)", i as u16, [g0[0], g0[1] + g0[3] * i as i32, g0[2], g0[3]]);
             }
-        });
-        let Some(s) = cast else { return };
-        let target = if magic::kind(&d.spells[s]).is_some_and(|k| matches!(k, magic::Magic::Damage | magic::Magic::MassDamage | magic::Magic::Sleep)) { ddj_rules::ai::Target::Strongest } else { ddj_rules::ai::Target::LowestAlly };
-        if let (Some(f), 0) = (g.fight.as_mut(), sel) {
-            f.order = Some(ddj_rules::ai::Act::Cast(s, target));
-            self.status = format!("You will cast {} next round.", d.spells[s].name);
-        } else if g.fight.is_some() {
-            self.status = "Allies cast by their macros in combat.".into();
+            let ok = gd.races & (1 << race) != 0 && gd.alignments & (1 << dr.alignment) != 0 && (0..6).all(|s| dr.stats[s] >= gd.stat_req[s]);
+            v.text(&k, gd.name.clone()).fore(&k, if ok { Color32::BLACK } else { Color32::from_gray(128) });
+        }
+        for k in ["cmdTutorial", "cmdHelp(0)", "cmdHelp(1)"] {
+            v.enable(k, false);
+        }
+        let ev = desk.window(ctx, F, v, true);
+        if let Some(i) = ev.index("cmdAdd") {
+            dr.stats[i as usize] += 1;
+        }
+        if let Some(i) = ev.index("cmdSubtract") {
+            dr.stats[i as usize] -= 1;
+        }
+        if ev.click("cmdExit") || ev.closed {
+            self.screen = Screen::Menu;
+        }
+        let name = desk.state(F, "txtName").text.trim().to_string();
+        if ev.click("cmdSave") || (ctx.input(|i| i.key_pressed(egui::Key::Enter)) && !name.is_empty()) {
+            if game::saved(&saves()).contains(&name) {
+                self.say("That name is taken.");
+                return;
+            }
+            let (female, alignment, stats) = (dr.female, dr.alignment, dr.stats);
+            match Character::new(d, &name, race, female, alignment, stats) {
+                Ok(ch) => {
+                    self.loaded = Some(name.clone());
+                    self.start(ch, d);
+                    self.building = Some("frmCityStore");
+                    self.say("Welcome to Mordor! The store has the standard starting kit.");
+                    self.persist();
+                }
+                Err(e) => self.say(e),
+            }
+        }
+    }
+
+    /// The window over everything else, if any.
+    fn dialog(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData) {
+        let Some(dlg) = self.dialog.clone() else { return };
+        let close = match dlg.clone() {
+            Dialog::Msg(title, text) => {
+                let mut v = View::default();
+                v.caption = Some(title);
+                v.text("lblText", text);
+                let ev = desk.window(ctx, "dlgMsg", v, true);
+                ev.click("cmdOK") || ev.closed || ctx.input(|i| i.key_pressed(egui::Key::Enter))
+            }
+            Dialog::Delete(name) => {
+                let mut v = View::default();
+                v.caption = Some("Delete Character".into());
+                v.text("lblText", format!("Delete \"{name}\" for good?")).text("cmdOK", "&Yes").show("cmdNo", true);
+                let ev = desk.window(ctx, "dlgMsg", v, true);
+                if ev.click("cmdOK") {
+                    let _ = fs::remove(saves().join(format!("{name}.json")));
+                    self.loaded = None;
+                }
+                ev.click("cmdOK") || ev.click("cmdNo") || ev.closed
+            }
+            Dialog::Confirm(q, deed) => {
+                let mut v = View::default();
+                v.text("lblText", q).text("cmdOK", "&Yes").show("cmdNo", true);
+                let ev = desk.window(ctx, "dlgMsg", v, true);
+                if ev.click("cmdOK")
+                    && let Some(g) = self.game.as_mut()
+                {
+                    match deed {
+                        Deed::Raise(i) => g.raise(d, i),
+                        Deed::Rescue(i) => g.rescue(i),
+                    }
+                    self.persist();
+                }
+                ev.click("cmdOK") || ev.click("cmdNo") || ev.closed
+            }
+            Dialog::About => {
+                let ev = desk.window(ctx, "frmAbout", View::default(), true);
+                ev.click("cmdOK") || ev.closed
+            }
+            Dialog::Options => self.options(desk, ctx),
+            Dialog::Load => self.load_dialog(desk, ctx),
+            Dialog::Import => self.import(desk, ctx),
+            Dialog::Recruit => self.recruit(desk, ctx),
+            Dialog::Seer => self.seer(desk, ctx, d),
+            Dialog::Macros(i) => self.macros(desk, ctx, d, i),
+        };
+        if close && self.dialog.as_ref() == Some(&dlg) {
+            self.dialog = None;
+        }
+    }
+
+    /// The Options window: music and sound. The remake adds importing a copy of the game
+    /// where the original kept its (hidden) screen saver button.
+    fn options(&mut self, desk: &mut Desk, ctx: &egui::Context) -> bool {
+        const F: &str = "frmOptions";
+        if let Some(a) = &self.audio {
+            desk.state(F, "chkCheck(1)").on = !a.music_on;
+            desk.state(F, "chkCheck(2)").on = !a.sound_on;
+        }
+        let mut v = View::default();
+        v.show("cmdCommand(3)", true).text("cmdCommand(3)", "&Import Game...");
+        for k in [
+            "chkCheck(0)", "chkCheck(3)", "chkCheck(4)", "chkCheck(5)", "chkCheck(6)", "chkCheck(7)", "chkCheck(8)", "chkCheck(9)", "chkCheck(10)", "chkCheck(11)", "cmdCommand(1)", "cmdCommand(2)", "cmdCommand(4)", "cmdCommand(5)", "cmdCommand(6)",
+            "hsbVolume(0)", "hsbVolume(1)",
+        ] {
+            v.enable(k, false);
+        }
+        v.text("lblBackup", "").text("lblLabel(2)", "Courier New").text("lblLabel(3)", "MS Sans Serif");
+        let ev = desk.window(ctx, F, v, true);
+        if let Some(a) = self.audio.as_mut() {
+            a.music_on = !desk.state(F, "chkCheck(1)").on;
+            a.sound_on = !desk.state(F, "chkCheck(2)").on;
+        }
+        if ev.click("cmdCommand(3)") {
+            self.dialog = Some(Dialog::Import);
+        }
+        ev.click("cmdCommand(0)") || ev.click("cmdCommand(7)") || ev.closed
+    }
+
+    /// The remake's import window: the player's own copy of the game, from a ZIP, its
+    /// MORDOR.WIP or the install folder's files.
+    fn import(&mut self, desk: &mut Desk, ctx: &egui::Context) -> bool {
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        #[allow(unused_mut)]
+        let mut v = View::default();
+        #[cfg(target_arch = "wasm32")]
+        v.show("txtPath", false).text("cmdImport", "Choose &Files...").show("cmdFolder", true);
+        let ev = desk.window(ctx, "dlgImport", v, true);
+        #[cfg(not(target_arch = "wasm32"))]
+        let (files, path) = (Vec::new(), dropped.first().map(|f| f.path().to_path_buf()).or_else(|| ev.click("cmdImport").then(|| PathBuf::from(desk.state("dlgImport", "txtPath").text.trim()))));
+        #[cfg(target_arch = "wasm32")]
+        let (files, path) = {
+            if !dropped.is_empty() {
+                web::read_dropped(dropped, ctx.clone());
+            }
+            if ev.click("cmdImport") || ev.click("cmdFolder") {
+                web::choose(ev.click("cmdFolder"), ctx.clone());
+            }
+            (web::picked().unwrap_or_default(), None::<PathBuf>)
+        };
+        let dir = ddj_extract::data_dir();
+        let done = match (path, files.is_empty()) {
+            (Some(p), _) => ddj_extract::import(&p, &dir),
+            (None, false) => ddj_extract::import_files(files, &dir),
+            (None, true) => return ev.click("cmdCancel") || ev.closed,
+        };
+        let msg = match done.and_then(|_| GameData::load(&dir)) {
+            Ok(d) => {
+                let n = d.floors.len();
+                self.data = Some(d);
+                self.art = None;
+                if n < 15 { format!("Imported {n} dungeon levels: that's the shareware release.") } else { "Imported the full game.".into() }
+            }
+            Err(e) => format!("Import failed: {e}"),
+        };
+        self.dialog = Some(Dialog::Msg("Import Game".into(), msg));
+        false
+    }
+
+    /// The playing screens: the character, objects, messages and party windows, with
+    /// the city (and an open building) or the dungeon.
+    fn play(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData, t: &Tuning) {
+        stats::arrange(desk);
+        if self.screen == Screen::Town {
+            self.town(desk, ctx, d, t);
         } else {
-            magic::cast(g, d, t, sel, s, target);
-            self.persist();
+            self.dungeon(desk, ctx, d, t);
+        }
+        if self.game.is_none() {
+            return;
+        }
+        self.party_window(desk, ctx, d, t);
+        self.stats_window(desk, ctx, d, t);
+        self.objects_window(desk, ctx, d, t);
+        self.messages_window(desk, ctx);
+        if self.screen == Screen::Dungeon {
+            self.automap_window(desk, ctx, d);
+        }
+        if let Some(b) = self.building {
+            self.building(desk, ctx, d, t, b);
         }
     }
 }
 
+/// The remake's own windows, in the original's style.
+fn add_windows(desk: &mut Desk) {
+    desk.synth("dlgMsg", "Mordor", 300, 96, &[("Label", "lblText", None, [12, 10, 276, 48], ""), ("CommandButton", "cmdOK", None, [108, 66, 84, 22], "OK"), ("CommandButton", "cmdNo", None, [198, 66, 84, 22], "&No")]);
+    desk.hide_by_default("dlgMsg", "cmdNo");
+    desk.synth(
+        "dlgImport",
+        "Import Game",
+        360,
+        124,
+        &[
+            ("Label", "lblText", None, [8, 6, 344, 44], "The full game's 15 dungeon levels come from your own copy of Mordor. Drop its ZIP, MORDOR.WIP or install folder's files on this window, or:"),
+            ("TextBox", "txtPath", None, [8, 56, 344, 20], ""),
+            ("CommandButton", "cmdImport", None, [8, 92, 110, 24], "&Import"),
+            ("CommandButton", "cmdFolder", None, [124, 92, 110, 24], "Choose F&older..."),
+            ("CommandButton", "cmdCancel", None, [268, 92, 84, 24], "&Cancel"),
+        ],
+    );
+    desk.hide_by_default("dlgImport", "cmdFolder");
+    party::add_windows(desk);
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        // Debug web builds draw continuously, so test captures are never stale.
+        #[cfg(all(debug_assertions, target_arch = "wasm32"))]
+        ctx.request_repaint();
         let tuning = match std::mem::replace(&mut self.tuning, Err(String::new())) {
             Ok(t) => t,
             Err(e) => {
@@ -500,66 +584,67 @@ impl eframe::App for App {
                 return;
             }
         };
-        let data = self.data.take();
         if !self.styled {
-            art::style(ui.ctx());
+            art::style(&ctx);
+            win::register_fonts(&ctx);
             self.styled = true;
         }
         if !self.audio_tried && (cfg!(not(target_arch = "wasm32")) || ui.input(|i| i.pointer.any_click() || !i.keys_down.is_empty())) {
             self.audio_tried = true;
             self.audio = audio::Audio::new();
         }
-        if self.art.is_none() && data.is_some() {
-            self.art = Art::load(ui.ctx(), &ddj_extract::data_dir());
+        let Some(data) = self.data.take() else {
+            egui::CentralPanel::default().show(ui, |ui| ui.label("The game data could not be read."));
+            self.tuning = Ok(tuning);
+            return;
+        };
+        let dir = ddj_extract::data_dir();
+        if self.art.is_none() {
+            self.art = Art::load(&ctx, &dir);
         }
-        let playing = matches!(self.screen, Screen::Town(_) | Screen::Dungeon);
-        if let (true, Some(d)) = (playing, &data) {
-            let g = self.game.as_ref().unwrap();
-            self.sel = self.sel.min(g.party.len() - 1);
-            egui::Panel::left("sheet").resizable(false).show(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| Self::sheet(ui, &self.game.as_ref().unwrap().party[self.sel], d, &tuning));
-            });
-            egui::Panel::bottom("party").resizable(true).default_size(190.0).show(ui, |ui| {
-                ui.columns(2, |cols| {
-                    self.party_panel(&mut cols[0], d, &tuning);
-                    cols[1].label(&self.status);
-                    let g = self.game.as_ref().unwrap();
-                    egui::ScrollArea::vertical().id_salt("log").stick_to_bottom(true).show(&mut cols[1], |ui| {
-                        for l in g.log.iter().rev().take(200).rev().filter(|l| !l.is_empty()) {
-                            ui.label(l);
-                        }
-                    });
-                });
-            });
+        if self.desk.is_none() {
+            // Data imported before the remake read the original's windows: take them
+            // from the bundled shareware's MORDOR.EXE.
+            if ddj_extract::forms::load(&dir).is_none() {
+                let _ = ddj_extract::import_forms(vec![("MORDOR11.ZIP".into(), SHAREWARE.to_vec())], &dir);
+            }
+            self.desk = Desk::new(&ctx, &dir);
+            if let Some(desk) = self.desk.as_mut() {
+                add_windows(desk);
+            }
         }
-        if let (Screen::Dungeon, Some(d)) = (&self.screen, &data) {
-            egui::Panel::right("map").resizable(false).default_size(300.0).show(ui, |ui| {
-                dungeon::automap(ui, d, self.game.as_ref().unwrap());
-                ui.separator();
-                self.inventory(ui, d, &tuning, false);
-                ui.separator();
-                self.spells(ui, d, &tuning);
-            });
-        }
-        if !playing {
-            egui::Panel::bottom("status").show(ui, |ui| ui.label(&self.status));
-        }
-        egui::CentralPanel::default().show(ui, |ui| match (&self.screen, &data) {
-            (Screen::Import, _) | (_, None) => self.import(ui),
-            (Screen::Menu, Some(d)) => self.menu(ui, d),
-            (Screen::Create(_), Some(d)) => self.create(ui, d),
-            (Screen::Town(tab), Some(d)) => self.town(ui, d, &tuning, *tab),
-            (Screen::Dungeon, Some(d)) => self.dungeon(ui, d, &tuning),
+        let Some(mut desk) = self.desk.take() else {
+            egui::CentralPanel::default().show(ui, |ui| ui.label("The original's windows could not be read from MORDOR.EXE."));
+            self.data = Some(data);
+            self.tuning = Ok(tuning);
+            return;
+        };
+        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+            desk.begin(ui.max_rect());
+            self.main_window(&mut desk, ui, &data, &tuning);
+            match self.screen {
+                Screen::Menu => self.menu(&mut desk, &ctx, &data),
+                Screen::Create => {
+                    self.menu(&mut desk, &ctx, &data);
+                    self.create(&mut desk, &ctx, &data);
+                }
+                Screen::List => {
+                    self.menu(&mut desk, &ctx, &data);
+                    self.list(&mut desk, &ctx);
+                }
+                Screen::Town | Screen::Dungeon => self.play(&mut desk, &ctx, &data, &tuning),
+            }
+            self.dialog(&mut desk, &ctx, &data);
         });
-        if let (Some(i), Some(d)) = (self.editing, &data) {
-            self.macro_editor(ui.ctx(), d, i);
+        // An import replaces the data during the frame: the windows are read again.
+        if self.data.is_none() {
+            self.desk = Some(desk);
         }
         // The original's Sound Canvas music for the menu, the city and the dungeon, and
         // its effects for what just happened (at most a few a frame).
-        if let (Some(a), Some(_)) = (self.audio.as_mut(), &data) {
-            let dir = ddj_extract::data_dir();
+        if let Some(a) = self.audio.as_mut() {
             let track = match self.screen {
-                Screen::Town(_) => "CITYSC.MID",
+                Screen::Town => "CITYSC.MID",
                 Screen::Dungeon => "DUNGEOSC.MID",
                 _ => "MAINSC.MID",
             };
@@ -572,8 +657,7 @@ impl eframe::App for App {
                 self.heard = g.log.len();
             }
         }
-        // A first import sets the data during the frame; keep it.
-        self.data = self.data.take().or(data);
+        self.data = self.data.take().or(Some(data));
         self.tuning = Ok(tuning);
     }
 }
@@ -586,8 +670,8 @@ fn main() {
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     eframe::run_native(
-        "Depths of Dejenol remake",
-        eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]), ..Default::default() },
+        "Mordor: The Depths of Dejenol",
+        eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([1200.0, 900.0]), ..Default::default() },
         Box::new(|_| Ok(Box::new(App::new()))),
     )
 }

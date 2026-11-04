@@ -2,7 +2,7 @@
 //! use the disk; the web build keeps them in memory, mirrored to the browser's IndexedDB.
 
 #[cfg(not(target_arch = "wasm32"))]
-pub use std::fs::{create_dir_all, read, write};
+pub use std::fs::{create_dir_all, read, remove_file as remove, write};
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read_dir(dir: impl AsRef<std::path::Path>) -> std::io::Result<Vec<std::path::PathBuf>> {
     std::fs::read_dir(dir)?.map(|e| e.map(|e| e.path())).collect()
@@ -33,11 +33,13 @@ const run = async (mode, f) => {
     return new Promise((ok, err) => { t.oncomplete = () => ok(r); t.onerror = () => err(t.error); });
 };
 export const idb_put = (k, v) => run("readwrite", s => s.put(v, k));
+export const idb_del = k => run("readwrite", s => s.delete(k));
 export const idb_all = async () => { let k, v; await run("readonly", s => { k = s.getAllKeys(); v = s.getAll(); }); return [k.result, v.result]; };
 export const fetch_bytes = async url => { const r = await fetch(url); return r.ok ? new Uint8Array(await r.arrayBuffer()) : null; };
 "#)]
     extern "C" {
         fn idb_put(k: &str, v: &Uint8Array) -> Promise;
+        fn idb_del(k: &str) -> Promise;
         fn idb_all() -> Promise;
         fn fetch_bytes(url: &str) -> Promise;
     }
@@ -59,6 +61,15 @@ export const fetch_bytes = async url => { const r = await fetch(url); return r.o
             if let Err(e) = JsFuture::from(idb_put(&k, &v)).await {
                 web_sys::console::error_2(&format!("could not store {k}").into(), &e);
             }
+        });
+        Ok(())
+    }
+
+    pub fn remove(p: impl AsRef<Path>) -> io::Result<()> {
+        let k = key(p.as_ref());
+        FILES.with_borrow_mut(|f| f.remove(&k)).ok_or(io::ErrorKind::NotFound)?;
+        spawn_local(async move {
+            let _ = JsFuture::from(idb_del(&k)).await;
         });
         Ok(())
     }
