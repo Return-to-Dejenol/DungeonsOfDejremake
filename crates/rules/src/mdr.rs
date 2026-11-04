@@ -99,11 +99,19 @@ pub struct Race {
 #[derive(Debug)]
 pub struct Guild {
     pub name: String,
+    /// Average HP per level up to `hp_cap` levels, then `hp_after` per level.
+    pub hp_per_level: i16,
+    pub hp_cap: i16,
+    pub hp_after: i16,
     /// Experience modifier (Nomad 8, Wizard 30).
     pub xp_factor: f32,
     /// STR, INT, WIS, CON, CHA, DEX needed to join.
     pub stat_req: [i16; 6],
     pub alignments: Alignments,
+    /// Fighting ability as the refcard shows it (Warrior 12, Nomad 7), /10.
+    pub fighting: f32,
+    /// Bit n set: race n (in `GameData::races` order) may join.
+    pub races: u16,
     pub rest: Vec<u8>,
 }
 
@@ -111,9 +119,18 @@ pub struct Guild {
 pub struct Item {
     pub name: String,
     pub id: i16,
+    /// Probable: attack and defense when equipped.
+    pub attack: i16,
+    pub defense: i16,
     pub price: u32,
+    /// Probable: deepest-first floor it is found on; 0 means sold in the store only.
+    pub level: i16,
+    /// Probable: weapon power (the bracketed number in item info); 0 for non-weapons.
+    pub power: i16,
     /// Bit n set: guild n (in `GameData::guilds` order) may use it.
     pub guilds: u16,
+    /// Probable: damage multiplier.
+    pub damage_mult: f32,
     /// Index into `GameData::item_types`.
     pub kind: i16,
     pub rest: Vec<u8>,
@@ -123,8 +140,18 @@ pub struct Item {
 pub struct Monster {
     pub name: String,
     pub id: i16,
-    /// Probable: shallowest dungeon level it appears on.
+    /// Probable: attack, defense and average hit points.
+    pub attack: i16,
+    pub defense: i16,
+    pub hp: i16,
+    /// Probable: how many can appear together (1-4).
+    pub group: i16,
+    /// 1-based tile in the `MONS` bitmap of MG11.DLL (60x60, ten per row).
+    pub picture: i16,
+    /// Dungeon level it appears on (lairs on each floor hold monsters of that level).
     pub level: i16,
+    /// Index into `GameData::monster_types`; rooms pick spawns by this.
+    pub kind: i16,
     pub rest: Vec<u8>,
 }
 
@@ -301,12 +328,17 @@ impl GameData {
             let mut c = t.rec(i);
             let name = c.str();
             let start = c.p;
-            c.skip(3);
+            let [hp_per_level, hp_cap, hp_after] = c.words();
             let xp_factor = c.f32();
             c.skip(1);
             let stat_req = c.words();
             c.skip(1);
-            Guild { name, xp_factor, stat_req, alignments: c.i16(), rest: c.rest(start) }
+            let alignments = c.i16();
+            c.skip(9);
+            let fighting = c.f32();
+            c.skip(84);
+            let races = c.i16() as u16;
+            Guild { name, hp_per_level, hp_cap, hp_after, xp_factor, stat_req, alignments, fighting, races, rest: c.rest(start) }
         }).collect();
         let mut names = |n: usize| section(n).map(|i| t.rec(i).str()).collect::<Vec<_>>();
         let (item_types, item_classes, monster_types, monster_families) =
@@ -319,23 +351,28 @@ impl GameData {
             let mut c = it.rec(i);
             let name = c.str();
             let start = c.p;
-            let id = c.i16();
-            c.skip(2);
+            let [id, attack, defense] = c.words();
             let price = c.u32();
-            c.skip(10);
+            let level = c.i16();
+            c.skip(3);
+            let power = c.i16();
+            c.skip(5);
             let guilds = c.i16() as u16;
-            c.skip(7);
-            Item { name, id, price, guilds, kind: c.i16(), rest: c.rest(start) }
+            c.skip(2);
+            let damage_mult = c.f32();
+            c.skip(3);
+            Item { name, id, attack, defense, price, level, power, guilds, damage_mult, kind: c.i16(), rest: c.rest(start) }
         }).collect();
         let mo = Mdr::new(m5, 160)?;
         let monsters = rows(&mo, 2, 3).into_iter().map(|i| {
             let mut c = mo.rec(i);
             let name = c.str();
             let start = c.p;
-            c.skip(2);
-            let id = c.i16();
-            c.skip(4);
-            Monster { name, id, level: c.i16(), rest: c.rest(start) }
+            let [attack, defense, id, hp, group, picture] = c.words();
+            c.skip(1);
+            let level = c.i16();
+            c.skip(37);
+            Monster { name, id, attack, defense, hp, group, picture, level, kind: c.i16(), rest: c.rest(start) }
         }).collect();
         let sp = Mdr::new(m2, 75)?;
         let spells = rows(&sp, 1, 2).into_iter().map(|i| {
@@ -426,8 +463,17 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), 366);
 
+        assert_eq!((dagger.attack, dagger.defense, dagger.level, dagger.power, dagger.damage_mult), (3, 0, 0, 1, 1.0));
+        let warrior = &d.guilds[1];
+        assert_eq!((warrior.hp_per_level, warrior.hp_cap, warrior.hp_after, warrior.fighting), (6, 28, 2, 1.2));
+        // Giants (race 2) may join Nomad and Warrior; nobody is barred from Nomad.
+        assert!(d.guilds[0].races == 511 && warrior.races & 4 != 0);
+
         assert_eq!(d.monsters.len(), 401);
-        assert_eq!(d.monsters.iter().find(|m| m.name == "Troll").unwrap().level, 3);
+        let troll = d.monsters.iter().find(|m| m.name == "Troll").unwrap();
+        assert_eq!((troll.attack, troll.defense, troll.hp, troll.level), (86, 69, 35, 3));
+        let kobold = d.monsters.iter().find(|m| m.name == "Kobold").unwrap();
+        assert_eq!((kobold.picture, d.monster_types[kobold.kind as usize].as_str()), (2, d.monster_types[0].as_str()));
         assert_eq!(d.spells.len(), 105);
         assert_eq!((d.spells[0].name.as_str(), d.spells[104].name.as_str()), ("Charm of Opening", "Shock Lance"));
     }

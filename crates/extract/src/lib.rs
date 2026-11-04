@@ -115,6 +115,45 @@ fn expand(b: &[u8]) -> io::Result<(u8, Vec<u8>)> {
     Ok((b[9], out))
 }
 
+/// A named bitmap from MG11.DLL (`MONS`, `MAZE`, `DOOR`...) as (width, height, RGBA).
+/// The DLL keeps them as resources of type "MORDOR" holding whole 8-bit BMP files.
+pub fn mg_bitmap(dll: &[u8], name: &str) -> Option<(usize, usize, Vec<u8>)> {
+    let u16_at = |o: usize| Some(u16::from_le_bytes(dll.get(o..o + 2)?.try_into().ok()?) as usize);
+    let u32_at = |o: usize| Some(u32::from_le_bytes(dll.get(o..o + 4)?.try_into().ok()?) as usize);
+    let ne = u32_at(0x3c)?;
+    let rt = ne + u16_at(ne + 0x24)?;
+    let (shift, mut p) = (u16_at(rt)?, rt + 2);
+    let pstr = |o: usize| dll.get(rt + o + 1..rt + o + 1 + usize::from(*dll.get(rt + o)?));
+    while u16_at(p)? != 0 {
+        let count = u16_at(p + 2)?;
+        for e in (0..count).map(|j| p + 8 + 12 * j) {
+            let id = u16_at(e + 6)?;
+            if id & 0x8000 == 0 && pstr(id)? == name.as_bytes() {
+                return bmp8(dll.get(u16_at(e)? << shift..)?);
+            }
+        }
+        p += 8 + 12 * count;
+    }
+    None
+}
+
+/// Decodes an uncompressed 8-bit, bottom-up BMP file.
+fn bmp8(b: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
+    let i32_at = |o: usize| Some(i32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?));
+    let (off, w, h) = (i32_at(10)? as usize, i32_at(18)? as usize, i32_at(22)?);
+    let pal = 14 + i32_at(14)? as usize;
+    let (rows, stride) = (h.unsigned_abs() as usize, (w + 3) & !3);
+    let mut out = Vec::with_capacity(w * rows * 4);
+    for y in 0..rows {
+        let row = if h > 0 { rows - 1 - y } else { y };
+        for x in 0..w {
+            let c = pal + 4 * usize::from(*b.get(off + row * stride + x)?);
+            out.extend_from_slice(&[*b.get(c + 2)?, *b.get(c + 1)?, *b.get(c)?, 255]);
+        }
+    }
+    Some((w, rows, out))
+}
+
 /// Where imported data lives: `gamedata/` in the working directory (gitignored).
 pub fn data_dir() -> PathBuf {
     PathBuf::from("gamedata")
@@ -144,5 +183,13 @@ mod tests {
         // Literals "ab", then a 4-byte match at the window start: "ababab".
         let f = b"SZDD\x88\xf0\x27\x33Ar\x06\0\0\0\x03ab\xf0\xf1";
         assert_eq!(expand(f).unwrap(), (b'r', b"ababab".to_vec()));
+    }
+
+    #[test]
+    fn reads_monster_sheet() {
+        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ddj-extract-mg");
+        import(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/MORDOR11.ZIP"), &out).unwrap();
+        let (w, h, px) = mg_bitmap(&fs::read(out.join("MG11.DLL")).unwrap(), "MONS").unwrap();
+        assert_eq!((w, h, px.len()), (600, 540, 600 * 540 * 4));
     }
 }
