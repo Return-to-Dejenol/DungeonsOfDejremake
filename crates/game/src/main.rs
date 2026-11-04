@@ -9,6 +9,7 @@ use ddj_rules::{
 use eframe::egui::{self, Color32, Key, Rect, pos2, vec2};
 
 mod art;
+mod audio;
 mod dungeon;
 mod party;
 mod town;
@@ -50,6 +51,9 @@ struct App {
     rule: party::RuleDraft,
     seer_query: String,
     amount: String,
+    audio: Option<audio::Audio>,
+    /// Log lines already given their sound.
+    heard: usize,
 }
 
 fn saves() -> PathBuf {
@@ -92,6 +96,8 @@ impl App {
             rule: party::RuleDraft::default(),
             seer_query: String::new(),
             amount: String::new(),
+            audio: audio::Audio::new(),
+            heard: 0,
         }
     }
 
@@ -147,6 +153,12 @@ impl App {
                 let stats = game::start_stats(d, 0);
                 self.screen = Screen::Create(Draft { name: String::new(), race: 0, female: false, alignment: 1, stats });
             }
+            if let Some(a) = self.audio.as_mut() {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut a.music_on, "Music");
+                    ui.checkbox(&mut a.sound_on, "Sound");
+                });
+            }
             ui.add_space(8.0);
             egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
                 for name in game::saved(&saves()) {
@@ -182,6 +194,7 @@ impl App {
             }
         }
         self.game = Some(g);
+        self.heard = 0;
         self.sel = 0;
         self.screen = Screen::Town(town::Tab::Guilds);
     }
@@ -472,6 +485,24 @@ impl eframe::App for App {
         }
         if !playing {
             egui::Panel::bottom("status").show(ui, |ui| ui.label(&self.status));
+        }
+        // The original's Sound Canvas music for the menu, the city and the dungeon, and
+        // its effects for what just happened (at most a few a frame).
+        if let (Some(a), Some(_)) = (self.audio.as_mut(), &data) {
+            let dir = ddj_extract::data_dir();
+            let track = match self.screen {
+                Screen::Town(_) => "CITYSC.MID",
+                Screen::Dungeon => "DUNGEOSC.MID",
+                _ => "MAINSC.MID",
+            };
+            a.music(&dir, track);
+            if let Some(g) = &self.game {
+                self.heard = self.heard.min(g.log.len());
+                for w in g.log[self.heard..].iter().filter_map(|l| audio::effect_for(l)).take(3) {
+                    a.effect(&dir, w);
+                }
+                self.heard = g.log.len();
+            }
         }
         self.data = data;
         self.tuning = Ok(tuning);
