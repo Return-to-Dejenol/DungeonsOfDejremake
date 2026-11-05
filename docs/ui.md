@@ -43,11 +43,18 @@ Taken while building; reviewed at play-test.
   count, headed "Stock"; Confinement's likewise.
 - **Items to services**: drag an item from Objects & Spells onto the store's Uncurse or
   Identify box (or a companion onto Confinement's Bind or Sell box), as in the original.
+- **HelpLesson**: MORDOR.HLP (imported; else the bundled shareware's) in a Windows Help
+  3.1 window: Contents, Search, Back, History, << and >>, the help's fonts, green jumps,
+  pictures, tables and its glossary, tutorial and statistics windows. The menu and the
+  toolbar's "?" open the contents; F1 the topic for the window in front (its
+  HelpContextID); character creation's Race/Guild Stats and Tutorial their own windows.
+  No menu bar or printing; a secondary window widens to show a whole table, where
+  WinHelp let the player resize it.
 
 ## Not done yet
 
-- Buffers 1-10, Pickup/Drop, the HelpLesson and Hall of Records look as in the original
-  but only say they aren't in the remake yet; Give, Carry, Combine, Realign, the
+- Buffers 1-10 and Pickup/Drop look as in the original but only say they aren't in the
+  remake yet; Give, Carry, Combine, Realign, the
   Library, the Guild Log, Exchange Items, Change Password and the Control Panel are
   disabled.
 - The spell list's type filter only offers "All"; the Resist. and Look tabs are sparse.

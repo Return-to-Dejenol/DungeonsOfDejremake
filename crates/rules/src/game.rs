@@ -12,6 +12,7 @@ use crate::{
     Tuning,
     ai::{self, Rule},
     combat::Fight,
+    hall::Hall,
     mdr::{Floor, GameData, Words, square},
     monsters::Companion,
     store::{self, Store},
@@ -590,7 +591,7 @@ pub(crate) fn guild_ad(data: &GameData, g: usize, level: u32) -> [f64; 2] {
 /// Names of the characters saved in `dir`.
 pub fn saved(dir: &Path) -> Vec<String> {
     let mut v: Vec<String> = fs::read_dir(dir)
-        .map(|d| d.iter().filter_map(|p| p.file_name()?.to_str()?.strip_suffix(".json").filter(|n| *n != "store").map(str::to_owned)).collect())
+        .map(|d| d.iter().filter_map(|p| p.file_name()?.to_str()?.strip_suffix(".json").filter(|n| !["store", "hall"].contains(n)).map(str::to_owned)).collect())
         .unwrap_or_default();
     v.sort();
     v
@@ -609,11 +610,13 @@ pub struct Game {
     pub log: Vec<String>,
     /// The store's and Confinement's shared stock (saves/store.json).
     pub store: Store,
+    /// The Hall of Records (saves/hall.json).
+    pub hall: Hall,
 }
 
 impl Game {
     pub fn new(lead: Character) -> Self {
-        Self { party: vec![lead], fight: None, chest: None, cleared: Vec::new(), log: Vec::new(), store: Store::default() }
+        Self { party: vec![lead], fight: None, chest: None, cleared: Vec::new(), log: Vec::new(), store: Store::default(), hall: Hall::default() }
     }
 
     pub fn lead(&self) -> &Character {
@@ -626,6 +629,18 @@ impl Game {
 
     pub(crate) fn say(&mut self, s: impl Into<String>) {
         self.log.push(s.into());
+    }
+
+    /// The Hall's records for the party, announced as the original does; true if any fell.
+    pub fn records(&mut self, d: &GameData) -> bool {
+        let before = self.hall.records.clone();
+        for i in 0..self.party.len() {
+            for what in self.hall.check_all(d, &self.party[i]) {
+                let who = if self.party.len() == 1 { "You have".into() } else { format!("\"{}\"", self.party[i].name) };
+                self.say(format!("{who} just set the record for {what}!"));
+            }
+        }
+        before != self.hall.records
     }
 
     pub fn pos(&self) -> Pos {
@@ -1331,6 +1346,29 @@ mod tests {
         }
         assert!(g.party[0].gold > before && g.chest.is_none());
         assert!(g.log.iter().any(|l| l.contains("disarms")));
+    }
+
+    /// The Hall starts with the original's holders; a better value takes a record and is
+    /// announced once, a stronger creature takes the creature record, and it all keeps.
+    #[test]
+    fn hall_of_records() {
+        let d = data();
+        let mut g = Game::new(Character::new(&d, "Rec", 0, false, 1, start_stats(&d, 0)).unwrap());
+        g.hall.today = "11/4/2026".into();
+        assert!(!g.records(&d), "a new character beats no record");
+        g.party[0].stats[0] = 15;
+        g.party[0].bank = 6_000_000;
+        assert!(g.records(&d));
+        assert_eq!(g.log, ["You have just set the record for Strongest Character!", "You have just set the record for wealthiest character!"]);
+        assert!(!g.records(&d), "announced once");
+        let strong = d.monsters.iter().max_by_key(|m| crate::hall::might(m)).unwrap().id;
+        g.hall.check(&d, crate::hall::CREATURE, "Rec", i64::from(strong));
+        assert_eq!(g.hall.records[crate::hall::CREATURE].value, i64::from(strong));
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ddj-hall-test");
+        g.hall.save(&dir).unwrap();
+        let back = Hall::load(&dir, String::new());
+        assert_eq!((back.records[0].name.as_str(), back.records[0].value, back.records[0].date.as_deref()), ("Rec", 15, Some("11/4/2026")));
+        assert_eq!(back.records[1].name, "Mager");
     }
 
     /// Everyone carries Hands in the first slot: the weapon until another is wielded,

@@ -343,8 +343,10 @@ impl Game {
     }
 
     /// A kill: the kill count and the guild's quest.
-    pub(crate) fn kill(&mut self, _data: &GameData, killer: usize, monster: usize) {
+    pub(crate) fn kill(&mut self, data: &GameData, killer: usize, monster: usize) {
         self.party[killer].kills += 1;
+        let name = self.party[killer].name.clone();
+        self.hall.check(data, crate::hall::CREATURE, &name, i64::from(data.monsters[monster].id));
         for j in self.living() {
             if self.party[j].quest == Some(monster) {
                 self.party[j].quest = None;

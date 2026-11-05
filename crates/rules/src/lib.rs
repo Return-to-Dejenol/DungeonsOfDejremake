@@ -6,6 +6,7 @@
 pub mod ai;
 pub mod combat;
 pub mod game;
+pub mod hall;
 pub mod magic;
 pub mod mdata4;
 pub mod mdr;

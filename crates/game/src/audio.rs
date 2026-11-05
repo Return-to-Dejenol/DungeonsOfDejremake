@@ -16,6 +16,12 @@ use rustysynth::{MidiFile, MidiFileSequencer, SoundFont, Synthesizer, Synthesize
 
 const RATE: u32 = 44_100;
 const FONT: &str = "GeneralUser-GS.sf2";
+/// The original's songs in its order (MUSIC.sub170B), the Sound Canvas versions.
+pub const TRACKS: [&str; 8] =
+    ["CITYSC.MID", "MAINSC.MID", "DUNGEOSC.MID", "INTROSC.MID", "GENERASC.MID", "GEN2SC.MID", "GEN3SC.MID", "THEMESC.MID"];
+pub const CITY: &str = TRACKS[0];
+pub const DUNGEON: &str = TRACKS[2];
+pub const THEME: &str = TRACKS[7];
 
 pub struct Audio {
     sink: MixerDeviceSink,
@@ -23,11 +29,12 @@ pub struct Audio {
     font_tried: bool,
     music: Option<Player>,
     track: Option<&'static str>,
+    scene: Option<&'static str>,
     pub music_on: bool,
     pub sound_on: bool,
 }
 
-/// A looping MIDI song rendered a block at a time.
+/// A MIDI song rendered a block at a time.
 struct Song {
     seq: MidiFileSequencer,
     left: Vec<f32>,
@@ -46,7 +53,7 @@ impl Iterator for Song {
         let i = self.at / 2;
         let s = if self.at % 2 == 0 { self.left[i] } else { self.right[i] };
         self.at += 1;
-        Some(s)
+        (!self.seq.end_of_sequence()).then_some(s)
     }
 }
 
@@ -82,18 +89,33 @@ impl Audio {
     pub fn new() -> Option<Self> {
         let mut sink = DeviceSinkBuilder::open_default_sink().ok()?;
         sink.log_on_drop(false);
-        Some(Self { sink, font: None, font_tried: false, music: None, track: None, music_on: true, sound_on: true })
+        Some(Self { sink, font: None, font_tried: false, music: None, track: None, scene: None, music_on: true, sound_on: true })
     }
 
-    /// Plays a song from the imported data on a loop; the same song keeps playing.
-    pub fn music(&mut self, dir: &Path, track: &'static str) {
+    /// The original's music (frmMain.timMusic, sub1A50): each screen starts its song (the
+    /// one playing carries on). When a song ends the menu and the city play theirs again;
+    /// the dungeon repeats it one time in four, else plays any song but the city's.
+    pub fn music(&mut self, dir: &Path, scene: &'static str) {
         if !self.music_on {
             return self.stop_music();
         }
-        if self.track == Some(track) {
+        let playing = self.music.as_ref().is_some_and(|p| !p.empty());
+        let track = if self.scene != Some(scene) {
+            scene
+        } else if playing {
+            return;
+        } else if scene != DUNGEON {
+            scene
+        } else {
+            let r = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos() as usize);
+            if r % 100 < 25 { self.track.unwrap_or(scene) } else { TRACKS[1 + r / 100 % 7] }
+        };
+        self.scene = Some(scene);
+        if playing && self.track == Some(track) {
             return;
         }
         self.stop_music();
+        self.scene = Some(scene);
         // The web build's SoundFont arrives after start-up, so it keeps looking until then.
         if !self.font_tried {
             self.font = font_path().and_then(|p| SoundFont::new(&mut Cursor::new(vfs::read(p).ok()?)).ok()).map(Arc::new);
@@ -103,7 +125,7 @@ impl Audio {
         let Ok(midi) = MidiFile::new(&mut Cursor::new(b)) else { return };
         let Ok(synth) = Synthesizer::new(font, &SynthesizerSettings::new(RATE as i32)) else { return };
         let mut seq = MidiFileSequencer::new(synth);
-        seq.play(&Arc::new(midi), true);
+        seq.play(&Arc::new(midi), false);
         let player = Player::connect_new(self.sink.mixer());
         player.set_volume(0.45);
         player.append(Song { seq, left: vec![0.0; 1024], right: vec![0.0; 1024], at: 2048 });
@@ -116,6 +138,7 @@ impl Audio {
             p.stop();
         }
         self.track = None;
+        self.scene = None;
     }
 
     pub fn effect(&self, dir: &Path, wav: &str) {

@@ -3,7 +3,7 @@
 //! Accepts the distribution ZIP (e.g. the shareware `MORDOR11.ZIP`), a loose
 //! `.WIP` installer archive, or an installed game folder. Files packed with
 //! MS-DOS `COMPRESS.EXE` (`*.MD_`, as the registered dungeon ships) are expanded.
-//! Only data, music, sound and picture files are copied out; executables are never
+//! Only data, music, sound, picture and help files are copied out; executables are never
 //! extracted (MORDOR.EXE is only read for its windows and their pictures). Nothing produced
 //! here may be committed or redistributed.
 
@@ -14,20 +14,22 @@ use std::path::{Path, PathBuf};
 use zip::ZipArchive;
 
 pub mod forms;
+pub mod hlp;
 pub mod vfs;
 
-thread_local!(static EXE_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+thread_local!(static ONLY: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) });
 
 /// Files the remake reads. `MG11.DLL` holds the original monster bitmaps.
 fn wanted(name: &str) -> bool {
     let n = name.to_ascii_uppercase();
-    if EXE_ONLY.get() {
-        return n == "MORDOR.EXE";
+    if let Some(only) = ONLY.get() {
+        return n == only;
     }
     (n.starts_with("MDATA") && (n.ends_with(".MDR") || n.ends_with(".MD_")))
         || n.ends_with(".MID")
         || n.ends_with(".WAV")
         || n == "MG11.DLL"
+        || n == "MORDOR.HLP"
         || n == "MORDOR.EXE"
 }
 
@@ -67,11 +69,12 @@ pub fn import_files(files: Vec<(String, Vec<u8>)>, out: &Path) -> io::Result<Vec
     Ok(got)
 }
 
-/// Imports only what MORDOR.EXE holds (its windows and pictures), leaving the rest.
-pub fn import_forms(files: Vec<(String, Vec<u8>)>, out: &Path) -> io::Result<Vec<String>> {
-    EXE_ONLY.set(true);
+/// Imports only the file named (MORDOR.EXE for its windows and pictures, or the help),
+/// leaving the rest.
+pub fn import_only(files: Vec<(String, Vec<u8>)>, out: &Path, name: &'static str) -> io::Result<Vec<String>> {
+    ONLY.set(Some(name));
     let got = import_files(files, out);
-    EXE_ONLY.set(false);
+    ONLY.set(None);
     got
 }
 
@@ -300,6 +303,21 @@ mod tests {
         assert_eq!(got.iter().filter(|g| g.ends_with(".MID")).count(), 16);
         assert!(got.iter().any(|g| g.ends_with(".WAV")));
         assert!(!got.iter().any(|g| g.ends_with(".EXE")));
+    }
+
+    #[test]
+    fn reads_help() {
+        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ddj-extract-help");
+        import(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/MORDOR11.ZIP"), &out).unwrap();
+        let h = hlp::Help::parse(&fs::read(out.join("MORDOR.HLP")).unwrap()).unwrap();
+        assert_eq!((h.title.as_str(), h.topics.len(), h.topics[h.contents].title.as_str()), ("Mordor HelpLesson", 75, "Welcome"));
+        assert_eq!((h.topics[h.map[&4]].title.as_str(), h.windows[2].caption.as_str()), ("The City", "Mordor Tutorial"));
+        assert!(h.keywords.len() > 50 && h.keywords.iter().all(|(_, t)| !t.is_empty()));
+        let links = h.topics.iter().flat_map(|t| &t.body).flat_map(|b| &b.items).filter(|i| matches!(i, hlp::Item::Link(..))).count();
+        assert!(links > 90, "{links}");
+        let (w, ht, px) = h.picture(&hlp::Pic::Bm(0)).unwrap();
+        assert_eq!((w, ht, px.len()), (293, 311, 293 * 311 * 4));
+        assert_eq!(h.picture(&hlp::Pic::File("GOBLIN.BMP".into())).map(|p| (p.0, p.1)), Some((100, 100)));
     }
 
     #[test]

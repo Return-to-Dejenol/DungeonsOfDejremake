@@ -217,11 +217,11 @@ fn load_fon(ctx: &egui::Context, b: &[u8]) -> Vec<(u16, Fnt)> {
 
 /// A control's font.
 #[derive(Clone)]
-struct Ft {
-    name: String,
-    size: f32,
-    bold: bool,
-    italic: bool,
+pub struct Ft {
+    pub name: String,
+    pub size: f32,
+    pub bold: bool,
+    pub italic: bool,
 }
 
 /// TrueType faces from the system (Windows), registered as egui families; families with
@@ -254,7 +254,8 @@ pub struct Desk {
     /// Where each window's client area sits (virtual pixels), once placed or moved.
     pub pos: HashMap<String, Pos2>,
     pub st: HashMap<String, St>,
-    focus: Option<String>,
+    /// The text box typed into (`form.key`).
+    pub focus: Option<String>,
     combo: Option<String>,
     s: f32,
     org: Pos2,
@@ -392,6 +393,11 @@ impl Desk {
         let origin = pos2(0.0, CAPTION);
         self.draw(ui, &f, origin, vec2(SCREEN.x, bar), v, &mut ev);
         ev
+    }
+
+    /// Keeps a dialog above the others (the help's windows over the game's).
+    pub fn raise(&self, form: &str) {
+        self.ctx.move_to_top(egui::LayerId::new(egui::Order::Foreground, egui::Id::unique(("win", form))));
     }
 
     /// Draws an MDI child window (or, with `dialog`, a window above everything, centred
@@ -952,12 +958,12 @@ impl Desk {
         FontId::new((ft.size * 96.0 / 72.0 * self.s).max(1.0), egui::FontFamily::Name(format!("{fam}{}", u8::from(ft.bold)).into()))
     }
 
-    fn line_height(&self, ft: &Ft) -> f32 {
+    pub fn line_height(&self, ft: &Ft) -> f32 {
         self.fon(ft).map_or((ft.size * 96.0 / 72.0 * 1.2).round(), |f| f.height)
     }
 
     /// A string's width in virtual pixels.
-    fn width(&self, ft: &Ft, s: &str) -> f32 {
+    pub fn width(&self, ft: &Ft, s: &str) -> f32 {
         match self.fon(ft) {
             Some(f) => s.chars().map(|ch| glyph(f, ch).1 + if ft.bold { 1.0 } else { 0.0 }).sum(),
             None => self.ctx.fonts_mut(|fo| fo.layout_no_wrap(s.to_string(), self.ttf(ft), Color32::WHITE).size().x) / self.s,
@@ -967,7 +973,7 @@ impl Desk {
     /// Draws a caption in `r`: aligned left (0), right (1) or centred (2), top or
     /// vertically centred, word-wrapped, with `&` marking the underlined access key.
     #[allow(clippy::too_many_arguments)]
-    fn label_text(&self, cv: &Cv, r: Rect, ft: &Ft, s: &str, col: Color32, align: u8, middle: bool, amp: bool) {
+    pub fn label_text(&self, cv: &Cv, r: Rect, ft: &Ft, s: &str, col: Color32, align: u8, middle: bool, amp: bool) {
         let s = if ft.name.eq_ignore_ascii_case("Symbol") { symbol(s) } else { s.to_string() };
         let (plain, under) = if amp { accel(&s) } else { (s.clone(), None) };
         let lh = self.line_height(ft);
@@ -1038,7 +1044,7 @@ impl Desk {
 }
 
 fn glyph(f: &Fnt, ch: char) -> (f32, f32) {
-    let c = u32::from(ch);
+    let c = ddj_extract::hlp::CP1252.iter().find(|p| p.1 == ch).map_or(u32::from(ch), |p| u32::from(p.0));
     let i = if (u32::from(f.first)..=255).contains(&c) { (c - u32::from(f.first)) as usize } else { usize::from(b'?' - f.first) };
     f.glyphs.get(i).copied().unwrap_or((0.0, 0.0))
 }

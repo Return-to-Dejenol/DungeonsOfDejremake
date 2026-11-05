@@ -8,6 +8,7 @@ use web_time::Instant;
 use ddj_rules::{
     Tuning,
     game::{self, Character, Game},
+    hall::Hall,
     mdr::GameData,
 };
 use eframe::egui::{self, Color32};
@@ -15,6 +16,7 @@ use eframe::egui::{self, Color32};
 mod art;
 mod audio;
 mod dungeon;
+mod help;
 mod party;
 mod stats;
 mod town;
@@ -43,6 +45,7 @@ enum Screen {
 enum Dialog {
     Options,
     About,
+    Hall,
     Import,
     /// A message box: title, text.
     Msg(String, String),
@@ -99,6 +102,52 @@ struct App {
     audio_tried: bool,
     /// Log lines already given their sound.
     heard: usize,
+    /// The HelpLesson's windows, while open.
+    help: Option<help::Viewer>,
+}
+
+/// Today as the original's short date (m/d/yyyy, UTC): Hinnant's days-to-civil.
+fn today() -> String {
+    let z = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_secs() / 86_400) as i64 + 719_468;
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    format!("{m}/{}/{}", doy - (153 * mp + 2) / 5 + 1, yoe + z.div_euclid(146_097) * 400 + i64::from(m <= 2))
+}
+
+/// The Hall of Records (frmHall, sub32F6): the six stat records down the left, the six
+/// feats down the right, each a title over who set it and with what.
+fn hall(desk: &mut Desk, ctx: &egui::Context, d: &GameData) -> bool {
+    const F: &str = "frmHall";
+    const STATS: [&str; 6] = ["Strength", "Intelligence", "Wisdom", "Constitution", "Charisma", "Dexterity"];
+    const TITLES: [&str; 12] = [
+        "Strongest", "Smartest", "Wisest", "Healthiest", "Most Attractive", "Quickest",
+        "Deadliest Creature Defeated", "Most Experienced Explorer", "Wealthiest Explorer", "Master of Fighting", "Master of Magic", "Master of Thieving",
+    ];
+    let h = Hall::load(&saves(), String::new());
+    let mut v = View::default();
+    for (j, r) in h.records.iter().enumerate() {
+        let (side, i) = (if j < 6 { "Record" } else { "History" }, (j % 6) as u16);
+        let (s0, c0) = (desk.rect(F, &format!("lbl{side}Stat(0)")), desk.rect(F, &format!("lbl{side}Char(0)")));
+        let top = (s0[3] + c0[3]) * i32::from(i);
+        v.clone_rect(&format!("lbl{side}Stat(0)"), i, [s0[0], s0[1] + top, s0[2], s0[3]]);
+        v.clone_rect(&format!("lbl{side}Char(0)"), i, [c0[0], c0[1] + top, c0[2], c0[3]]);
+        let set = r.date.as_ref().map_or("Set by Original RecordHolder ".into(), |t| format!("Set on {t} by "));
+        let what = match j {
+            0..6 => format!("With a {} {}", r.value, STATS[j]),
+            6 => format!("Defeated a \"{}\"", d.monsters.iter().find(|m| i64::from(m.id) == r.value).map_or("(Unknown)", |m| &m.name)),
+            7 => format!("Having {} total experience", stats::commas(r.value)),
+            8 => format!("Having a total of {} gold in the Bank", stats::commas(r.value)),
+            9 => format!("Having a combined fighting skill of {}", r.value),
+            10 => format!("Having a spell knowledge && power of {}", r.value),
+            _ => format!("Having a total thieving skill of {}", r.value),
+        };
+        v.text(&format!("lbl{side}Stat({i})"), TITLES[j]).text(&format!("lbl{side}Char({i})"), format!("{set}\"{}\"\n{what}", r.name));
+    }
+    let ev = desk.window(ctx, F, v, true);
+    ev.click("cmdCommand(0)") || ev.closed
 }
 
 fn saves() -> PathBuf {
@@ -150,6 +199,7 @@ impl App {
             audio: None,
             audio_tried: false,
             heard: 0,
+            help: None,
         }
     }
 
@@ -165,6 +215,21 @@ impl App {
         }
     }
 
+    /// Opens the HelpLesson in the window named, at the topic for a HelpContextID (the
+    /// contents with none), as the original's WinHelp calls did.
+    fn help(&mut self, desk: &mut Desk, win: &str, id: Option<i64>) {
+        if self.help.is_none() {
+            self.help = help::Viewer::load(&ddj_extract::data_dir(), SHAREWARE);
+        }
+        match self.help.as_mut() {
+            Some(h) => {
+                let (w, t) = (h.window(win), id.map_or(h.contents(), |i| h.context(i)));
+                h.go(desk, w, t);
+            }
+            None => self.say("The HelpLesson could not be read from MORDOR.HLP."),
+        }
+    }
+
     /// Saves every party member after each change; the files are small.
     fn persist(&mut self) {
         let Some(g) = &self.game else { return };
@@ -177,6 +242,9 @@ impl App {
         if let Err(e) = g.store.save(&saves()) {
             err = Some(format!("Could not save the store: {e}"));
         }
+        if let Err(e) = g.hall.save(&saves()) {
+            err = Some(format!("Could not save the Hall of Records: {e}"));
+        }
         if let Some(e) = err {
             self.say(e);
         }
@@ -187,6 +255,7 @@ impl App {
         let allies = ch.allies.clone();
         let mut g = Game::new(ch);
         g.store = ddj_rules::store::Store::load(&saves(), d);
+        g.hall = Hall::load(&saves(), today());
         for name in allies {
             if let Ok(a) = load(&name)
                 && let Err(e) = g.add_ally(a)
@@ -231,12 +300,13 @@ impl App {
         for i in [1, 2, 3, 5, 7] {
             v.enable(&format!("cmdTool({i})"), playing);
         }
-        for i in [0, 4, 6, 8] {
+        for i in [4, 6, 8] {
             v.enable(&format!("cmdTool({i})"), false);
         }
         let ev = desk.main(ui, &title, v);
         match ev.index("cmdTool") {
-            // F5: Objects & Spells; F8: the AutoMap; 'A': add a character; F10: options.
+            // The HelpLesson; F5: Objects & Spells; F8: the AutoMap; 'A': add a character; F10: options.
+            Some(0) => self.help(desk, "main", None),
             Some(1) => desk.active = Some("frmCharStat3".into()),
             Some(2) => desk.active = Some("frmAutoMap".into()),
             Some(3) => self.dialog = Some(Dialog::Recruit),
@@ -294,7 +364,8 @@ impl App {
             Some(7) if self.loaded.is_some() => self.loaded = None,
             Some(7) => self.dialog = Some(Dialog::Load),
             Some(9) => self.screen = Screen::List,
-            Some(3 | 10) => self.say("The HelpLesson and the Hall of Records aren't in the remake yet."),
+            Some(3) => self.help(desk, "main", None),
+            Some(10) => self.dialog = Some(Dialog::Hall),
             Some(5) => self.dialog = self.loaded.clone().map(Dialog::Delete),
             Some(6) => self.dialog = Some(Dialog::Options),
             Some(8) => self.dialog = Some(Dialog::About),
@@ -370,15 +441,19 @@ impl App {
             let ok = gd.races & (1 << race) != 0 && gd.alignments & (1 << dr.alignment) != 0 && (0..6).all(|s| dr.stats[s] >= gd.stat_req[s]);
             v.text(&k, gd.name.clone()).fore(&k, if ok { Color32::BLACK } else { Color32::from_gray(128) });
         }
-        for k in ["cmdTutorial", "cmdHelp(0)", "cmdHelp(1)"] {
-            v.enable(k, false);
-        }
         let ev = desk.window(ctx, F, v, true);
         if let Some(i) = ev.index("cmdAdd") {
             dr.stats[i as usize] += 1;
         }
         if let Some(i) = ev.index("cmdSubtract") {
             dr.stats[i as usize] -= 1;
+        }
+        let (female, alignment, stats) = (dr.female, dr.alignment, dr.stats);
+        // The races' and guilds' statistics, and the tutorial, in the help's own windows.
+        match ev.index("cmdHelp") {
+            Some(i) => self.help(desk, "stats", Some(14 + i64::from(i))),
+            None if ev.click("cmdTutorial") => self.help(desk, "tutorial", Some(3)),
+            None => {}
         }
         if ev.click("cmdExit") || ev.closed {
             self.screen = Screen::Menu;
@@ -389,7 +464,6 @@ impl App {
                 self.say("That name is taken.");
                 return;
             }
-            let (female, alignment, stats) = (dr.female, dr.alignment, dr.stats);
             match Character::new(d, &name, race, female, alignment, stats) {
                 Ok(ch) => {
                     self.loaded = Some(name.clone());
@@ -444,6 +518,7 @@ impl App {
                 let ev = desk.window(ctx, "frmAbout", View::default(), true);
                 ev.click("cmdOK") || ev.closed
             }
+            Dialog::Hall => hall(desk, ctx, d),
             Dialog::Options => self.options(desk, ctx),
             Dialog::Load => self.load_dialog(desk, ctx),
             Dialog::Import => self.import(desk, ctx),
@@ -533,6 +608,10 @@ impl App {
         } else {
             self.dungeon(desk, ctx, d, t);
         }
+        // The city is where the original checks most records (experience, levels, bank).
+        if self.screen == Screen::Town && self.game.as_mut().is_some_and(|g| g.records(d)) {
+            self.persist();
+        }
         if self.game.is_none() {
             return;
         }
@@ -606,7 +685,7 @@ impl eframe::App for App {
             // Data imported before the remake read the original's windows: take them
             // from the bundled shareware's MORDOR.EXE.
             if ddj_extract::forms::load(&dir).is_none() {
-                let _ = ddj_extract::import_forms(vec![("MORDOR11.ZIP".into(), SHAREWARE.to_vec())], &dir);
+                let _ = ddj_extract::import_only(vec![("MORDOR11.ZIP".into(), SHAREWARE.to_vec())], &dir, "MORDOR.EXE");
             }
             self.desk = Desk::new(&ctx, &dir);
             if let Some(desk) = self.desk.as_mut() {
@@ -635,6 +714,23 @@ impl eframe::App for App {
                 Screen::Town | Screen::Dungeon => self.play(&mut desk, &ctx, &data, &tuning),
             }
             self.dialog(&mut desk, &ctx, &data);
+            // F1: the help for the window in front (its HelpContextID), as the original's.
+            if self.help.is_none() && ctx.input(|i| i.key_pressed(egui::Key::F1)) {
+                let main = match self.screen {
+                    Screen::Town => "frmCityMain",
+                    Screen::Dungeon => "frmDungeonMain",
+                    Screen::Create => "frmCreateChar",
+                    _ => "frmMenu",
+                };
+                let f = desk.active.clone().filter(|f| desk.forms.contains_key(f) && !f.starts_with("frmHelp")).unwrap_or(main.into());
+                let id = desk.forms.get(&f).and_then(|f| win::num(&f.props, "HelpContextID")).unwrap_or(0);
+                self.help(&mut desk, "main", Some(id));
+            }
+            if let Some(h) = self.help.as_mut()
+                && !h.show(&mut desk, &ctx)
+            {
+                self.help = None;
+            }
         });
         // An import replaces the data during the frame: the windows are read again.
         if self.data.is_none() {
@@ -643,12 +739,11 @@ impl eframe::App for App {
         // The original's Sound Canvas music for the menu, the city and the dungeon, and
         // its effects for what just happened (at most a few a frame).
         if let Some(a) = self.audio.as_mut() {
-            let track = match self.screen {
-                Screen::Town => "CITYSC.MID",
-                Screen::Dungeon => "DUNGEOSC.MID",
-                _ => "MAINSC.MID",
-            };
-            a.music(&dir, track);
+            a.music(&dir, match self.screen {
+                Screen::Town => audio::CITY,
+                Screen::Dungeon => audio::DUNGEON,
+                _ => audio::THEME,
+            });
             if let Some(g) = &self.game {
                 self.heard = self.heard.min(g.log.len());
                 for w in g.log[self.heard..].iter().filter_map(|l| audio::effect_for(l)).take(3) {
