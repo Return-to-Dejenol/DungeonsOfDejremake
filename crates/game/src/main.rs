@@ -430,15 +430,16 @@ impl App {
         dr.alignment = aligns.get(a).copied().unwrap_or(1);
         let r = &d.races[race];
         let base = game::start_stats(d, race);
-        let left = game::FREE_POINTS - dr.stats.iter().zip(base).map(|(s, b)| s - b).sum::<i16>();
+        let left = r.stat_points - dr.stats.iter().zip(base).map(|(s, b)| s - b).sum::<i16>();
         let mut v = View::default();
         v.items("cmbRace", d.races.iter().map(|r| r.name.clone()).collect());
         v.items("cmbSex", vec!["Male".into(), "Female".into()]);
         v.items("cmbAlignment", aligns.iter().map(|&a| ["Good", "Neutral", "Evil"][a as usize].to_string()).collect());
         v.text("lblPoints", left.to_string());
-        for (i, b) in base.iter().enumerate() {
+        // A stat may go down to the race's minimum, each step a point back, as in the original.
+        for i in 0..6 {
             v.text(&format!("pnlPanel({i})"), dr.stats[i].to_string()).text(&format!("lblStatInfo({i})"), format!("({}-{})", r.stat_min[i], r.stat_max[i]));
-            v.enable(&format!("cmdAdd({i})"), left > 0 && dr.stats[i] < r.stat_max[i]).enable(&format!("cmdSubtract({i})"), dr.stats[i] > *b.max(&r.stat_min[i]));
+            v.enable(&format!("cmdAdd({i})"), left > 0 && dr.stats[i] < r.stat_max[i]).enable(&format!("cmdSubtract({i})"), dr.stats[i] > r.stat_min[i]);
         }
         // The guilds, one a line; those the character could join now in black.
         let g0 = desk.rect(F, "lblGuild(0)");

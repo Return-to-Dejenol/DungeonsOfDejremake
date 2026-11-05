@@ -116,6 +116,8 @@ pub struct Race {
     /// paralysis, drain, acid, then an unused slot.
     pub resist: [i16; 12],
     pub alignments: Alignments,
+    /// Points to spend on stats at creation (Human 5, Dwarf 10).
+    pub stat_points: i16,
     pub lifespan: i16,
     /// Experience modifier (Human 3, Troll 9).
     pub xp_factor: f32,
@@ -404,9 +406,9 @@ impl GameData {
             c.skip(1);
             let resist = c.words();
             let alignments = c.i16();
-            c.skip(3);
-            let lifespan = c.i16();
-            Race { name, stat_min, stat_max, resist, alignments, lifespan, xp_factor: c.f32(), rest: c.rest(start) }
+            c.skip(2);
+            let (stat_points, lifespan) = (c.i16(), c.i16());
+            Race { name, stat_min, stat_max, resist, alignments, stat_points, lifespan, xp_factor: c.f32(), rest: c.rest(start) }
         }).collect();
         let guilds = section(counts[1]).map(|i| {
             let mut c = t.rec(i);

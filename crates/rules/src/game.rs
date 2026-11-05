@@ -23,8 +23,6 @@ pub const SAVE_VERSION: u32 = 2;
 /// Item 0, "Hands": every character's first slot, the weapon when no other is wielded
 /// (two swings at half damage). It can't be sold, dropped, stolen or destroyed.
 pub const HANDS: usize = 0;
-/// Points to spend on top of [`start_stats`] when creating a character.
-pub const FREE_POINTS: i16 = 5;
 /// The character you control plus up to three allies.
 pub const MAX_PARTY: usize = 4;
 pub const STATS: [&str; 6] = ["STR", "INT", "WIS", "CON", "CHA", "DEX"];
@@ -152,10 +150,11 @@ pub enum Side {
     Door,
 }
 
-/// Midway between the race's minimum and maximum, less one, before free points.
+/// The race's minimum plus 5 (cmbRace_Click). Creation then spends the race's stat points,
+/// and taking a stat down toward its minimum gives points back.
 pub fn start_stats(data: &GameData, race: usize) -> [i16; 6] {
     let r = &data.races[race];
-    std::array::from_fn(|i| ((r.stat_min[i] + r.stat_max[i]) / 2 - 1).max(r.stat_min[i]))
+    std::array::from_fn(|i| (r.stat_min[i] + 5).min(r.stat_max[i]))
 }
 
 /// What a square's side looks like from inside it; secret doors look like walls.
@@ -193,7 +192,7 @@ impl Character {
         if name.trim().eq_ignore_ascii_case("store") {
             return Err("That name is taken by the store's file.".into());
         }
-        if (0..6).any(|i| stats[i] < r.stat_min[i] || stats[i] > r.stat_max[i]) || spent > FREE_POINTS {
+        if (0..6).any(|i| stats[i] < r.stat_min[i] || stats[i] > r.stat_max[i]) || spent > r.stat_points {
             return Err("Stats are outside the race's range.".into());
         }
         if r.alignments & (1 << alignment) == 0 {
@@ -1350,6 +1349,20 @@ mod tests {
 
     /// The Hall starts with the original's holders; a better value takes a record and is
     /// announced once, a stronger creature takes the creature record, and it all keeps.
+    /// As the original's Create Character window showed them (Human, then Dwarf).
+    #[test]
+    fn creation_points() {
+        let d = data();
+        assert_eq!((start_stats(&d, 0), d.races[0].stat_points), ([9, 9, 9, 11, 10, 11], 5));
+        assert_eq!((start_stats(&d, 4), d.races[4].stat_points), ([8, 8, 12, 8, 8, 10], 10));
+        // Strength down to its minimum pays for 5 more points; one past the pool is refused.
+        let mut s = start_stats(&d, 4);
+        (s[0], s[1], s[2]) = (3, 18, 17);
+        assert!(Character::new(&d, "Dwarf", 4, false, 1, s).is_ok());
+        s[2] = 18;
+        assert!(Character::new(&d, "Dwarf", 4, false, 1, s).is_err());
+    }
+
     #[test]
     fn hall_of_records() {
         let d = data();
