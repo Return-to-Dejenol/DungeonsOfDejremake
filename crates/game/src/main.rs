@@ -16,11 +16,13 @@ use eframe::egui::{self, Color32};
 mod art;
 mod audio;
 mod dungeon;
+#[cfg(target_os = "android")]
+mod android;
 mod help;
 mod party;
 mod stats;
 mod town;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(windows)]
 mod update;
 mod win;
 #[cfg(target_arch = "wasm32")]
@@ -70,7 +72,7 @@ enum Deed {
     Raise(usize),
     Rescue(usize),
     /// Download and install a newer release.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(windows)]
     Update,
 }
 
@@ -109,7 +111,7 @@ struct App {
     heard: usize,
     /// The HelpLesson's windows, while open.
     help: Option<help::Viewer>,
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(windows)]
     updater: update::Updater,
 }
 
@@ -207,7 +209,7 @@ impl App {
             audio_tried: false,
             heard: 0,
             help: None,
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(windows)]
             updater: update::Updater::start(&saves(), &today()),
         }
     }
@@ -519,12 +521,12 @@ impl App {
                     match deed {
                         Deed::Raise(i) => g.raise(d, i),
                         Deed::Rescue(i) => g.rescue(i),
-                        #[cfg(not(target_arch = "wasm32"))]
+                        #[cfg(windows)]
                         Deed::Update => {}
                     }
                     self.persist();
                 }
-                #[cfg(not(target_arch = "wasm32"))]
+                #[cfg(windows)]
                 if ev.click("cmdOK") && deed == Deed::Update {
                     self.updater.accept(ctx);
                     self.say("Downloading the update. The game will close while it installs, then start again.");
@@ -582,10 +584,12 @@ impl App {
         let dropped = ctx.input(|i| i.raw.dropped_files.clone());
         #[allow(unused_mut)]
         let mut v = View::default();
-        #[cfg(target_arch = "wasm32")]
-        v.show("txtPath", false).text("cmdImport", "Choose &Files...").show("cmdFolder", true);
+        #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+        v.show("txtPath", false).text("cmdImport", "Choose &Files...").show("cmdFolder", cfg!(target_arch = "wasm32"));
+        #[cfg(target_os = "android")]
+        v.text("lblText", "The full game's 15 dungeon levels come from your own copy of Mordor. Choose its ZIP, MORDOR.WIP or install folder's files:");
         let ev = desk.window(ctx, "dlgImport", v, true);
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         let (files, path) = (Vec::new(), dropped.first().map(|f| f.path().to_path_buf()).or_else(|| ev.click("cmdImport").then(|| PathBuf::from(desk.state("dlgImport", "txtPath").text.trim()))));
         #[cfg(target_arch = "wasm32")]
         let (files, path) = {
@@ -596,6 +600,16 @@ impl App {
                 web::choose(ev.click("cmdFolder"), ctx.clone());
             }
             (web::picked().unwrap_or_default(), None::<PathBuf>)
+        };
+        // Android's document picker copies the chosen files into the app's storage.
+        #[cfg(target_os = "android")]
+        let (files, path) = {
+            drop(dropped);
+            if ev.click("cmdImport") {
+                android::choose();
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(300));
+            (android::picked().unwrap_or_default(), None::<PathBuf>)
         };
         let dir = ddj_extract::data_dir();
         let done = match (path, files.is_empty()) {
@@ -749,7 +763,7 @@ impl eframe::App for App {
                 self.help = None;
             }
             // A newer release, offered once nothing else is asked; a failed download said.
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(windows)]
             {
                 if self.dialog.is_none()
                     && let Some(q) = self.updater.offer()
@@ -791,7 +805,15 @@ fn main() {
     web::start();
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+fn android_main(app: android::App) {
+    android::start(&app);
+    let options = eframe::NativeOptions { android_app: Some(app), ..Default::default() };
+    let _ = eframe::run_native("Dejenol Restoration Project", options, Box::new(|_| Ok(Box::new(App::new()))));
+}
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn main() -> eframe::Result {
     eframe::run_native(
         "Dejenol Restoration Project",

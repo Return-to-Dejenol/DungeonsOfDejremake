@@ -731,6 +731,10 @@ impl Desk {
                 let shown = st.text.clone() + if focused && (ui.input(|i| i.time) * 2.0) as i64 % 2 == 0 { "|" } else { "" };
                 self.label_text(cv, Rect::from_min_size(pos2(x + 4.0, y), vec2(w - 6.0, h)), &ft, &shown, ink, 0, true, false);
                 if focused {
+                    // Text input wanted here: a phone's on-screen keyboard, an IME's window.
+                    let rect = cv.r(Rect::from_min_size(pos2(x, y), vec2(w, h)));
+                    let cursor_rect = Rect::from_min_size(rect.right_top(), vec2(1.0, rect.height()));
+                    ui.ctx().output_mut(|o| o.ime = Some(egui::output::IMEOutput { purpose: Default::default(), rect, cursor_rect, should_interrupt_composition: false }));
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
                 }
                 None
