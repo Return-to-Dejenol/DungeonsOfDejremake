@@ -6,7 +6,10 @@
 
 #define AppName "Dejenol Restoration Project"
 #define Exe "DejenolRestoration.exe"
-#define AppVersion "0.1.0"
+; The version comes from crates/game/Cargo.toml (scripts/build-installer.ps1 passes it).
+#ifndef AppVersion
+  #define AppVersion "0.0.0"
+#endif
 
 [Setup]
 AppId={{6B2F3D61-6E0C-4C1F-9B1D-6A9A0C3E7D42}
@@ -61,6 +64,8 @@ Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 
 [Run]
 Filename: "{app}\{#Exe}"; Description: "Play now"; WorkingDir: "{app}"; Flags: nowait postinstall skipifsilent
+; The game's updater runs Setup silently: the game starts again once it's done.
+Filename: "{app}\{#Exe}"; WorkingDir: "{app}"; Flags: nowait; Check: WizardSilent
 
 [Code]
 function GetSystemMetrics(Index: Integer): Integer; external 'GetSystemMetrics@user32.dll stdcall';
@@ -99,6 +104,8 @@ procedure InitializeWizard;
 var
   W, H: Integer;
 begin
+  if WizardSilent then
+    exit;
   W := GetSystemMetrics(0);
   H := GetSystemMetrics(1);
   Backdrop := CreateCustomForm(W, H, False, False);

@@ -11,12 +11,13 @@ try {
     if (-not (Test-Path 'vendor/soundfont/GeneralUser-GS.sf2')) { throw 'vendor/soundfont/GeneralUser-GS.sf2 is missing' }
     $iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
     if (-not $iscc) { throw 'Inno Setup 6 (ISCC.exe) not found' }
-    & $iscc installer/ddj.iss
+    $version = (Select-String -Path crates/game/Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+    & $iscc "/DAppVersion=$version" installer/ddj.iss
     if ($LASTEXITCODE) { throw 'ISCC failed' }
     # A folder with a Low integrity label passes it on to what is built in it, and a Setup
     # running at Low can't create its temporary folder. A copy takes the label of where it
     # lands, so the copy in Downloads runs normally.
-    $setup = Get-ChildItem target/installer/*.exe | Sort-Object LastWriteTime | Select-Object -Last 1
+    $setup = Get-Item "target/installer/DejenolRestoration-Setup-$version.exe"
     $downloads = Join-Path $env:USERPROFILE 'Downloads'
     # An older copy may still carry the label (a moved file keeps it), so it goes first.
     Remove-Item (Join-Path $downloads $setup.Name) -ErrorAction SilentlyContinue

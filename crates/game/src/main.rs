@@ -20,6 +20,8 @@ mod help;
 mod party;
 mod stats;
 mod town;
+#[cfg(not(target_arch = "wasm32"))]
+mod update;
 mod win;
 #[cfg(target_arch = "wasm32")]
 mod web;
@@ -67,6 +69,9 @@ enum Dialog {
 enum Deed {
     Raise(usize),
     Rescue(usize),
+    /// Download and install a newer release.
+    #[cfg(not(target_arch = "wasm32"))]
+    Update,
 }
 
 struct Draft {
@@ -104,6 +109,8 @@ struct App {
     heard: usize,
     /// The HelpLesson's windows, while open.
     help: Option<help::Viewer>,
+    #[cfg(not(target_arch = "wasm32"))]
+    updater: update::Updater,
 }
 
 /// Today as the original's short date (m/d/yyyy, UTC): Hinnant's days-to-civil.
@@ -200,6 +207,8 @@ impl App {
             audio_tried: false,
             heard: 0,
             help: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            updater: update::Updater::start(&saves(), &today()),
         }
     }
 
@@ -509,8 +518,15 @@ impl App {
                     match deed {
                         Deed::Raise(i) => g.raise(d, i),
                         Deed::Rescue(i) => g.rescue(i),
+                        #[cfg(not(target_arch = "wasm32"))]
+                        Deed::Update => {}
                     }
                     self.persist();
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                if ev.click("cmdOK") && deed == Deed::Update {
+                    self.updater.accept(ctx);
+                    self.say("Downloading the update. The game will close while it installs, then start again.");
                 }
                 ev.click("cmdOK") || ev.click("cmdNo") || ev.closed
             }
@@ -730,6 +746,18 @@ impl eframe::App for App {
                 && !h.show(&mut desk, &ctx)
             {
                 self.help = None;
+            }
+            // A newer release, offered once nothing else is asked; a failed download said.
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if self.dialog.is_none()
+                    && let Some(q) = self.updater.offer()
+                {
+                    self.dialog = Some(Dialog::Confirm(q, Deed::Update));
+                }
+                if let Some(e) = self.updater.error() {
+                    self.say(e);
+                }
             }
         });
         // An import replaces the data during the frame: the windows are read again.
