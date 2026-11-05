@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dejenol Restoration Project</title>
+<meta name="description" content="A modernized Rust remake of Mordor: The Depths of Dejenol (1995) for Windows, web and Android.">
+<style>
+  :root {
+    --bg: #f6f2ea; --surface: #fffdf8; --ink: #2a2520; --muted: #6b6258;
+    --line: #e2d9cb; --accent: #8a3b12; --accent-soft: #f3e3d6; --ok: #2f6b3a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15130f; --surface: #1e1b16; --ink: #ece5d8; --muted: #a39a8c;
+      --line: #342f27; --accent: #e08a52; --accent-soft: #3a2619; --ok: #7fbf87;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 16px 64px; }
+  h1, h2 { font-family: Georgia, "Times New Roman", serif; font-weight: 600; line-height: 1.2; }
+  h1 { font-size: 2.4rem; margin: 0 0 8px; }
+  h2 { font-size: 1.4rem; margin: 48px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  p { margin: 0 0 12px; }
+  a { color: var(--accent); }
+  code { font: 0.9em ui-monospace, Consolas, monospace; background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; }
+  pre { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  .lede { font-size: 1.15rem; color: var(--muted); }
+  .pillars { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; padding: 0; list-style: none; }
+  .pillars li { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; }
+  .pillars b { display: block; margin-bottom: 4px; }
+  .pillars span { color: var(--muted); font-size: 0.95rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  @media (max-width: 560px) { td.num { white-space: normal; } th, td { padding: 8px 6px; } }
+  .note { background: var(--accent-soft); border-radius: 8px; padding: 14px 16px; }
+  ol.roadmap { list-style: none; padding: 0; counter-reset: step; }
+  ol.roadmap li { counter-increment: step; position: relative; padding: 0 0 18px 44px; }
+  ol.roadmap li::before {
+    content: counter(step); position: absolute; left: 0; top: 0; width: 28px; height: 28px;
+    border-radius: 50%; border: 2px solid var(--accent); color: var(--accent);
+    display: grid; place-items: center; font-weight: 700; font-size: 0.9rem;
+  }
+  ol.roadmap li.done::before { content: "✓"; background: var(--ok); border-color: var(--ok); color: var(--surface); }
+  .tag { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--accent); margin-left: 6px; }
+  .done .tag { color: var(--ok); }
+  footer { margin-top: 56px; color: var(--muted); font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>Dejenol Restoration Project</h1>
+<p class="lede">A fan remake of <em>Mordor: The Depths of Dejenol</em> (1995), modernized and written in Rust.
+It opens on the original's free shareware release (floors 1-3); import your own registered copy for all 15.
+The remake supplies new code and a rebalance on top.</p>
+<p>It started as a fork of <a href="https://github.com/matteo-prosperi/DungeonsOfDejremake">matteo-prosperi/DungeonsOfDejremake</a>.
+That project publishes no source, so all the code here is new.
+Source: <a href="https://github.com/silvariasereneblossom/DungeonsOfDejremake">silvariasereneblossom/DungeonsOfDejremake</a>.</p>
+
+<h2>Design pillars</h2>
+<ul class="pillars">
+  <li><b>Modern RPG mechanics</b><span>Modern mechanics come first. Strict faithfulness to 1995 does not.</span></li>
+  <li><b>Corpse recovery</b><span>When a character dies, the body stays in the dungeon for someone to recover.</span></li>
+  <li><b>A party of your own characters</b><span>Your other characters join the party under AI control.</span></li>
+  <li><b>Flatter XP, deeper rewards</b><span>Levelling takes far less XP, and deeper floors pay more.</span></li>
+  <li><b>Casters get to cast</b><span>Casters get far more SP, and SP potions drop nearly as often as healing potions.</span></li>
+  <li><b>Fair boxes early</b><span>Magically locked boxes are rare on floors 1-5 and get more common deeper down.</span></li>
+  <li><b>Original art and music</b><span>The original's pictures and sounds, and its MIDI music played through a SoundFont, all read from the game files on your device.</span></li>
+  <li><b>Everywhere, in Rust</b><span>Windows, web and Android from one Rust codebase.</span></li>
+</ul>
+
+<h2>The rebalance in numbers</h2>
+<p>The rebalance is a patch file, <code>patches/modern.toml</code>, applied on top of the imported original tables.
+Every value is a first-pass placeholder to tune during play-testing.
+Any other <code>patches/*.toml</code> overrides it key by key.</p>
+<table>
+  <tr><th>Knob</th><th>Value</th><th>Meaning</th></tr>
+  <tr><td>Guild level cost</td><td class="num">original ÷ 2.5</td><td>Up to level 60, easing to ÷ 1.5 by level 70.</td></tr>
+  <tr><td>Depth bonus</td><td class="num">+15% per floor</td><td>Floor 10 pays 2.35× the XP.</td></tr>
+  <tr><td>Catch-up bonus</td><td class="num">+10% per level, cap +100%</td><td>For party members below the party's highest level.</td></tr>
+  <tr><td>Max SP gain</td><td class="num">2.5×</td><td>Multiplier on the original max-SP gain per level.</td></tr>
+  <tr><td>SP regen</td><td class="num">0.5% per step</td><td>Of max SP, in the dungeon. Resting in town still refills.</td></tr>
+  <tr><td>SP potion drops</td><td class="num">0.85 × healing</td><td>Drop weight relative to healing potions.</td></tr>
+  <tr><td>Magic lock chance</td><td class="num">1% → 25%</td><td>1% on floors 1-2, 2.5% by floor 5, 8% on floor 6, 25% from floor 10 on.</td></tr>
+  <tr><td>Combat round</td><td class="num">2 seconds</td><td>The player can pause. The rest of combat follows MORDOR.EXE's own rules.</td></tr>
+</table>
+
+<h2>Tech stack</h2>
+<table>
+  <tr><th>Piece</th><th>What it does</th></tr>
+  <tr><td><code>crates/rules</code></td><td>Headless game rules: the party, combat, magic, treasure, monsters, the city, party AI macros and the tuning layer. No window, fully testable.</td></tr>
+  <tr><td><code>crates/extract</code></td><td>Imports <code>MORDOR11.ZIP</code>, a <code>.WIP</code> archive, or an install folder, and reads the original's bitmaps.</td></tr>
+  <tr><td><code>crates/game</code></td><td>The <a href="https://github.com/emilk/egui">egui</a> window: the original's art and music, the city, the dungeon.</td></tr>
+  <tr><td><code>patches/</code></td><td>TOML rebalance layers, merged key by key.</td></tr>
+  <tr><td>Builds</td><td>A Windows installer (Inno Setup), a static WASM web build (trunk) that keeps files and saves in IndexedDB, and an Android APK for arm64 and x86_64 on Android 8 and up, built without Gradle.</td></tr>
+  <tr><td>Tools</td><td><code>ddj-save</code> shows and edits saves. <code>scripts/re/</code> reads the original's rules out of MORDOR.EXE.</td></tr>
+</table>
+<p>It's a single Cargo workspace in Rust. To run from source on the bundled shareware:</p>
+<pre><code>cargo run -p ddj-extract -- tests/fixtures/MORDOR11.ZIP
+cargo run -p ddj-game</code></pre>
+
+<h2>Bring your own data</h2>
+<div class="note">
+  <p>Apart from the original's freely redistributable shareware release, this repo and its builds contain
+  <b>no original-game content</b>. Every build ships the unmodified shareware <code>MORDOR11.ZIP</code>
+  (floors 1-3), which its own documentation allows, and imports it on first run.</p>
+  <p>For all 15 floors, you import your own registered copy: a folder, a zip or <code>MORDOR.WIP</code>.
+  The importer extracts the data tables, pictures, MIDI music and sounds, never the program itself.
+  There are no registration codes; the data itself unlocks the full game.
+  In the browser, your files stay in that browser's storage, and the server never holds or sends registered game data.</p>
+  <p style="margin:0">The remake's changes ship only as patch files that apply on top of those tables.</p>
+</div>
+
+<h2>Roadmap</h2>
+<ol class="roadmap">
+  <li class="done"><b>Decoded tables</b><span class="tag">done</span><br>
+    9 races, 12 guilds, 35 item types, 24 item classes, 18 monster types, 15 monster families,
+    105 spells, 366 items and 401 monsters, plus the character file, the pictures, and the original's
+    windows and combat rules read from MORDOR.EXE.</li>
+  <li class="done"><b>Dungeon maps</b><span class="tag">done</span><br>
+    <code>MDATA11</code> is decoded: 30 × 30 floors with walls, doors, secret doors, pits, water, teleporters and chutes.</li>
+  <li class="done"><b>First playable loop</b><span class="tag">done</span><br>
+    The town and the dungeon, with a party under macro AI, magic, treasure, the full city,
+    and the original's art, sound and music.</li>
+  <li class="done"><b>Mobile build</b><span class="tag">built</span><br>
+    The Android APK was built on 2026-11-05.</li>
+  <li><b>Local-first saves</b><span class="tag">next</span><br>
+    One save format on every platform, with optional cloud sync to move between devices. It's decided but not built yet.</li>
+</ol>
+
+<footer>An independent fan remake. <em>Mordor: The Depths of Dejenol</em> and its content belong to their rights holders.</footer>
+</main>
+</body>
+</html>
