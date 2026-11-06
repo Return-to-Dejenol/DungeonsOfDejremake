@@ -65,6 +65,15 @@ The remake supplies new code and a rebalance on top.</p>
 That project publishes no source, so all the code here is new.
 Source: <a href="https://github.com/silvariasereneblossom/DungeonsOfDejremake">silvariasereneblossom/DungeonsOfDejremake</a>.</p>
 
+<h2>Play</h2>
+<ul class="pillars">
+  <li><b><a href="https://github.com/silvariasereneblossom/DungeonsOfDejremake/releases/download/v0.1.0/DejenolRestoration-Setup-0.1.0.exe">Windows</a></b><span>The installer (36 MB). It offers newer releases itself.</span></li>
+  <li><b><a href="https://github.com/silvariasereneblossom/DungeonsOfDejremake/releases/download/v0.1.0/DejenolRestoration-0.1.0.apk">Android</a></b><span>The APK for Android 8 and up. Allow installs from your browser to open it.</span></li>
+  <li><b><a href="play/">In the browser</a></b><span>Nothing to install. Your files and saves stay in this browser.</span></li>
+</ul>
+<p>Every build starts on the shareware floors. Turn on <b>Cloud Saves</b> in Options to carry your characters between devices with a sync code.
+<a href="https://github.com/silvariasereneblossom/DungeonsOfDejremake/releases">All releases</a>.</p>
+
 <h2>Design pillars</h2>
 <ul class="pillars">
   <li><b>Modern RPG mechanics</b><span>Modern mechanics come first. Strict faithfulness to 1995 does not.</span></li>
@@ -101,6 +110,7 @@ Any other <code>patches/*.toml</code> overrides it key by key.</p>
   <tr><td><code>crates/game</code></td><td>The <a href="https://github.com/emilk/egui">egui</a> window: the original's art and music, the city, the dungeon.</td></tr>
   <tr><td><code>patches/</code></td><td>TOML rebalance layers, merged key by key.</td></tr>
   <tr><td>Builds</td><td>A Windows installer (Inno Setup), a static WASM web build (trunk) that keeps files and saves in IndexedDB, and an Android APK for arm64 and x86_64 on Android 8 and up, built without Gradle.</td></tr>
+  <tr><td><code>crates/sync-server</code></td><td><code>ddj-sync</code>, the cloud save server: each sync code's save files, never game data.</td></tr>
   <tr><td>Tools</td><td><code>ddj-save</code> shows and edits saves. <code>scripts/re/</code> reads the original's rules out of MORDOR.EXE.</td></tr>
 </table>
 <p>It's a single Cargo workspace in Rust. To run from source on the bundled shareware:</p>
@@ -130,10 +140,12 @@ cargo run -p ddj-game</code></pre>
   <li class="done"><b>First playable loop</b><span class="tag">done</span><br>
     The town and the dungeon, with a party under macro AI, magic, treasure, the full city,
     and the original's art, sound and music.</li>
-  <li class="done"><b>Mobile build</b><span class="tag">built</span><br>
+  <li class="done"><b>Mobile build</b><span class="tag">done</span><br>
     The Android APK was built on 2026-11-05.</li>
-  <li><b>Local-first saves</b><span class="tag">next</span><br>
-    One save format on every platform, with optional cloud sync to move between devices. It's decided but not built yet.</li>
+  <li class="done"><b>Local-first saves</b><span class="tag">done</span><br>
+    One save format on every platform, with optional cloud sync between devices under a sync code.</li>
+  <li><b>First release</b><span class="tag">now</span><br>
+    Version 0.1.0 for Windows, Android and the browser, out for play-testing.</li>
 </ol>
 
 <footer>An independent fan remake. <em>Mordor: The Depths of Dejenol</em> and its content belong to their rights holders.</footer>
