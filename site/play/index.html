@@ -6,8 +6,8 @@
     <title>Dejenol Restoration Project</title>
     
 <script type="module">
-import init, * as bindings from './ddj-game-521b8d029f88fcf5.js';
-const wasm = await init({ module_or_path: './ddj-game-29251fdf16b03846_bg.wasm' });
+import init, * as bindings from './ddj-game-57c52e9cfb328bea.js';
+const wasm = await init({ module_or_path: './ddj-game-bef0e30c062e4e6b_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -22,7 +22,7 @@ dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
         html, body { margin: 0; height: 100%; overflow: hidden; background: #c0c0c0; }
         canvas { display: block; width: 100%; height: 100%; }
     </style>
-<link rel="modulepreload" href="./ddj-game-521b8d029f88fcf5.js" crossorigin="anonymous" integrity="sha384-WZtlr3BoXQh6eua8XQh/G0diab8fcnujB4GU12UQc7W7xnPVY+CIXNUcCJNdSKi6"><link rel="modulepreload" href="./snippets/ddj-game-d75e46bc7fd203a5/inline0.js" crossorigin="anonymous" integrity="sha384-dU2TIkvP0beETTQPy2rpOBA3fu46c2rf0boqG5uS+fnqC9zlTYEQO3yey6laQuo+"><link rel="modulepreload" href="./snippets/ddj-game-d75e46bc7fd203a5/inline1.js" crossorigin="anonymous" integrity="sha384-HF6cPqsMx23rHVCOb8ToZiOaTpIntr91FujlflzNrg3R4uRUUxu37mcLGSWy99Y1"><link rel="modulepreload" href="./snippets/ddj-extract-cc4a816fa57be21a/inline0.js" crossorigin="anonymous" integrity="sha384-3IXtv5+L/y6XT63ggwqDQr70E95r1hpoexC7UgKCfnLqDxysqmpnmSkHwsIu/U8l"><link rel="preload" href="./ddj-game-29251fdf16b03846_bg.wasm" crossorigin="anonymous" integrity="sha384-jirKXPGu3GB/xms9qGVPsJSRebjHBHVEgA0iZxJoshcPQ4n9+znXm9wi0l0SoEC9" as="fetch" type="application/wasm"></head>
+<link rel="modulepreload" href="./ddj-game-57c52e9cfb328bea.js" crossorigin="anonymous" integrity="sha384-QVgyYPkyQpcYSB425JZewNClPRQG7AuKRXBow2LbILNXzf6BiYqMTzSETGgqSLXG"><link rel="modulepreload" href="./snippets/ddj-game-d75e46bc7fd203a5/inline0.js" crossorigin="anonymous" integrity="sha384-dU2TIkvP0beETTQPy2rpOBA3fu46c2rf0boqG5uS+fnqC9zlTYEQO3yey6laQuo+"><link rel="modulepreload" href="./snippets/ddj-game-4b4aadf155a26bc9/inline0.js" crossorigin="anonymous" integrity="sha384-dU2TIkvP0beETTQPy2rpOBA3fu46c2rf0boqG5uS+fnqC9zlTYEQO3yey6laQuo+"><link rel="modulepreload" href="./snippets/ddj-extract-cc4a816fa57be21a/inline0.js" crossorigin="anonymous" integrity="sha384-3IXtv5+L/y6XT63ggwqDQr70E95r1hpoexC7UgKCfnLqDxysqmpnmSkHwsIu/U8l"><link rel="modulepreload" href="./snippets/ddj-game-d75e46bc7fd203a5/inline1.js" crossorigin="anonymous" integrity="sha384-HF6cPqsMx23rHVCOb8ToZiOaTpIntr91FujlflzNrg3R4uRUUxu37mcLGSWy99Y1"><link rel="modulepreload" href="./snippets/ddj-game-4b4aadf155a26bc9/inline1.js" crossorigin="anonymous" integrity="sha384-HF6cPqsMx23rHVCOb8ToZiOaTpIntr91FujlflzNrg3R4uRUUxu37mcLGSWy99Y1"><link rel="preload" href="./ddj-game-bef0e30c062e4e6b_bg.wasm" crossorigin="anonymous" integrity="sha384-5RV+DM2vY4a0DBm5D696KxRY2LIaeIOdjmlfl/noBIxFx03nF58npO4uc8RNYDAc" as="fetch" type="application/wasm"></head>
 <body>
     <canvas id="game"></canvas>
 </body>
