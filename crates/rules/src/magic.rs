@@ -194,9 +194,14 @@ pub fn cast(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, target: 
 
 /// Uses a carried item of kind `item`: drink, read or zap it.
 pub fn use_item(g: &mut Game, d: &GameData, t: &Tuning, i: usize, item: usize) {
-    let Some(slot) = g.party[i].items.iter().position(|h| h.item == item && !h.equipped) else { return };
     let it = &d.items[item];
     let name = g.party[i].name.clone();
+    // Only potions, scrolls, tomes and items that cast a spell can be used; a used-up
+    // sword or artifact keeps its place at [0] (the store recharges it).
+    if !matches!(it.kind, POTION | SCROLL | TOME) && item_spell(d, item).is_none() {
+        return g.say(format!("{name} can't use {}.", it.name));
+    }
+    let Some(slot) = g.party[i].items.iter().position(|h| h.item == item && (h.charges > 0 || consumable(d, item))) else { return g.say(format!("{} has no charges left.", it.name)) };
     g.party[i].items[slot].known = true;
     match it.id {
         POTION_OF_EXPERIENCE | GREATER_POTION_OF_EXPERIENCE => {
@@ -231,7 +236,7 @@ pub fn use_item(g: &mut Game, d: &GameData, t: &Tuning, i: usize, item: usize) {
     }
     let h = &mut g.party[i].items[slot];
     h.charges -= 1;
-    if h.charges <= 0 {
+    if h.charges <= 0 && consumable(d, item) {
         g.party[i].items.remove(slot);
     }
 }

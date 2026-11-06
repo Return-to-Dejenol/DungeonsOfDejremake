@@ -1287,6 +1287,11 @@ mod tests {
         g.set_pos(&d, Pos { floor: 2, ..p });
         assert_eq!(g.party[0].add_xp(&d, &t, 10), 10);
         assert!(g.party[0].items.iter().all(|h| h.item != potion));
+        // Using a sword by mistake keeps it.
+        let sword = d.items.iter().position(|i| i.name == "Bronze Sword").unwrap();
+        g.party[0].items.push(magic::new_held(&d, sword, true));
+        magic::use_item(&mut g, &d, &t, 0, sword);
+        assert!(g.party[0].items.iter().any(|h| h.item == sword));
     }
 
     #[test]
