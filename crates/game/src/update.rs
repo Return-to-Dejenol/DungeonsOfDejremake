@@ -28,27 +28,21 @@ fn get(url: &str) -> Result<ureq::Body, ureq::Error> {
     Ok(agent.get(url).header("User-Agent", "DejenolRestoration").call()?.into_body())
 }
 
-/// Starts a check, unless one ran today (`today`, kept in `dir`); the receiver gets a
-/// release newer than this game.
-pub fn check(dir: &Path, today: &str) -> Option<mpsc::Receiver<Release>> {
-    let stamp = dir.join("update-checked.txt");
-    if fs::read_to_string(&stamp).is_ok_and(|d| d == today) {
-        return None;
-    }
-    let _ = fs::create_dir_all(dir);
-    let _ = fs::write(&stamp, today);
+/// Asks GitHub for the latest release: one newer than this game, or none.
+fn check(ctx: Option<egui::Context>) -> mpsc::Receiver<Result<Option<Release>, String>> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let url = std::env::var("DDJ_UPDATE_URL").unwrap_or(LATEST.into());
-        let Ok(json) = get(&url).and_then(|mut b| b.read_to_string()) else { return };
-        let Ok(r) = serde_json::from_str::<serde_json::Value>(&json) else { return };
-        let tag = r["tag_name"].as_str().unwrap_or_default();
-        let setup = r["assets"].as_array().into_iter().flatten().filter_map(|a| a["browser_download_url"].as_str()).find(|u| u.ends_with(".exe"));
-        if let Some(setup) = setup.filter(|_| newer(tag, env!("CARGO_PKG_VERSION"))) {
-            let _ = tx.send(Release { version: tag.trim_start_matches('v').into(), setup: setup.into() });
-        }
+        let json = get(&url).and_then(|mut b| b.read_to_string()).map_err(|e| e.to_string());
+        let r = json.and_then(|j| serde_json::from_str::<serde_json::Value>(&j).map_err(|e| e.to_string())).map(|r| {
+            let tag = r["tag_name"].as_str().unwrap_or_default().to_owned();
+            let setup = r["assets"].as_array().into_iter().flatten().filter_map(|a| a["browser_download_url"].as_str()).find(|u| u.ends_with(".exe"));
+            setup.filter(|_| newer(&tag, env!("CARGO_PKG_VERSION"))).map(|s| Release { version: tag.trim_start_matches('v').into(), setup: s.into() })
+        });
+        let _ = tx.send(r);
+        ctx.inspect(egui::Context::request_repaint);
     });
-    Some(rx)
+    rx
 }
 
 /// Downloads the release's Setup and starts it silently; the game should then close.
@@ -64,22 +58,45 @@ pub fn install(r: &Release) -> Result<(), String> {
 /// The check, the release it found, and the download once accepted.
 #[derive(Default)]
 pub struct Updater {
-    found: Option<mpsc::Receiver<Release>>,
+    found: Option<mpsc::Receiver<Result<Option<Release>, String>>>,
     release: Option<Release>,
+    /// The player asked (Options): say how the check went, even with no news.
+    loud: bool,
     done: Option<mpsc::Receiver<Result<(), String>>>,
 }
 
 impl Updater {
+    /// Checks at start, unless a check ran today (`today`, kept in `dir`).
     pub fn start(dir: &Path, today: &str) -> Self {
-        Self { found: check(dir, today), ..Default::default() }
+        let stamp = dir.join("update-checked.txt");
+        let due = !fs::read_to_string(&stamp).is_ok_and(|d| d == today);
+        if due {
+            let _ = fs::create_dir_all(dir);
+            let _ = fs::write(&stamp, today);
+        }
+        Self { found: due.then(|| check(None)), ..Default::default() }
     }
 
-    /// Once a newer release is found: the question to ask.
-    pub fn offer(&mut self) -> Option<String> {
+    /// Checks now, for the player.
+    pub fn check_now(&mut self, ctx: &egui::Context) {
+        (self.found, self.loud) = (Some(check(Some(ctx.clone()))), true);
+    }
+
+    /// Once the check is back: the question to ask about a newer release (Ok), or what
+    /// to tell a player who asked (Err).
+    pub fn offer(&mut self) -> Option<Result<String, String>> {
         let r = self.found.as_ref()?.try_recv().ok()?;
-        let q = format!("Version {} of the Dejenol Restoration Project is available. Install it now?", r.version);
-        self.release = Some(r);
-        Some(q)
+        self.found = None;
+        let loud = std::mem::take(&mut self.loud);
+        match r {
+            Ok(Some(r)) => {
+                let q = format!("Version {} of the Dejenol Restoration Project is available. Install it now?", r.version);
+                self.release = Some(r);
+                Some(Ok(q))
+            }
+            Ok(None) => loud.then(|| Err(format!("You have the latest version ({}).", env!("CARGO_PKG_VERSION")))),
+            Err(e) => loud.then(|| Err(format!("Could not check for updates: {e}"))),
+        }
     }
 
     /// Downloads and starts the update in the background, then closes the game.

@@ -486,13 +486,15 @@ impl App {
                 return;
             }
             match Character::new(d, &name, race, female, alignment, stats) {
-                Ok(ch) => {
-                    self.loaded = Some(name.clone());
-                    self.start(ch, d);
-                    self.building = Some("frmCityStore");
-                    self.say("Welcome to Mordor! The store has the standard starting kit.");
-                    self.persist();
-                }
+                // As the original: saved and loaded, back at the Main Menu to be run.
+                Ok(ch) => match ch.save(&saves()) {
+                    Ok(()) => {
+                        self.sync.changed();
+                        self.loaded = Some(name.clone());
+                        self.screen = Screen::Menu;
+                    }
+                    Err(e) => self.say(format!("Could not save {name}: {e}")),
+                },
                 Err(e) => self.say(e),
             }
         }
@@ -604,6 +606,12 @@ impl App {
         }
         if ev.click("cmdCommand(2)") {
             self.sync.now(ctx, self.game.is_none());
+        }
+        // The answer comes once this window is closed.
+        #[cfg(windows)]
+        if ev.click("cmdUpdate") {
+            self.updater.check_now(ctx);
+            return true;
         }
         ev.click("cmdCommand(0)") || ev.click("cmdCommand(7)") || ev.closed
     }
@@ -774,6 +782,18 @@ impl App {
 
 /// The remake's own windows, in the original's style.
 fn add_windows(desk: &mut Desk) {
+    // Check for Updates beside Import Game in Options (Windows: the updater installs Setup).
+    #[cfg(windows)]
+    if let Some(f) = desk.forms.get_mut("frmOptions") {
+        let import = f.controls.iter_mut().find(|c| c.name == "cmdCommand" && c.index == Some(3));
+        let parent = import.map(|c| {
+            c.rect[2] = 96;
+            c.parent
+        });
+        let mut c = ddj_extract::forms::Control { name: "cmdUpdate".into(), kind: "CommandButton".into(), parent: parent.flatten(), rect: [108, 251, 97, 22], ..Default::default() };
+        c.props.insert("Caption".into(), ddj_extract::forms::Val::S("Check &Updates".into()));
+        f.controls.push(c);
+    }
     desk.synth("dlgMsg", "Mordor", 300, 96, &[("Label", "lblText", None, [12, 10, 276, 48], ""), ("CommandButton", "cmdOK", None, [108, 66, 84, 22], "OK"), ("CommandButton", "cmdNo", None, [198, 66, 84, 22], "&No")]);
     desk.hide_by_default("dlgMsg", "cmdNo");
     desk.synth(
@@ -907,10 +927,12 @@ impl eframe::App for App {
             // A newer release, offered once nothing else is asked; a failed download said.
             #[cfg(windows)]
             {
-                if self.dialog.is_none()
-                    && let Some(q) = self.updater.offer()
-                {
-                    self.dialog = Some(Dialog::Confirm(q, Deed::Update));
+                if self.dialog.is_none() {
+                    match self.updater.offer() {
+                        Some(Ok(q)) => self.dialog = Some(Dialog::Confirm(q, Deed::Update)),
+                        Some(Err(m)) => self.say(m),
+                        None => {}
+                    }
                 }
                 if let Some(e) = self.updater.error() {
                     self.say(e);
