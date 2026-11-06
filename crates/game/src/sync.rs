@@ -200,6 +200,9 @@ impl<T> Task<T> {
     }
 }
 
+/// The project's own server, until the player types another.
+const SERVER: &str = "https://sereneblossomns1.tail042c2e.ts.net";
+
 fn path() -> PathBuf {
     ddj_extract::home().join("sync.json")
 }
@@ -235,7 +238,10 @@ pub struct Sync {
 
 impl Sync {
     pub fn load() -> Self {
-        let cfg = fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let mut cfg: Config = fs::read(path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        if cfg.server.is_empty() {
+            cfg.server = SERVER.into();
+        }
         Self { cfg, task: None, new_code: None, dirty: false, began: false, since: Instant::now(), loud: false, failed: false, clashes: Vec::new() }
     }
 

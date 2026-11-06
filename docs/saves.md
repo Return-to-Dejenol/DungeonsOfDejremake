@@ -26,5 +26,8 @@ Decided 2026-11-02; cloud sync built 2026-11-05 (`crates/game/src/sync.rs`, `cra
   better of each record. Deletions sync like changes.
 - **Known trade-off.** Choosing the other device's copy lets a player restore a save
   from before a death and skip the corpse run. Accepted for single-player.
-- **Not done yet:** a public server and a default address (the player types one in);
-  Google Drive or Steam Cloud backends; encrypting saves so the server can't read them.
+- **The project's server** runs on sereneblossomns (`C:\ddj-sync`, a scheduled task at
+  boot as SYSTEM, saves in `C:\ddj-sync\saves`) behind Tailscale Funnel at
+  `https://sereneblossomns1.tail042c2e.ts.net`, the game's default (2026-11-05).
+- **Not done yet:** Google Drive or Steam Cloud backends; encrypting saves so the server
+  can't read them.
