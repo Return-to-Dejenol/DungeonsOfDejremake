@@ -120,19 +120,32 @@ impl Hall {
     /// mdrhalCheckRecord: a higher value takes the record. The announcement, unless the
     /// holder only bettered their own record or it was a creature.
     pub fn check(&mut self, d: &GameData, which: usize, name: &str, value: i64) -> Option<&'static str> {
+        if !self.better(d, which, value) {
+            return None;
+        }
         let r = &mut self.records[which];
-        let better = if which == CREATURE {
+        let same = r.name == name;
+        *r = Record { name: name.into(), value, date: Some(self.today.clone()) };
+        (!same && which != CREATURE).then_some(FOR[which])
+    }
+
+    fn better(&self, d: &GameData, which: usize, value: i64) -> bool {
+        let r = &self.records[which];
+        if which == CREATURE {
             let m = |id| d.monsters.iter().find(|m| i64::from(m.id) == id).map_or(-1, might);
             m(value) > m(r.value)
         } else {
             value > r.value
-        };
-        if !better {
-            return None;
         }
-        let same = r.name == name;
-        *r = Record { name: name.into(), value, date: Some(self.today.clone()) };
-        (!same && which != CREATURE).then_some(FOR[which])
+    }
+
+    /// Takes each of `other`'s records that beats this one's (cloud saves from another device).
+    pub fn merge(&mut self, d: &GameData, other: Hall) {
+        for (i, r) in other.records.into_iter().enumerate().take(self.records.len()) {
+            if self.better(d, i, r.value) {
+                self.records[i] = r;
+            }
+        }
     }
 
     /// Every record but the creature's, for a character.

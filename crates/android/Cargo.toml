@@ -19,6 +19,11 @@ ddj-rules = { version = "0.1.0", path = "../rules" }
 # accesskit needs GameActivity, which this build does without.
 eframe = { version = "0.37.0", default-features = false, features = ["android-native-activity", "default_fonts", "glow"] }
 jni = "0.22.4"
+percent-encoding = "2.3.2"
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "wav"] }
 rustysynth = "1.3.8"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+sha2 = "0.10.9"
+ureq = { version = "3.5.0", default-features = false, features = ["rustls"] }
 web-time = "1.1.0"

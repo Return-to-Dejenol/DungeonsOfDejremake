@@ -27,6 +27,9 @@ pub struct Store {
     pub companions: Vec<u8>,
     /// The deepest floor reached: what can appear on the shelves.
     pub deepest: usize,
+    /// When it was last saved (Unix seconds): cloud saves keep the newer store.
+    #[serde(default)]
+    pub saved: u64,
 }
 
 impl Store {
@@ -54,7 +57,7 @@ impl Store {
                 companions[m] = 2;
             }
         }
-        Self { items, companions, deepest: 1 }
+        Self { items, companions, deepest: 1, saved: 0 }
     }
 
     pub fn load(dir: &Path, d: &GameData) -> Self {

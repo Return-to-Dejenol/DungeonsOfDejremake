@@ -23,4 +23,4 @@ build (2026-11-04) and the Android APK (2026-11-05).
   browser, which keeps them and the saves in IndexedDB (`crates/extract/src/vfs.rs`).
   The SoundFont downloads beside the page (32 MB); music starts once it's in. The
   server never holds or sends registered game data.
-- **Moving between devices** is cloud saves (docs/saves.md), never game data.
+- **Moving between devices** is cloud saves (docs/saves.md): the save files only, never game data.

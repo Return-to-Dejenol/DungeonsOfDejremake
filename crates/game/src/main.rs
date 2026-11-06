@@ -21,6 +21,7 @@ mod android;
 mod help;
 mod party;
 mod stats;
+mod sync;
 mod town;
 #[cfg(windows)]
 mod update;
@@ -64,6 +65,10 @@ enum Dialog {
     /// A question for the Seer (character or monster name).
     Seer,
     Macros(usize),
+    /// Cloud saves: the server and the sync code.
+    Sync,
+    /// A character changed here and on another device: keep which?
+    Clash,
 }
 
 /// A service done once the player confirms it.
@@ -113,6 +118,7 @@ struct App {
     help: Option<help::Viewer>,
     #[cfg(windows)]
     updater: update::Updater,
+    sync: sync::Sync,
 }
 
 /// Today as the original's short date (m/d/yyyy, UTC): Hinnant's days-to-civil.
@@ -211,6 +217,7 @@ impl App {
             help: None,
             #[cfg(windows)]
             updater: update::Updater::start(&saves(), &today()),
+            sync: sync::Sync::load(),
         }
     }
 
@@ -243,7 +250,8 @@ impl App {
 
     /// Saves every party member after each change; the files are small.
     fn persist(&mut self) {
-        let Some(g) = &self.game else { return };
+        let Some(g) = &mut self.game else { return };
+        g.store.saved = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let mut err = None;
         for m in &g.party {
             if let Err(e) = m.save(&saves()) {
@@ -256,6 +264,7 @@ impl App {
         if let Err(e) = g.hall.save(&saves()) {
             err = Some(format!("Could not save the Hall of Records: {e}"));
         }
+        self.sync.changed();
         if let Some(e) = err {
             self.say(e);
         }
@@ -507,6 +516,7 @@ impl App {
                 let ev = desk.window(ctx, "dlgMsg", v, true);
                 if ev.click("cmdOK") {
                     let _ = fs::remove(saves().join(format!("{name}.json")));
+                    self.sync.changed();
                     self.loaded = None;
                 }
                 ev.click("cmdOK") || ev.click("cmdNo") || ev.closed
@@ -544,6 +554,8 @@ impl App {
             Dialog::Recruit => self.recruit(desk, ctx),
             Dialog::Seer => self.seer(desk, ctx, d),
             Dialog::Macros(i) => self.macros(desk, ctx, d, i),
+            Dialog::Sync => self.sync_dialog(desk, ctx),
+            Dialog::Clash => self.clash(desk, ctx, d),
         };
         if close && self.dialog.as_ref() == Some(&dlg) {
             self.dialog = None;
@@ -551,7 +563,8 @@ impl App {
     }
 
     /// The Options window: music and sound. The remake adds importing a copy of the game
-    /// where the original kept its (hidden) screen saver button.
+    /// where the original kept its (hidden) screen saver button, and cloud saves in place
+    /// of its file backups.
     fn options(&mut self, desk: &mut Desk, ctx: &egui::Context) -> bool {
         const F: &str = "frmOptions";
         if let Some(a) = &self.audio {
@@ -561,12 +574,21 @@ impl App {
         let mut v = View::default();
         v.show("cmdCommand(3)", true).text("cmdCommand(3)", "&Import Game...");
         for k in [
-            "chkCheck(0)", "chkCheck(3)", "chkCheck(4)", "chkCheck(5)", "chkCheck(6)", "chkCheck(7)", "chkCheck(8)", "chkCheck(9)", "chkCheck(10)", "chkCheck(11)", "cmdCommand(1)", "cmdCommand(2)", "cmdCommand(4)", "cmdCommand(5)", "cmdCommand(6)",
+            "chkCheck(0)", "chkCheck(3)", "chkCheck(4)", "chkCheck(5)", "chkCheck(6)", "chkCheck(7)", "chkCheck(8)", "chkCheck(9)", "chkCheck(10)", "chkCheck(11)", "cmdCommand(4)", "cmdCommand(5)", "cmdCommand(6)",
             "hsbVolume(0)", "hsbVolume(1)",
         ] {
             v.enable(k, false);
         }
-        v.text("lblBackup", "").text("lblLabel(2)", "Courier New").text("lblLabel(3)", "MS Sans Serif");
+        let s = &self.sync;
+        let status = match () {
+            _ if !s.on() => "Cloud saves are off.".into(),
+            _ if s.busy() => "Syncing...".into(),
+            _ if s.failed => "The last sync failed.".into(),
+            _ if s.cfg.last.is_empty() => "Not synced yet.".into(),
+            _ => format!("Last synced on {}", s.cfg.last),
+        };
+        v.text("lblLabel(9)", "Cloud Saves").text("cmdCommand(1)", "Cloud &Saves...").text("cmdCommand(2)", "S&ync Now").enable("cmdCommand(2)", s.on() && !s.busy());
+        v.text("lblBackup", status).text("lblLabel(2)", "Courier New").text("lblLabel(3)", "MS Sans Serif");
         let ev = desk.window(ctx, F, v, true);
         if let Some(a) = self.audio.as_mut() {
             a.music_on = !desk.state(F, "chkCheck(1)").on;
@@ -574,6 +596,14 @@ impl App {
         }
         if ev.click("cmdCommand(3)") {
             self.dialog = Some(Dialog::Import);
+        }
+        if ev.click("cmdCommand(1)") {
+            desk.state("dlgSync", "txtServer").text = self.sync.cfg.server.clone();
+            desk.state("dlgSync", "txtCode").text = self.sync.cfg.code.clone();
+            self.dialog = Some(Dialog::Sync);
+        }
+        if ev.click("cmdCommand(2)") {
+            self.sync.now(ctx, self.game.is_none());
         }
         ev.click("cmdCommand(0)") || ev.click("cmdCommand(7)") || ev.closed
     }
@@ -630,6 +660,89 @@ impl App {
         false
     }
 
+    /// The cloud saves window: the sync server, and the code shared by the player's devices.
+    fn sync_dialog(&mut self, desk: &mut Desk, ctx: &egui::Context) -> bool {
+        let mut v = View::default();
+        v.enable("cmdNew", !self.sync.busy()).enable("cmdOK", !self.sync.busy()).enable("cmdOff", self.sync.on());
+        let ev = desk.window(ctx, "dlgSync", v, true);
+        let server = desk.state("dlgSync", "txtServer").text.trim().to_string();
+        let code = desk.state("dlgSync", "txtCode").text.trim().to_string();
+        if (ev.click("cmdNew") || ev.click("cmdOK")) && server.is_empty() {
+            self.dialog = Some(Dialog::Msg("Cloud Saves".into(), "Enter the sync server's address first.".into()));
+        } else if ev.click("cmdNew") {
+            self.sync.new_code(ctx, &server);
+        } else if ev.click("cmdOK") && code.is_empty() {
+            self.dialog = Some(Dialog::Msg("Cloud Saves".into(), "Make a new code, or type the one from your other device.".into()));
+        } else if ev.click("cmdOK") {
+            self.sync.link(ctx, &server, &code, self.game.is_none(), true);
+            return true;
+        }
+        if ev.click("cmdOff") {
+            self.sync.off();
+            desk.state("dlgSync", "txtCode").text.clear();
+        }
+        ev.click("cmdCancel") || ev.closed
+    }
+
+    /// Each frame: finished syncs, a new code, and the files both sides changed. The
+    /// store keeps its newer copy and the Hall of Records the best of each record; a
+    /// character waits for the player to choose (once not playing).
+    fn sync_frame(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData) {
+        match self.sync.poll(ctx, self.game.is_some()) {
+            Some(Ok(code)) => {
+                desk.state("dlgSync", "txtCode").text = code.clone();
+                let server = self.sync.cfg.server.clone();
+                self.sync.link(ctx, &server, &code, self.game.is_none(), false);
+                self.dialog = Some(Dialog::Msg("Cloud Saves".into(), format!("Your sync code is {code}. Type it on your other devices to play these saves there.")));
+            }
+            Some(Err(m)) => self.say(m),
+            None => {}
+        }
+        let (shared, chars): (Vec<_>, Vec<_>) = std::mem::take(&mut self.sync.clashes).into_iter().partition(|c| c.name == "store.json" || c.name == "hall.json");
+        self.sync.clashes = chars;
+        for c in shared {
+            let theirs = if c.name == "hall.json" {
+                let mut h = Hall::load(&saves(), today());
+                if let Some(o) = c.theirs.as_deref().and_then(|b| serde_json::from_slice::<Hall>(b).ok()) {
+                    h.merge(d, o);
+                }
+                let _ = h.save(&saves());
+                false
+            } else {
+                let saved = |b: &[u8]| serde_json::from_slice::<serde_json::Value>(b).ok().and_then(|v| v["saved"].as_u64()).unwrap_or(0);
+                let mine = fs::read(saves().join(&c.name)).map_or(0, |b| saved(&b));
+                c.theirs.as_deref().is_some_and(|b| saved(b) > mine)
+            };
+            self.sync.settle(ctx, c, theirs);
+        }
+        if self.dialog.is_none() && self.game.is_none() && !self.sync.clashes.is_empty() {
+            self.dialog = Some(Dialog::Clash);
+        }
+    }
+
+    /// "Kira was played here and on another device": which copy stays.
+    fn clash(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData) -> bool {
+        let Some(c) = self.sync.clashes.first() else { return true };
+        let name = c.name.trim_end_matches(".json").to_string();
+        let about = |b: Option<Vec<u8>>| match b.and_then(|b| serde_json::from_slice::<Character>(&b).ok()) {
+            Some(ch) => format!("a level {} {} with {} gold", ch.level(), d.guilds.get(ch.guild).map_or("", |g| g.name.as_str()), stats::commas(ch.gold)),
+            None => "deleted".into(),
+        };
+        let (mine, theirs) = (about(fs::read(saves().join(&c.name)).ok()), about(c.theirs.clone()));
+        let mut v = View::default();
+        v.text("lblText", format!("\"{name}\" was played on this device and on another since they last synced. Here it is {mine}; on the other device, {theirs}. Which do you keep?"));
+        let ev = desk.window(ctx, "dlgClash", v, true);
+        if ev.click("cmdOK") || ev.click("cmdNo") {
+            let c = self.sync.clashes.remove(0);
+            self.sync.settle(ctx, c, ev.click("cmdNo"));
+        }
+        // Closing the window leaves both copies as they are; the next sync asks again.
+        if ev.closed {
+            self.sync.clashes.clear();
+        }
+        self.sync.clashes.is_empty() || ev.closed
+    }
+
     /// The playing screens: the character, objects, messages and party windows, with
     /// the city (and an open building) or the dungeon.
     fn play(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData, t: &Tuning) {
@@ -677,6 +790,34 @@ fn add_windows(desk: &mut Desk) {
         ],
     );
     desk.hide_by_default("dlgImport", "cmdFolder");
+    desk.synth(
+        "dlgSync",
+        "Cloud Saves",
+        360,
+        150,
+        &[
+            ("Label", "lblText", None, [8, 6, 344, 40], "Cloud saves keep your characters, the store and the Hall of Records the same on each computer, phone and browser you play on."),
+            ("Label", "lblServer", None, [8, 54, 70, 16], "Server:"),
+            ("TextBox", "txtServer", None, [80, 52, 272, 20], ""),
+            ("Label", "lblCode", None, [8, 82, 70, 16], "Sync code:"),
+            ("TextBox", "txtCode", None, [80, 80, 272, 20], ""),
+            ("CommandButton", "cmdNew", None, [8, 116, 84, 24], "&New Code"),
+            ("CommandButton", "cmdOK", None, [98, 116, 84, 24], "&Sync"),
+            ("CommandButton", "cmdOff", None, [188, 116, 84, 24], "Turn &Off"),
+            ("CommandButton", "cmdCancel", None, [278, 116, 74, 24], "&Cancel"),
+        ],
+    );
+    desk.synth(
+        "dlgClash",
+        "Cloud Saves",
+        360,
+        112,
+        &[
+            ("Label", "lblText", None, [8, 6, 344, 64], ""),
+            ("CommandButton", "cmdOK", None, [140, 80, 104, 24], "&This Device"),
+            ("CommandButton", "cmdNo", None, [250, 80, 104, 24], "&Other Device"),
+        ],
+    );
     party::add_windows(desk);
 }
 
@@ -744,6 +885,7 @@ impl eframe::App for App {
                 }
                 Screen::Town | Screen::Dungeon => self.play(&mut desk, &ctx, &data, &tuning),
             }
+            self.sync_frame(&mut desk, &ctx, &data);
             self.dialog(&mut desk, &ctx, &data);
             // F1: the help for the window in front (its HelpContextID), as the original's.
             if self.help.is_none() && ctx.input(|i| i.key_pressed(egui::Key::F1)) {
@@ -797,6 +939,12 @@ impl eframe::App for App {
         }
         self.data = self.data.take().or(Some(data));
         self.tuning = Ok(tuning);
+    }
+
+    /// What changed since the last sync goes up before the game closes.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn on_exit(&mut self) {
+        self.sync.flush();
     }
 }
 

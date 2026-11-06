@@ -1382,6 +1382,13 @@ mod tests {
         let back = Hall::load(&dir, String::new());
         assert_eq!((back.records[0].name.as_str(), back.records[0].value, back.records[0].date.as_deref()), ("Rec", 15, Some("11/4/2026")));
         assert_eq!(back.records[1].name, "Mager");
+        // Cloud saves: another device's hall gives only the records it holds higher.
+        let (mut mine, mut other) = (back, Hall::default());
+        other.records[1].name = "Far".into();
+        other.records[1].value = 99;
+        mine.merge(&d, other);
+        assert_eq!(mine.records.iter().take(2).map(|r| (r.name.as_str(), r.value)).collect::<Vec<_>>(), [("Rec", 15), ("Far", 99)]);
+        assert_eq!(mine.records[crate::hall::CREATURE].value, i64::from(strong));
     }
 
     /// Everyone carries Hands in the first slot: the weapon until another is wielded,

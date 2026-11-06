@@ -16,12 +16,18 @@ $version = (Select-String -Path crates/game/Cargo.toml -Pattern '^version = "(.+
 $v = [version]$version
 $out = 'target/android'
 if (Test-Path $out) { Remove-Item -Recurse -Force $out }
-New-Item -ItemType Directory "$out/apk", "$out/classes", "$out/res/mipmap" | Out-Null
+New-Item -ItemType Directory "$out/apk", "$out/classes", "$out/res/mipmap", "$out/tmp" | Out-Null
+# Temporary files under target/: a checkout with a Low integrity label runs build scripts
+# (and the clang they start) at Low, which can't write to %TEMP%.
+$env:TEMP = $env:TMP = (Resolve-Path "$out/tmp").Path
 
 foreach ($t in @(('arm64-v8a', 'aarch64-linux-android'), ('x86_64', 'x86_64-linux-android'))) {
     $abi, $triple = $t
     $var = $triple.ToUpper().Replace('-', '_')
     Set-Item "env:CARGO_TARGET_${var}_LINKER" "$llvm\${triple}26-clang.cmd"
+    # ring (TLS for cloud saves) compiles C for the phone too.
+    Set-Item "env:CC_$($triple.Replace('-', '_'))" "$llvm\${triple}26-clang.cmd"
+    Set-Item "env:AR_$($triple.Replace('-', '_'))" "$llvm\llvm-ar.exe"
     cargo build -p ddj-android --release --target $triple
     if ($LASTEXITCODE) { throw "cargo build for $triple failed" }
     New-Item -ItemType Directory "$out/apk/lib/$abi" | Out-Null
