@@ -1021,21 +1021,15 @@ impl Desk {
         }
     }
 
-    /// Draws a caption in `r`: aligned left (0), right (1) or centred (2), top or
-    /// vertically centred, word-wrapped, with `&` marking the underlined access key.
-    #[allow(clippy::too_many_arguments)]
-    pub fn label_text(&self, cv: &Cv, r: Rect, ft: &Ft, s: &str, col: Color32, align: u8, middle: bool, amp: bool) {
-        let s = if ft.name.eq_ignore_ascii_case("Symbol") { symbol(s) } else { s.to_string() };
-        let (plain, under) = if amp { accel(&s) } else { (s.clone(), None) };
-        let lh = self.line_height(ft);
-        // Word wrap at the control's width.
-        let mut lines: Vec<(String, usize)> = Vec::new();
+    /// Word-wrapped lines, each with the index of its first character.
+    fn wrap(&self, ft: &Ft, s: &str, w: f32) -> Vec<(String, usize)> {
+        let mut lines = Vec::new();
         let mut start = 0;
-        for para in plain.split('\n') {
+        for para in s.split('\n') {
             let mut line = String::new();
             let mut line_start = start;
             for word in para.split_inclusive(' ') {
-                if !line.is_empty() && self.width(ft, (line.clone() + word).trim_end()) > r.width() {
+                if !line.is_empty() && self.width(ft, (line.clone() + word).trim_end()) > w {
                     lines.push((std::mem::take(&mut line), line_start));
                     line_start = start;
                 }
@@ -1045,6 +1039,35 @@ impl Desk {
             lines.push((line, line_start));
             start += 1;
         }
+        lines
+    }
+
+    /// Sizes the message box (dlgMsg) to its text as Windows sized a MsgBox: as wide as
+    /// the longest line up to 440, word-wrapped, the buttons under the text.
+    pub fn fit_msg(&mut self, text: &str) {
+        let ft = Ft { name: "MS Sans Serif".into(), size: 8.25, bold: true, italic: false };
+        let w = text.split('\n').map(|l| self.width(&ft, l)).fold(276.0, f32::max).min(440.0).ceil();
+        let h = (self.wrap(&ft, text, w).len() as f32 * self.line_height(&ft)).max(48.0).ceil() as i32;
+        let (w, mid) = (w as i32, w as i32 / 2 + 12);
+        let Some(f) = self.forms.get_mut("dlgMsg") else { return };
+        f.rect[2..4].copy_from_slice(&[w + 24, h + 48]);
+        for c in &mut f.controls {
+            c.rect = match c.name.as_str() {
+                "lblText" => [12, 10, w, h],
+                "cmdOK" => [mid - 42, h + 18, 84, 22],
+                _ => [mid + 48, h + 18, 84, 22],
+            };
+        }
+    }
+
+    /// Draws a caption in `r`: aligned left (0), right (1) or centred (2), top or
+    /// vertically centred, word-wrapped, with `&` marking the underlined access key.
+    #[allow(clippy::too_many_arguments)]
+    pub fn label_text(&self, cv: &Cv, r: Rect, ft: &Ft, s: &str, col: Color32, align: u8, middle: bool, amp: bool) {
+        let s = if ft.name.eq_ignore_ascii_case("Symbol") { symbol(s) } else { s.to_string() };
+        let (plain, under) = if amp { accel(&s) } else { (s.clone(), None) };
+        let lh = self.line_height(ft);
+        let lines = self.wrap(ft, &plain, r.width());
         let total = lines.len() as f32 * lh;
         let mut y = if middle { r.top() + ((r.height() - total) / 2.0).floor() } else { r.top() };
         let clip = cv.p.with_clip_rect(cv.r(r.expand(1.0)).intersect(cv.p.clip_rect()));

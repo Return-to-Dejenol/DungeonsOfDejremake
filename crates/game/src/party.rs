@@ -191,19 +191,17 @@ impl App {
     }
 
     /// "Pickup Character": add a saved character to the party (the toolbar's A).
-    pub(crate) fn recruit(&mut self, desk: &mut Desk, ctx: &egui::Context) -> bool {
+    pub(crate) fn recruit(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData) -> bool {
         let Some(g) = self.game.as_mut() else { return true };
         let names: Vec<String> = game::saved(&saves()).into_iter().filter(|n| !g.party.iter().any(|m| &m.name == n)).collect();
         let mut v = View::default();
-        v.text("lblQuestion", "Which character joins the party?").show("txtQuestion", false).show("cmbCharacter", true).items("cmbCharacter", names.clone());
+        v.caption = Some(d.t(0xb5bc_a695).into());
+        v.text("lblQuestion", d.t(0x2113_adde)).show("txtQuestion", false).show("cmbCharacter", true).items("cmbCharacter", names.clone());
         let ev = desk.window(ctx, "frmInteract", v, true);
         if ev.click("cmdOK")
             && let Some(n) = desk.state("frmInteract", "cmbCharacter").sel.and_then(|i| names.get(i)).cloned()
         {
-            let msg = match load(&n).map_err(|e| e.to_string()).and_then(|c: Character| g.add_ally(c)) {
-                Ok(()) => format!("{n} joins the party."),
-                Err(e) => e,
-            };
+            let msg = load(&n).map_err(|e| e.to_string()).and_then(|c: Character| g.add_ally(d, c)).err().unwrap_or_default();
             desk.state("frmInteract", "cmbCharacter").sel = None;
             self.say(msg);
             self.persist();
@@ -211,17 +209,22 @@ impl App {
         ev.click("cmdOK") || ev.click("cmdCancel") || ev.closed
     }
 
-    /// The Seer's question: a character's or monster's name.
-    pub(crate) fn seer(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData) -> bool {
+    /// The Seer's question for its Character (0), Monster (2) or Item (3) button.
+    pub(crate) fn seer(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData, button: u16) -> bool {
+        let (caption, question) = match button {
+            0 => (0xf3de_8418, 0x2113_adde),
+            2 => (0xd2c4_c9d9, 0xd869_f803),
+            _ => (0xd8fc_e04e, 0x9c88_32e8),
+        };
         let mut v = View::default();
-        v.caption = Some("The Seer".into());
-        v.text("lblQuestion", "Who or what do you seek? (200 gold a try)");
+        v.caption = Some(d.t(caption).into());
+        v.text("lblQuestion", d.t(question));
         let ev = desk.window(ctx, "frmInteract", v, true);
         if ev.click("cmdOK") || ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
             let q = std::mem::take(&mut desk.state("frmInteract", "txtQuestion").text);
             if let Some(g) = self.game.as_mut() {
-                let msg = g.seer(d, q.trim());
-                self.say(msg);
+                let (title, text) = g.seer(d, q.trim());
+                self.boxes.push((d.t(title).into(), text));
                 self.persist();
             }
             return true;

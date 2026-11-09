@@ -25,6 +25,22 @@ pub const SAVE_VERSION: u32 = 2;
 pub const HANDS: usize = 0;
 /// The character you control plus up to three allies.
 pub const MAX_PARTY: usize = 4;
+/// Text ids (ddj_extract::text) of the alignments' names, the guild's "Make Level" title
+/// and "Congratulations!".
+pub const ALIGNMENTS: [u32; 3] = [0x7a8c_7df8, 0xe933_0778, 0x6fc6_dfe7];
+pub const MAKE_LEVEL: u32 = 0x3457_7b25;
+/// Text ids of the stats' full names, the directions, and the counts "One" to "Ten".
+pub const STAT_NAMES: [u32; 6] = [0xda4d_03d0, 0xae1e_75e2, 0x7421_f406, 0xdcbe_e1c6, 0x32eb_1663, 0x43a8_0f2f];
+pub const DIRECTIONS: [u32; 4] = [0x675e_4fa4, 0x6733_095c, 0xb3e2_9f1a, 0x6b15_95ce];
+const COUNTS: [u32; 10] = [0x1cb1_b18f, 0x20af_1fc9, 0x2e43_0863, 0xaf96_41c5, 0x2ee0_8fb5, 0x2cbc_324b, 0xdb3f_1e9e, 0xa6f5_0710, 0x9652_bb75, 0x1f8c_8bf4];
+
+/// "One" to "Ten", then "A Lot" (the original's count words).
+pub fn count_word(d: &GameData, n: usize) -> &str {
+    d.t(COUNTS.get(n.wrapping_sub(1)).copied().unwrap_or(0x4215_c9b3))
+}
+pub const CONGRATULATIONS: u32 = 0xa577_628f;
+/// Guild g's Crest is the item with id CREST + g.
+const CREST: usize = 299;
 pub const STATS: [&str; 6] = ["STR", "INT", "WIS", "CON", "CHA", "DEX"];
 pub(crate) const STR: usize = 0;
 pub(crate) const INT: usize = 1;
@@ -35,7 +51,11 @@ pub(crate) const DEX: usize = 5;
 pub(crate) const NOMAD: usize = 0;
 pub(crate) const HEALER: usize = 11;
 /// Slots of `Guild::abilities`.
-pub const ABILITIES: [&str; 6] = ["Thieving", "Backstab", "Critical hit", "Multiple swings", "Fighting", "Perception"];
+/// The abilities' names (text ids): Thieving, Backstabbing, Critical Hit, Multiple
+/// Swings, Fighting, Perception.
+pub const ABILITIES: [u32; 6] = [0x624d_7d65, 0xa389_3100, 0xf31c_697d, 0xa6e6_0188, 0xe99e_db37, 0xfdfe_3e9a];
+/// Male and Female (text ids).
+pub const SEXES: [u32; 2] = [0x487d_36f0, 0xd8a2_6cb9];
 pub(crate) const THIEVING: usize = 0;
 pub(crate) const BACKSTAB: usize = 1;
 pub(crate) const CRITICAL: usize = 2;
@@ -384,23 +404,25 @@ impl Character {
         xp
     }
 
-    pub fn make_level(&mut self, data: &GameData, t: &Tuning) -> Result<String, String> {
+    /// Making a level in the current guild (cmdMake_Click): the lines for Messages, or a
+    /// message box (its title's text id, its text).
+    pub fn make_level(&mut self, data: &GameData, t: &Tuning) -> Result<Vec<String>, (u32, String)> {
         let (need, gold) = (self.xp_needed(data, t), Tuning::level_gold(self.level(), data.guilds[self.guild].gold_factor));
-        if let Some(m) = self.quest {
-            return Err(format!("The guild wants you to slay a {} first.", data.monsters[m].name));
-        }
         if self.xp[self.guild] < need {
-            return Err(format!("You need {} more experience.", need - self.xp[self.guild]));
+            return Err((MAKE_LEVEL, data.t(0xffee_afe6).into()));
+        }
+        if let Some(m) = self.quest {
+            return Err((0xe241_4a85, format!("{}\n{}{}.", data.t(0xf445_728a), data.t(0xa2c3_5d33), data.monsters[m].name)));
         }
         if self.gold + self.bank < gold {
-            return Err(format!("The guild asks {gold} gold."));
+            return Err((MAKE_LEVEL, data.t(0x778e_55d4).into()));
         }
         self.pay(gold);
         let g = &data.guilds[self.guild];
         let highest = self.levels.iter().all(|&l| l <= self.level());
         self.levels[self.guild] += 1;
         let level = self.level();
-        let mut msg = format!("Welcome to level {level}!");
+        let mut said = Vec::new();
         if highest {
             // Nomad: 3 a level to 20, then 1. Healer: 3 a level to its cap.
             let (per, cap) = match self.guild {
@@ -423,7 +445,6 @@ impl Character {
             }
             self.max_hp += gain;
             self.hp += gain;
-            msg += &format!(" You gain {gain} hits.");
         }
         // From level 5 a guild may set a quest at its quest chance (w32, MORDOR.EXE).
         if level >= 5 && (self.rnd() * 100.0).round_ties_even() <= f64::from(g.w(32)) {
@@ -432,10 +453,10 @@ impl Character {
             if !fits.is_empty() {
                 let m = fits[self.roll(fits.len() as u32) as usize];
                 self.quest = Some(m);
-                msg += &format!(" The guild asks you to slay a {} before your next level.", data.monsters[m].name);
+                said = vec![data.t(0x9325_18b2).into(), format!("{}{}.", data.t(0x6119_fc50), data.monsters[m].name)];
             }
         }
-        Ok(msg)
+        Ok(said)
     }
 
     /// Spends gold, taking from the bank when the purse runs short (as the original).
@@ -459,31 +480,51 @@ impl Character {
         (a * a * 5356.0).round_ties_even() as u64
     }
 
-    pub fn join(&mut self, data: &GameData, g: usize) -> Result<String, String> {
-        let guild = &data.guilds[g];
+    /// What guild g says to this character, and whether it turns them away
+    /// (frmCityGuild's sub2962).
+    pub fn welcome(&self, data: &GameData, g: usize) -> (String, bool) {
+        let gd = &data.guilds[g];
         if self.levels[g] > 0 {
-            self.guild = g;
-            return Ok(format!("You are acting as a {} again.", guild.name));
+            return (format!("\n{}", data.t(if self.female { 0xd1c1_812b } else { 0x8e5e_5007 })), false);
         }
-        if (0..6).any(|i| self.stats[i] < guild.stat_req[i]) {
-            return Err("Your stats are too low.".into());
+        let mut s = String::new();
+        if gd.races & (1 << self.race) == 0 {
+            s += &format!("{}{}{}\n", data.t(0x01ff_f40f), data.races[self.race].name, data.t(0xf851_9f99));
         }
-        if guild.alignments & (1 << self.alignment) == 0 {
-            return Err("The guild refuses your alignment.".into());
+        if gd.alignments & (1 << self.alignment) == 0 {
+            s += &format!("{}{}{}\n", data.t(0xfe65_e82c), data.t(ALIGNMENTS[usize::from(self.alignment)]), data.t(0x41bb_a887));
         }
-        if guild.races & (1 << self.race) == 0 {
-            return Err(format!("The guild won't take a {}.", data.races[self.race].name));
+        if (0..6).any(|i| self.stats[i] < gd.stat_req[i]) {
+            s += data.t(0x39d4_1948);
+        }
+        if s.is_empty() { (data.t(0x8f8c_71eb).into(), false) } else { (s, true) }
+    }
+
+    /// Joining guild g, or acting as its member again (cmdJoin_Click): the Messages line
+    /// (often none), or the message box's text.
+    pub fn join(&mut self, data: &GameData, g: usize) -> Result<String, String> {
+        let (refusal, refused) = self.welcome(data, g);
+        if refused {
+            return Err(refusal);
+        }
+        if self.items.iter().any(|h| h.equipped && crate::magic::cursed(data, h.item, self.alignment)) {
+            return Err(data.t(0x52e3_ce99).into());
         }
         let cost = self.join_cost(data, g);
         if self.gold + self.bank < cost {
-            return Err(format!("Joining costs {cost} gold."));
+            return Err(data.t(0x22bd_be43).into());
         }
         self.pay(cost);
-        self.levels[g] = 1;
+        if self.levels[g] == 0 {
+            self.levels[g] = 1;
+            self.macros = ai::preset(ai::Role::of(g));
+        }
         self.guild = g;
-        self.items.iter_mut().filter(|h| data.items[h.item].guilds & (1 << g) == 0).for_each(|h| h.equipped = false);
-        self.macros = ai::preset(ai::Role::of(g));
-        Ok(format!("Welcome to the {} guild!", guild.name))
+        let mut off = false;
+        for h in self.items.iter_mut().filter(|h| h.equipped && data.items[h.item].guilds & (1 << g) == 0) {
+            (h.equipped, off) = (false, true);
+        }
+        Ok(if off { data.t(0x7edb_3449).into() } else { String::new() })
     }
 
     /// One weapon, and one item of each other kind, may be equipped at a time.
@@ -494,7 +535,7 @@ impl Character {
                 return Err("Your hands are always ready.".into());
             }
             if crate::magic::cursed(data, self.items[slot].item, self.alignment) {
-                return Err(format!("The {} is cursed! The store can uncurse it.", it.name));
+                return Err(data.t(0x8616_d862).into());
             }
             self.items[slot].equipped = false;
             // Putting a weapon away leaves the hands.
@@ -506,7 +547,7 @@ impl Character {
             return Ok(());
         }
         if it.guilds & (1 << self.guild) == 0 {
-            return Err(format!("Your guild can't use {}.", it.name));
+            return Err(data.t(0x3ed9_504a).into());
         }
         if crate::magic::consumable(data, self.items[slot].item) {
             return Err(format!("{} is used, not worn.", it.name));
@@ -611,11 +652,22 @@ pub struct Game {
     pub store: Store,
     /// The Hall of Records (saves/hall.json).
     pub hall: Hall,
+    /// What the dungeon window's labels say about the controlled character: its own
+    /// action (CHAR_HIT), what hit it (MONSTER_HIT) and its square (SQUARE).
+    pub said: [String; 3],
+    /// Message boxes for the window to show: title's text id, text.
+    pub boxes: Vec<(u32, String)>,
 }
+
+/// `Game::said` slots, after the dungeon window's lblCharacterHit, lblMonsterHit and
+/// lblSquareInfo.
+pub const CHAR_HIT: usize = 0;
+pub const MONSTER_HIT: usize = 1;
+pub const SQUARE: usize = 2;
 
 impl Game {
     pub fn new(lead: Character) -> Self {
-        Self { party: vec![lead], fight: None, chest: None, cleared: Vec::new(), log: Vec::new(), store: Store::default(), hall: Hall::default() }
+        Self { party: vec![lead], fight: None, chest: None, cleared: Vec::new(), log: Vec::new(), store: Store::default(), hall: Hall::default(), said: Default::default(), boxes: Vec::new() }
     }
 
     pub fn lead(&self) -> &Character {
@@ -630,16 +682,60 @@ impl Game {
         self.log.push(s.into());
     }
 
+    /// News of member i the original's way: its "You" words in the controlled
+    /// character's label `at`, and in Messages by name: `named` when the original has
+    /// such words, else the quoted name and the "You" words. Alone, the "You" words.
+    pub(crate) fn tell(&mut self, i: usize, at: usize, you: String, named: Option<String>) {
+        if i == 0 {
+            self.said[at].clone_from(&you);
+        }
+        let line = if self.party.len() == 1 { you } else { named.unwrap_or_else(|| format!("\"{}\": {you}", self.party[i].name)) };
+        self.say(line);
+    }
+
+    /// The quoted name, as the original names party members in Messages.
+    pub(crate) fn quoted(&self, i: usize) -> String {
+        format!("\"{}\"", self.party[i].name)
+    }
+
     /// The Hall's records for the party, announced as the original does; true if any fell.
     pub fn records(&mut self, d: &GameData) -> bool {
         let before = self.hall.records.clone();
         for i in 0..self.party.len() {
             for what in self.hall.check_all(d, &self.party[i]) {
-                let who = if self.party.len() == 1 { "You have".into() } else { format!("\"{}\"", self.party[i].name) };
-                self.say(format!("{who} just set the record for {what}!"));
+                let line = if self.party.len() == 1 { format!("{}{}!", d.t(0xfb4a_3a19), d.t(what)) } else { format!("{}{}{}!", self.quoted(i), d.t(0x2147_aff8), d.t(what)) };
+                self.say(line);
             }
         }
         before != self.hall.records
+    }
+
+    /// After party member i made a level: past the Guildmaster's level, they are the
+    /// guild's new Guildmaster, given its Crest (cmdMake_Click, modAwardCrest). The
+    /// message boxes: title's text id, text.
+    pub fn guildmaster(&mut self, d: &GameData, i: usize) -> Vec<(u32, String)> {
+        let c = &mut self.party[i];
+        let (g, level) = (c.guild, i64::from(c.levels[c.guild]));
+        let (gm, gm_level) = self.hall.guildmaster(d, g);
+        if gm_level >= level && !gm.is_empty() {
+            return Vec::new();
+        }
+        let mut said = Vec::new();
+        if gm != c.name {
+            said.push((0x73d1_9d26, format!("{}\n{}", d.t(CONGRATULATIONS), d.t(0xc647_0b35))));
+        }
+        let crest = d.items.iter().position(|it| usize::try_from(it.id) == Ok(CREST + g));
+        if let Some(k) = crest.filter(|&k| !c.items.iter().any(|h| h.item == k)) {
+            let name = &d.items[k].name;
+            if c.items.len() >= 40 {
+                said.push((0x6255_8b51, format!("{}{name}{}", d.t(0x64e3_8593), d.t(0xe3c2_b5a9))));
+            } else {
+                c.items.push(crate::magic::new_held(d, k, true));
+                said.push((CONGRATULATIONS, format!("{}{name}{}\n\n{}", d.t(0x90a6_d702), d.t(0x80be_a9a5), d.t(0xd523_aca6))));
+            }
+        }
+        self.hall.guildmasters.insert(g, crate::hall::Record { name: c.name.clone(), value: level, date: None });
+        said
     }
 
     pub fn pos(&self) -> Pos {
@@ -656,23 +752,23 @@ impl Game {
     }
 
     /// Adds a saved character as an ally: alive, in the city, and not Good with Evil.
-    pub fn add_ally(&mut self, ally: Character) -> Result<(), String> {
+    /// Adds a saved character as an ally (fn14CB's Join); the refusal is the original's.
+    pub fn add_ally(&mut self, data: &GameData, ally: Character) -> Result<(), String> {
+        let name = format!("\"{}\"", ally.name);
         if self.party.len() >= MAX_PARTY {
-            return Err("A party holds at most four.".into());
+            return Err(data.t(0x37c2_52b8).into());
         }
         if !ally.alive() {
-            return Err(format!("{} must be raised first.", ally.name));
+            return Err(format!("{name}{}", data.t(0xa32f_8c98)));
         }
         if self.party.iter().any(|m| m.alignment.abs_diff(ally.alignment) == 2) {
-            return Err("Good and Evil won't travel together.".into());
+            return Err(format!("{name}{}", data.t(0x764b_5170)));
         }
         if self.party.iter().any(|m| m.name == ally.name) {
-            return Err(format!("{} is already in the party.", ally.name));
+            return Err(format!("{name}{}", data.t(0x8a53_ab38)));
         }
-        let name = ally.name.clone();
         self.party.push(ally);
         self.party[0].allies = self.party[1..].iter().map(|m| m.name.clone()).collect();
-        self.say(format!("{name} joins the party."));
         Ok(())
     }
 
@@ -748,7 +844,6 @@ impl Game {
         }
         self.cleared.clear();
         self.fight = None;
-        self.say("You return to the city and rest.");
     }
 
     pub fn enter_dungeon(&mut self, data: &GameData) -> Result<(), String> {
@@ -758,7 +853,6 @@ impl Game {
         let f = &data.floors[0];
         let i = f.squares.iter().position(|s| s.flags & square::STAIRS_UP != 0).unwrap_or(0);
         self.set_pos(data, Pos { x: i % f.width, y: i / f.width, floor: 1, facing: 0 });
-        self.say("You descend into the dungeon.");
         Ok(())
     }
 
@@ -789,9 +883,10 @@ impl Game {
             _ => ahead(f, x, y, facing).is_some_and(|(nx, ny)| f.square(nx, ny).flags & if facing == 2 { square::UPPER_SECRET_DOOR } else { square::RIGHT_SECRET_DOOR } != 0),
         };
         let to = ahead(f, x, y, facing).filter(|&(nx, ny)| (side(f, x, y, facing) != Side::Wall || secret) && f.square(nx, ny).flags & square::ROCK == 0);
-        let Some((nx, ny)) = to else { return self.say("A wall blocks your way.") };
+        let Some((nx, ny)) = to else { return };
+        self.said = Default::default();
         if secret {
-            self.say("You find a secret door!");
+            self.say(data.t(0x3c78_91e7));
         }
         let back = self.pos();
         self.set_pos(data, Pos { x: nx, y: ny, ..back });
@@ -826,7 +921,7 @@ impl Game {
             m.status.paralysis = m.status.paralysis.saturating_sub(1);
         }
         for (i, dmg) in hurt {
-            self.hurt(i, dmg);
+            self.hurt(data, i, dmg);
         }
         self.companions_step(data);
     }
@@ -845,14 +940,14 @@ impl Game {
         if flags & square::ROTATOR != 0 {
             let dir = self.party[0].roll(4) as u8;
             self.turn_to(dir);
-            self.say("The floor spins you around!");
         }
         let levitating = self.party.iter().filter(|m| m.alive()).all(|m| m.buffs.levitate);
         if flags & square::PIT != 0 && !levitating {
             for i in self.living() {
                 let dmg = 1 + self.party[i].roll(4 * floor as u32) as i32;
-                self.say(format!("{} falls into a pit for {dmg} damage.", self.party[i].name));
-                self.hurt(i, dmg);
+                let (you, named) = (format!("{} {dmg}{}", data.t(0xc950_49a3), data.t(0x3563_88c5)), format!("{}{} {dmg}{}", self.quoted(i), data.t(0x8a5e_51a8), data.t(0x3563_88c5)));
+                self.tell(i, SQUARE, you, Some(named));
+                self.hurt(data, i, dmg);
             }
         }
         if flags & square::WATER != 0 && !levitating {
@@ -861,31 +956,32 @@ impl Game {
                 let heavy = self.party[i].items.iter().filter(|h| h.equipped).map(|h| i32::from(data.items[h.item].defense)).sum::<i32>() >= 12;
                 if heavy && self.party[i].chance(0.25) {
                     let dmg = 2 + self.party[i].roll(3 * floor as u32) as i32;
-                    self.say(format!("{} struggles in the water for {dmg} damage.", self.party[i].name));
-                    self.hurt(i, dmg);
+                    self.tell(i, SQUARE, data.t(0xba4a_abcb).into(), None);
+                    self.hurt(data, i, dmg);
                 }
             }
         }
         if flags & square::QUICKSAND != 0 && !levitating {
             for i in self.living() {
                 let dmg = 1 + self.party[i].roll(2 * floor as u32) as i32;
-                self.say(format!("{} sinks into quicksand for {dmg} damage.", self.party[i].name));
+                self.tell(i, SQUARE, data.t(0xd5ed_9dca).into(), None);
                 if self.party[i].chance(0.1) && !self.party[i].items.is_empty() {
                     let n = self.party[i].items.len() as u32;
                     let s = self.party[i].roll(n) as usize;
                     if !self.party[i].items[s].equipped && self.party[i].items[s].item != HANDS {
                         let h = self.party[i].items.remove(s);
-                        self.say(format!("{} loses {} in the sand.", self.party[i].name, data.items[h.item].name));
+                        let (it, gone) = (&data.items[h.item].name, data.t(0xc7c7_7f7d));
+                        let (you, named) = (format!("{}{it}{gone}", data.t(0xd1a8_7aa4)), format!("{}{}{it}{gone}", self.quoted(i), data.t(0x07b6_f246)));
+                        self.tell(i, SQUARE, you, Some(named));
                     }
                 }
-                self.hurt(i, dmg);
+                self.hurt(data, i, dmg);
             }
         }
         if flags & square::EXTINGUISH != 0 {
             for m in &mut self.party {
                 m.buffs = Buffs::default();
             }
-            self.say("Your magic fades away.");
         }
         if self.living().is_empty() {
             return;
@@ -893,11 +989,10 @@ impl Game {
         if flags & square::CHUTE != 0 && !levitating {
             let drop = f.chutes.iter().find(|c| c.at == (x, y)).map_or(1, |c| c.drop.max(1) as usize);
             let to = (floor + drop).min(data.floors.len());
-            self.say(format!("You slide down a chute to level {to}!"));
             self.set_pos(data, Pos { floor: to, ..self.pos() });
             for i in self.living() {
                 let dmg = 1 + self.party[i].roll(6 * drop as u32) as i32;
-                self.hurt(i, dmg);
+                self.hurt(data, i, dmg);
             }
             return;
         }
@@ -908,7 +1003,7 @@ impl Game {
                 None => self.random_square(data, floor),
             };
             self.set_pos(data, Pos { x: tx, y: ty, floor: tf, facing: self.pos().facing });
-            return self.say("A teleporter whisks you away!");
+            return self.say(data.t(if self.party.len() == 1 { 0x6e7f_7df7 } else { 0xd5ce_1bdb }));
         }
         if area != 0 && !self.cleared.contains(&(floor, area)) {
             self.spawn(data, area, flags & square::STUD != 0, back);
@@ -933,7 +1028,7 @@ impl Game {
 
     /// Takes damage; true if it killed that member. When the controlled character dies,
     /// control passes to the next living member; when all are dead, the fight ends.
-    pub(crate) fn hurt(&mut self, i: usize, dmg: i32) -> bool {
+    pub(crate) fn hurt(&mut self, data: &GameData, i: usize, dmg: i32) -> bool {
         let m = &mut self.party[i];
         if !m.alive() {
             return false;
@@ -944,8 +1039,8 @@ impl Game {
         }
         m.hp = 0;
         m.life = Life::Dead(m.pos);
-        let name = m.name.clone();
-        self.say(format!("{name} has died!"));
+        let name = format!("\"{}\"", m.name);
+        self.say(format!("{name}{}", data.t(0x7acb_4bd0)));
         if self.living().is_empty() {
             self.fight = None;
             self.say("The whole party has fallen. Your bodies lie where you fell.");
@@ -955,7 +1050,7 @@ impl Game {
         } else if i == 0 {
             let next = self.living()[0];
             self.switch_to(next);
-            self.say(format!("You take control of {}.", self.party[0].name));
+            self.say(format!("{}{}", self.quoted(0), data.t(0x4307_1d1b)));
         }
         true
     }
@@ -965,20 +1060,17 @@ impl Game {
         let p = self.pos();
         let flags = f.square(p.x, p.y).flags;
         if self.fight.is_some() {
-            self.say("Not while fighting.");
+            self.say(data.t(0x17ef_8df8));
         } else if flags & square::STAIRS_UP != 0 {
             if p.floor == 1 {
                 self.to_town(data, t);
             } else {
                 self.set_pos(data, Pos { floor: p.floor - 1, ..p });
-                self.say(format!("You climb to level {}.", p.floor - 1));
             }
         } else if flags & square::STAIRS_DOWN != 0 && p.floor < data.floors.len() {
             self.set_pos(data, Pos { floor: p.floor + 1, ..p });
-            self.say(format!("You descend to level {}.", p.floor + 1));
             self.arrive(data, p);
         } else if flags & square::CHUTE != 0 && self.party.iter().filter(|m| m.alive()).all(|m| m.buffs.levitate) {
-            self.say("You float down the chute.");
             self.set_pos(data, Pos { floor: (p.floor + 1).min(data.floors.len()), ..p });
         } else {
             self.say("There are no stairs here.");
@@ -1004,28 +1096,44 @@ impl Game {
         })
     }
 
-    pub fn seer(&mut self, data: &GameData, name: &str) -> String {
-        let Some(cost) = self.seer_cost(data, name) else { return "The Seer has never heard of it, or it lies too deep to see.".into() };
+    /// The Seer's answer, a message box in the original's words (FRMSEEK): its title's
+    /// text id and its text.
+    pub fn seer(&mut self, data: &GameData, name: &str) -> (u32, String) {
+        const SORRY: u32 = 0x6255_8b51;
+        const SEER: u32 = 0xde72_1ed6;
+        let at = |x: usize, y: usize, f: i64| format!("{},{},{f}.", x + 1, y + 1);
+        let key = name.trim().to_lowercase();
+        let member = self.party.iter().any(|m| m.name.to_lowercase() == key);
+        let monster = data.monsters.iter().position(|m| m.name.to_lowercase() == key);
+        let Some(cost) = self.seer_cost(data, name) else {
+            return match monster {
+                Some(_) => (SORRY, data.t(0x243e_9ebd).into()),
+                None => (SORRY, format!("{}{}{}", data.t(0xf8d3_b5cc), name.trim(), data.t(0x81be_ab38))),
+            };
+        };
         let lead = &mut self.party[0];
         if lead.gold + lead.bank < cost {
-            return format!("The Seer wants {cost} gold.");
+            return (if member { 0xf803_76b8 } else { 0xeabe_3cb9 }, data.t(0x22bd_be43).into());
         }
         lead.pay(cost);
-        let name = name.trim().to_lowercase();
-        if let Some(m) = self.party.iter().find(|m| m.name.to_lowercase() == name) {
+        if let Some(m) = self.party.iter().find(|m| m.name.to_lowercase() == key) {
+            let found = |p: Pos| format!("{}\"{}\"{}{}", data.t(0x68c0_5808), m.name, data.t(0x349a_42d0), at(p.x, p.y, p.floor as i64));
             return match m.life {
-                Life::Dead(p) => format!("{} lies at {},{} on level {} ({cost} gold).", m.name, p.x + 1, p.y + 1, p.floor),
-                Life::InMorgue => format!("{} is in the morgue.", m.name),
-                Life::Alive => format!("{} is alive and well.", m.name),
+                Life::Dead(p) => (SEER, format!("{}\n{}", found(p), data.t(0xf406_90d9))),
+                _ if m.pos.floor == 0 => (SEER, format!("{}\n{}", data.t(0xb448_8b9d), data.t(0x67ae_99cd))),
+                _ => (SEER, found(m.pos)),
             };
         }
-        let Some(m) = data.monsters.iter().position(|m| m.name.to_lowercase() == name) else { return "The Seer has never heard of it.".into() };
+        let m = monster.expect("a monster when not a member");
         let id = data.monsters[m].id;
-        let lairs: Vec<String> = data.floors.iter().filter(|f| f.areas.iter().any(|a| a.lair == id)).map(|f| f.level.to_string()).collect();
-        if lairs.is_empty() {
-            format!("The {} wanders level {} ({cost} gold).", data.monsters[m].name, data.monsters[m].level)
-        } else {
-            format!("The {} keeps a lair on level {} ({cost} gold).", data.monsters[m].name, lairs.join(" and "))
+        let lair = data.floors.iter().find_map(|f| {
+            let a = f.areas.iter().position(|a| a.lair == id)?;
+            let i = f.squares.iter().position(|sq| sq.area as usize == a)?;
+            Some(at(i % f.width, i / f.width, i64::from(f.level)))
+        });
+        match lair {
+            Some(at) => (0xeabe_3cb9, format!("{}{}{}{at}", data.t(0x0129_16e9), data.monsters[m].name, data.t(0x9b15_be84))),
+            None => (0xeabe_3cb9, format!("{}{}{}\n{}", data.t(0x11bb_b661), data.monsters[m].level, data.t(0x9198_fbe6), data.t(0x2ab1_633e))),
         }
     }
 
@@ -1055,22 +1163,25 @@ impl Game {
         store::identify_price(data, item, s)
     }
 
-    pub fn buy(&mut self, data: &GameData, i: usize, item: usize) -> Result<String, String> {
+    /// The store's services (FRMCTYS) answer in the original's words: Ok is the
+    /// Messages line (often none), Err a message box (title's text id, text).
+    pub fn buy(&mut self, data: &GameData, i: usize, item: usize) -> Result<String, (u32, String)> {
+        const BUY: u32 = 0xf158_f0aa;
         let price = self.buy_price(data, i, item);
         if self.store.count(item) == 0 {
-            return Err("The store has none left.".into());
+            return Err((BUY, "The store has none left.".into()));
         }
         let c = &mut self.party[i];
         if c.gold + c.bank < price {
-            return Err("You can't afford that.".into());
+            return Err((BUY, data.t(0x22bd_be43).into()));
         }
         if c.items.len() >= 40 {
-            return Err("You can't carry any more.".into());
+            return Err((BUY, data.t(0x6ac7_6f90).into()));
         }
         c.pay(price);
         c.items.push(crate::magic::new_held(data, item, true));
         self.store.take(item);
-        Ok(format!("You bought {} for {price} gold.", data.items[item].name))
+        Ok(format!("{}{}{}{}.", data.t(0x4a29_b680), c.items.len(), data.t(0x7dba_5663), data.items[item].name))
     }
 
     pub fn sell(&mut self, data: &GameData, i: usize, slot: usize) -> String {
@@ -1079,39 +1190,39 @@ impl Game {
             return "The store has no use for your hands.".into();
         }
         if (500..512).contains(&it.w(10)) {
-            return format!("The store won't buy guild items like the {}.", it.name);
+            return data.t(0xdb51_2bd8).into();
         }
         let price = self.sell_price(data, i, slot);
         let h = self.party[i].items.remove(slot);
         self.party[i].gold += price;
         self.store.put(data, &h);
-        format!("Sold {} for {price} gold.", data.items[h.item].name)
+        String::new()
     }
 
-    pub fn identify(&mut self, data: &GameData, i: usize, slot: usize) -> Result<String, String> {
+    pub fn identify(&mut self, data: &GameData, i: usize, slot: usize) -> Result<String, (u32, String)> {
         let cost = self.identify_price(data, i, slot);
         let c = &mut self.party[i];
         if c.gold + c.bank < cost {
-            return Err(format!("Identifying costs {cost} gold."));
+            return Err((0x4a17_88e0, data.t(0x22bd_be43).into()));
         }
         c.pay(cost);
         c.items[slot].known = true;
-        Ok(format!("It is {}.", data.items[c.items[slot].item].name))
+        Ok(String::new())
     }
 
     /// Uncursing an equipped item costs 1.6 x its price and takes it off; the item
     /// stays cursed (MORDOR.EXE).
-    pub fn uncurse(&mut self, data: &GameData, i: usize, slot: usize) -> Result<String, String> {
+    pub fn uncurse(&mut self, data: &GameData, i: usize, slot: usize) -> Result<String, (u32, String)> {
         let c = &mut self.party[i];
         let item = c.items[slot].item;
         let cost = store::uncurse_price(data, item);
         if c.gold + c.bank < cost {
-            return Err(format!("Uncursing costs {cost} gold."));
+            return Err((0xe52c_729b, data.t(0x22bd_be43).into()));
         }
         c.pay(cost);
         c.items[slot].equipped = false;
         c.items[slot].known = false;
-        Ok(format!("The {} comes off.", data.items[item].name))
+        Ok(data.t(0x4549_b450).into())
     }
 
     /// Rescuers fetch a corpse from floor F for 372,567.52 x ln(F + 1) x F (MORDOR.EXE);
@@ -1140,15 +1251,17 @@ impl Game {
         cost - left
     }
 
-    pub fn rescue(&mut self, i: usize) {
+    /// FRMMORG's rescue, told in the original's words.
+    pub fn rescue(&mut self, data: &GameData, i: usize) {
         let Life::Dead(p) = self.party[i].life else { return };
-        let paid = self.charge(i, self.rescue_cost(i));
+        self.charge(i, self.rescue_cost(i));
         if self.party[i].rnd() * 100.0 <= 4.0 * p.floor as f64 {
-            return self.say(format!("The rescuers were lost looking for {} (fee {paid} gold).", self.party[i].name));
+            return self.say(data.t(0x6601_942a));
         }
         self.party[i].life = Life::InMorgue;
         self.party[i].pos = Pos::default();
-        self.say(format!("Rescuers bring {} to the morgue for {paid} gold.", self.party[i].name));
+        let found = format!("{}{} {},{},{}{}", self.party[i].name, data.t(0xf7c5_95c1), p.x + 1, p.y + 1, p.floor, data.t(0xf8d3_d331));
+        self.say(found);
     }
 
     /// A raise works clamp(35 x CON / 4.5 + 10, 10, 98)% of the time (MORDOR.EXE);
@@ -1157,24 +1270,27 @@ impl Game {
         if self.party[i].life != Life::InMorgue {
             return;
         }
-        let paid = self.charge(i, self.raise_cost(i));
+        const INFO: u32 = 0xbe7b_2721;
+        self.charge(i, self.raise_cost(i));
         let m = &mut self.party[i];
         let odds = (35.0 * f64::from(m.stats[CON]) / 4.5 + 10.0).round_ties_even().clamp(10.0, 98.0) as i32;
         if m.d100() > odds {
             m.age_days += 365;
-            let name = m.name.clone();
-            return self.say(format!("Complications! {name} ages a year and stays dead (fee {paid} gold)."));
+            self.boxes.extend([(INFO, data.t(0x0abc_27aa).into()), (INFO, data.t(0x8327_8e1b).into())]);
+            return;
         }
         m.life = Life::Alive;
         m.hp = m.max_hp;
         let min = data.races[m.race].stat_min[CON];
-        let msg = if m.chance(0.5) && m.stats[CON] > min {
+        let con = m.chance(0.5) && m.stats[CON] > min;
+        if con {
             m.stats[CON] -= 1;
-            format!("{} is raised for {paid} gold, but loses a point of CON.", m.name)
-        } else {
-            format!("{} is raised for {paid} gold.", m.name)
-        };
-        self.say(msg);
+        }
+        self.boxes.push((INFO, data.t(0xf63e_9d43).into()));
+        if con {
+            let line = if self.party.len() == 1 { data.t(0x346e_365c).into() } else { format!("{}{}{}", data.t(0x2cf6_254e), self.quoted(i), data.t(0x02e1_4e6f)) };
+            self.say(line);
+        }
     }
 }
 
@@ -1227,8 +1343,8 @@ mod tests {
         let mut cast = 0;
         for seed in ["A", "B", "C"] {
             let mut g = Game::new(hero(&d, &format!("Fighter{seed}"), 0, 1, 1, 4));
-            g.add_ally(hero(&d, &format!("Healer{seed}"), 1, 1, HEALER, 4)).unwrap();
-            g.add_ally(hero(&d, &format!("Mage{seed}"), 1, 0, 8, 4)).unwrap();
+            g.add_ally(&d, hero(&d, &format!("Healer{seed}"), 1, 1, HEALER, 4)).unwrap();
+            g.add_ally(&d, hero(&d, &format!("Mage{seed}"), 1, 0, 8, 4)).unwrap();
             for m in &mut g.party {
                 m.sp = m.max_sp(&d, &t);
             }
@@ -1298,7 +1414,7 @@ mod tests {
     fn healer_ai_heals_the_wounded() {
         let (d, t) = (data(), Tuning::load(&[]).unwrap());
         let mut g = Game::new(hero(&d, "Tank", 0, 1, 1, 6));
-        g.add_ally(hero(&d, "Medic", 1, 1, HEALER, 6)).unwrap();
+        g.add_ally(&d, hero(&d, "Medic", 1, 1, HEALER, 6)).unwrap();
         g.party[1].sp = 500;
         g.enter_dungeon(&d).unwrap();
         let kobold = d.monsters.iter().position(|m| m.name == "Kobold").unwrap();
@@ -1319,11 +1435,11 @@ mod tests {
         assert_eq!(g.party[0].level(), 2);
         g.enter_dungeon(&d).unwrap();
         let at = g.pos();
-        assert!(g.hurt(0, 1000));
+        assert!(g.hurt(&d, 0, 1000));
         assert_eq!(g.party[0].life, Life::Dead(at));
         g.party[0].gold = 100_000;
         while g.party[0].life != Life::InMorgue {
-            g.rescue(0);
+            g.rescue(&d, 0);
         }
         while g.party[0].life != Life::Alive {
             g.raise(&d, 0);
@@ -1349,7 +1465,8 @@ mod tests {
             g.party[0].hp = g.party[0].max_hp;
         }
         assert!(g.party[0].gold > before && g.chest.is_none());
-        assert!(g.log.iter().any(|l| l.contains("disarms")));
+        // Some traps were disarmed, not all set off (the label names a sprung trap).
+        assert!(g.log.iter().filter(|l| *l == d.t(0x4bf7_7b8c)).count() < 20);
     }
 
     /// The Hall starts with the original's holders; a better value takes a record and is
@@ -1377,7 +1494,8 @@ mod tests {
         g.party[0].stats[0] = 15;
         g.party[0].bank = 6_000_000;
         assert!(g.records(&d));
-        assert_eq!(g.log, ["You have just set the record for Strongest Character!", "You have just set the record for wealthiest character!"]);
+        let set = |what| format!("{}{}!", d.t(0xfb4a_3a19), d.t(what));
+        assert_eq!(g.log, [set(0x7c15_6b09), set(0xf3d2_0bbe)]);
         assert!(!g.records(&d), "announced once");
         let strong = d.monsters.iter().max_by_key(|m| crate::hall::might(m)).unwrap().id;
         g.hall.check(&d, crate::hall::CREATURE, "Rec", i64::from(strong));
@@ -1386,7 +1504,7 @@ mod tests {
         g.hall.save(&dir).unwrap();
         let back = Hall::load(&dir, String::new());
         assert_eq!((back.records[0].name.as_str(), back.records[0].value, back.records[0].date.as_deref()), ("Rec", 15, Some("11/4/2026")));
-        assert_eq!(back.records[1].name, "Mager");
+        assert_eq!(back.holder(&d, 1), d.t(0xc242_0a43));
         // Cloud saves: another device's hall gives only the records it holds higher.
         let (mut mine, mut other) = (back, Hall::default());
         other.records[1].name = "Far".into();
@@ -1394,6 +1512,28 @@ mod tests {
         mine.merge(&d, other);
         assert_eq!(mine.records.iter().take(2).map(|r| (r.name.as_str(), r.value)).collect::<Vec<_>>(), [("Rec", 15), ("Far", 99)]);
         assert_eq!(mine.records[crate::hall::CREATURE].value, i64::from(strong));
+    }
+
+    /// The guilds speak the original's words, and a character past a guild's
+    /// Guildmaster (the original's at first) takes over, with the guild's Crest.
+    #[test]
+    fn guilds_and_guildmasters() {
+        let d = data();
+        let mut g = Game::new(Character::new(&d, "Gm", 0, true, 1, start_stats(&d, 0)).unwrap());
+        assert_eq!(g.party[0].welcome(&d, NOMAD), (format!("\n{}", d.t(0xd1c1_812b)), false));
+        assert!(g.party[0].welcome(&d, 3).1, "a new Human can't join the Ninjas");
+        let (name, level) = g.hall.guildmaster(&d, NOMAD);
+        assert_eq!((name.as_str(), level), (d.t(0x0f17_479d), 64));
+        g.party[0].levels[NOMAD] = 64;
+        assert!(g.guildmaster(&d, 0).is_empty(), "level 64 doesn't pass a level 64 Guildmaster");
+        g.party[0].levels[NOMAD] = 65;
+        let said = g.guildmaster(&d, 0);
+        assert_eq!(said.iter().map(|s| s.0).collect::<Vec<_>>(), [0x73d1_9d26, CONGRATULATIONS]);
+        assert_eq!(d.items[g.party[0].items.last().unwrap().item].id, 299);
+        assert_eq!(g.hall.guildmaster(&d, NOMAD), ("Gm".into(), 65));
+        g.party[0].levels[NOMAD] = 66;
+        assert!(g.guildmaster(&d, 0).is_empty(), "no second Crest or greeting");
+        assert_eq!(g.hall.guildmaster(&d, NOMAD).1, 66);
     }
 
     /// Everyone carries Hands in the first slot: the weapon until another is wielded,
@@ -1453,9 +1593,9 @@ mod tests {
         let (d, t) = (GameData::load(&out).unwrap(), Tuning::load(&[]).unwrap());
         for floor in 1..=d.floors.len() {
             let mut g = Game::new(hero(&d, "Deep1", 0, 1, 1, 30));
-            g.add_ally(hero(&d, "Deep2", 1, 1, HEALER, 30)).unwrap();
-            g.add_ally(hero(&d, "Deep3", 1, 0, 9, 30)).unwrap();
-            g.add_ally(hero(&d, "Deep4", 0, 1, 6, 30)).unwrap();
+            g.add_ally(&d, hero(&d, "Deep2", 1, 1, HEALER, 30)).unwrap();
+            g.add_ally(&d, hero(&d, "Deep3", 1, 0, 9, 30)).unwrap();
+            g.add_ally(&d, hero(&d, "Deep4", 0, 1, 6, 30)).unwrap();
             for m in &mut g.party {
                 m.max_hp = 400;
                 m.hp = 400;

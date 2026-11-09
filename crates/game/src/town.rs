@@ -3,15 +3,23 @@
 
 use ddj_rules::{
     Tuning,
-    game::Life,
+    game::{CONGRATULATIONS, Life},
     magic, monsters,
     mdr::GameData,
 };
 use eframe::egui::{self, Color32, Key};
 
-use crate::{App, Deed, Dialog, Screen, win::{Desk, Drag, View}};
+use crate::{App, Deed, Dialog, Screen, stats::commas, win::{Desk, Drag, View}};
 
 const SEL_BACK: Color32 = Color32::from_rgb(0, 0, 128);
+
+/// A service's answer: its Messages line, or a message box queued (title, text).
+fn answer(boxes: &mut Vec<(String, String)>, d: &GameData, r: Result<String, (u32, String)>) -> String {
+    r.unwrap_or_else(|(title, text)| {
+        boxes.push((d.t(title).into(), text));
+        String::new()
+    })
+}
 
 /// The buildings by the city's picture index (frmCityMain's imgPicture/lblSelection).
 const PLACES: [Option<&str>; 8] = [Some("frmCityStore"), Some("frmCityBank"), Some("frmCityMorgue"), Some("frmCitySeer"), Some("frmCityGuild"), None, None, Some("frmCityCStore")];
@@ -57,11 +65,11 @@ impl App {
             "frmCityStore" => self.store(desk, ctx, d, t),
             "frmCityGuild" => self.guild(desk, ctx, d, t),
             "frmCityBank" => self.bank(desk, ctx),
-            "frmCityMorgue" => self.morgue(desk, ctx),
+            "frmCityMorgue" => self.morgue(desk, ctx, d),
             "frmCitySeer" => {
                 let ev = desk.window(ctx, f, View::default(), false);
-                if ev.index("cmdCommand").is_some_and(|i| i != 1) {
-                    self.dialog = Some(Dialog::Seer);
+                if let Some(i) = ev.index("cmdCommand").filter(|&i| i != 1) {
+                    self.dialog = Some(Dialog::Seer(i));
                 }
                 ev.click("cmdCommand(1)") || ev.closed
             }
@@ -143,7 +151,7 @@ impl App {
         if ev.click("cmdBuy")
             && let Some(i) = picked
         {
-            msg = g.buy(d, sel, i).unwrap_or_else(|e| e);
+            msg = answer(&mut self.boxes, d, g.buy(d, sel, i));
         }
         if ev.click("cmdInfo")
             && let Some(i) = picked
@@ -154,7 +162,7 @@ impl App {
         if ev.click("cmdUncurse")
             && let Some(s) = unc
         {
-            msg = g.uncurse(d, sel, s).unwrap_or_else(|e| e);
+            msg = answer(&mut self.boxes, d, g.uncurse(d, sel, s));
             desk.state(F, "uncurse").sel = None;
         }
         if ev.click("cmdSell")
@@ -167,7 +175,7 @@ impl App {
         if ev.click("cmdID")
             && let Some(s) = idd
         {
-            msg = g.identify(d, sel, s).unwrap_or_else(|e| e);
+            msg = answer(&mut self.boxes, d, g.identify(d, sel, s));
         }
         if ev.click("cmdIDInfo")
             && let Some(s) = idd
@@ -183,21 +191,26 @@ impl App {
         done
     }
 
-    /// Guilds: visit any guild from the list; join it, or make a level in your own.
+    /// Guilds (frmCityGuild): those that take the character's race and alignment, with
+    /// its levels in them; join one, or make a level in your own. The words are the
+    /// original's (ddj_extract::text).
     fn guild(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData, t: &Tuning) -> bool {
         const F: &str = "frmCityGuild";
         let sel = self.sel.min(self.game.as_ref().unwrap().party.len() - 1);
         let g = self.game.as_mut().unwrap();
         let c = &g.party[sel];
+        let takes = |k: usize| d.guilds[k].races & (1 << c.race) != 0 && d.guilds[k].alignments & (1 << c.alignment) != 0;
+        let shown: Vec<usize> = (0..d.guilds.len()).filter(|&k| takes(k)).collect();
         let visit = desk.state(F, "visit").sel.unwrap_or(c.guild).min(d.guilds.len() - 1);
         if desk.state(F, "lstGuilds").sel.is_none() {
-            desk.state(F, "lstGuilds").sel = Some(visit);
+            desk.state(F, "lstGuilds").sel = shown.iter().position(|&k| k == visit);
         }
         let gd = &d.guilds[visit];
         let mut v = View::default();
-        v.items("lstGuilds", d.guilds.iter().map(|g| g.name.clone()).collect());
-        v.text("lblWelcome", format!("Welcome to the {}'s Guild!", gd.name));
-        v.text("lblGuildMaster", "");
+        v.items("lstGuilds", shown.iter().map(|&k| if c.levels[k] > 0 { format!("{} ({})", d.guilds[k].name, c.levels[k]) } else { d.guilds[k].name.clone() }).collect());
+        v.text("lblWelcome", format!("{}{}{}", d.t(0x6621_4d79), gd.name, d.t(0x573f_816b)));
+        let (gm, gm_level) = g.hall.guildmaster(d, visit);
+        v.text("lblGuildMaster", if gm == c.name { d.t(0xc456_ef26).into() } else if gm.is_empty() { d.t(0x98d4_d73d).into() } else { format!(" {gm}{} {gm_level})", d.t(0x7c29_736d)) });
         let s0 = desk.rect(F, "lblStat(0)");
         let n0 = desk.rect(F, "lblStatName(0)");
         for (i, n) in ["Str", "Int", "Wis", "Con", "Cha", "Dex"].iter().enumerate() {
@@ -207,34 +220,56 @@ impl App {
             }
             v.text(&format!("lblStat({i})"), gd.stat_req[i].to_string()).text(&format!("lblStatName({i})"), *n);
         }
-        let lv = c.levels[visit];
-        let info = if visit == c.guild {
-            let (need, gold) = (c.xp_needed(d, t), ddj_rules::Tuning::level_gold(c.level(), gd.gold_factor));
-            match c.quest {
-                Some(m) => format!("You must slay a {} before making level {}.", d.monsters[m].name, c.level() + 1),
-                None => format!("Level {} needs {need} experience and {gold} gold.", c.level() + 1),
-            }
-        } else if lv > 0 {
-            format!("You are a level {lv} member. Join to make it your guild.")
-        } else {
-            format!("Joining costs {} gold.", c.join_cost(d, visit))
-        };
+        let (info, refused) = c.welcome(d, visit);
         v.text("lblWelcomeInfo", info);
-        v.enable("cmdMake", visit == c.guild).enable("cmdJoin", visit != c.guild).enable("cmdLog", false).enable("cmdLibrary", false);
+        if c.levels[visit] > 0 {
+            v.text("cmdJoin", d.t(0x242f_b009));
+        }
+        let (need, gold) = (c.xp_needed(d, t), ddj_rules::Tuning::level_gold(c.level(), d.guilds[c.guild].gold_factor));
+        let ready = c.xp[c.guild] >= need && c.gold + c.bank >= gold;
+        v.enable("cmdMake", visit == c.guild && ready).enable("cmdInfo", visit == c.guild).enable("cmdJoin", visit != c.guild && !refused);
+        v.enable("cmdLog", false).enable("cmdLibrary", false);
         let ev = desk.window(ctx, F, v, false);
         if ev.click("cmdVisit") || ev.double.as_deref() == Some("lstGuilds") {
-            desk.state(F, "visit").sel = desk.state(F, "lstGuilds").sel;
+            desk.state(F, "visit").sel = desk.state(F, "lstGuilds").sel.and_then(|i| shown.get(i).copied());
         }
-        let c = &mut g.party[sel];
         let mut msg = String::new();
         if ev.click("cmdMake") {
-            msg = c.make_level(d, t).unwrap_or_else(|e| e);
+            match g.party[sel].make_level(d, t) {
+                Ok(lines) => {
+                    let level = format!("{}\n{} {}!", d.t(CONGRATULATIONS), d.t(0x8061_d5d4), g.party[sel].level());
+                    self.boxes.push((d.t(0xe241_4a85).into(), level));
+                    g.log.extend(lines);
+                    self.boxes.extend(g.guildmaster(d, sel).into_iter().map(|(title, s)| (d.t(title).into(), s)));
+                }
+                Err((title, s)) => self.boxes.push((d.t(title).into(), s)),
+            }
         }
-        if ev.click("cmdJoin") {
-            msg = c.join(d, visit).unwrap_or_else(|e| e);
+        let c = &mut g.party[sel];
+        if ev.click("cmdJoin") && c.levels[visit] > 0 {
+            match c.join(d, visit) {
+                Ok(s) => msg = s,
+                Err(e) => self.boxes.push((d.t(0x8b3c_5ec6).into(), e)),
+            }
+        } else if ev.click("cmdJoin") {
+            let mut q = String::new();
+            if c.levels.iter().all(|&l| l < 10) {
+                q = format!("{}\n{}\n{}\n\n", d.t(0x62a6_019b), d.t(0x73b0_1cc7), d.t(0x5868_35bd));
+            }
+            q += &match c.join_cost(d, visit) {
+                0 => format!("{}{}{}", d.t(0xbb1b_80ba), gd.name, d.t(0x653f_9775)),
+                cost => format!("{}{}{}\n{}{}.\n{}", d.t(0xba63_2f98), gd.name, d.t(0xb607_c7e8), d.t(0x5809_706f), commas(cost), d.t(0xd43c_259a)),
+            };
+            self.dialog = Some(Dialog::Confirm(q, Deed::Join(sel, visit)));
         }
         if ev.click("cmdInfo") {
-            msg = format!("{} has {} experience; level {} needs {}.", c.name, c.xp[c.guild], c.level() + 1, c.xp_needed(d, t));
+            let have = d.t(0x10e9_c688);
+            let mut s = format!("{}{}{}\n{have}{}{}\n", d.t(0x193a_3c60), commas(need), d.t(0x0265_25a6), commas(c.xp[c.guild]), d.t(0xcd50_d9ab));
+            s += &format!("{}{}{}\n{have}{}{}\n", d.t(0xd55d_cc25), commas(gold), d.t(0x1aa5_7089), commas(c.gold + c.bank), d.t(0x1aa5_7089));
+            if let Some(m) = c.quest {
+                s += &format!("\n{}\n{}{}.\n", d.t(0x0e54_b26c), d.t(0x6cc2_654d), d.monsters[m].name);
+            }
+            self.boxes.push((d.t(0xc0e1_04e4).into(), s));
         }
         let done = ev.click("cmdExit") || ev.closed;
         if ev.clicked.is_some() {
@@ -293,7 +328,7 @@ impl App {
     }
 
     /// The Morgue: raise a member brought back, or hire rescuers for one lost below.
-    fn morgue(&mut self, desk: &mut Desk, ctx: &egui::Context) -> bool {
+    fn morgue(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData) -> bool {
         let g = self.game.as_mut().unwrap();
         let in_morgue = (0..g.party.len()).find(|&i| g.party[i].life == Life::InMorgue);
         let lost = (0..g.party.len()).find(|&i| matches!(g.party[i].life, Life::Dead(_)));
@@ -303,12 +338,14 @@ impl App {
         if ev.click("cmdCommand(0)")
             && let Some(i) = in_morgue
         {
-            self.dialog = Some(Dialog::Confirm(format!("Raise \"{}\" for {} gold?", g.party[i].name, g.raise_cost(i)), Deed::Raise(i)));
+            let q = format!("{}{}{}{}.\n{}", d.t(0x659b_51d7), g.party[i].name, d.t(0x9ef2_f919), commas(g.raise_cost(i)), d.t(0x954a_4cca));
+            self.dialog = Some(Dialog::Confirm(q, Deed::Raise(i)));
         }
         if ev.click("cmdCommand(3)")
             && let Some(i) = lost
         {
-            self.dialog = Some(Dialog::Confirm(format!("Hire rescuers to bring back \"{}\" for {} gold?", g.party[i].name, g.rescue_cost(i)), Deed::Rescue(i)));
+            let q = format!("{}{}{}{}.\n{}", d.t(0xe5ec_e427), commas(g.rescue_cost(i)), d.t(0xc3df_d96b), g.party[i].name, d.t(0x12bc_468a));
+            self.dialog = Some(Dialog::Confirm(q, Deed::Rescue(i)));
         }
         ev.click("cmdExit") || ev.closed
     }
@@ -362,7 +399,7 @@ impl App {
         if ev.click("cmdBuy")
             && let Some((m, _)) = picked
         {
-            msg = g.buy_companion(d, m).unwrap_or_else(|e| e);
+            msg = answer(&mut self.boxes, d, g.buy_companion(d, m));
         }
         if ev.click("cmdInfo")
             && let Some((m, _)) = picked
@@ -373,7 +410,13 @@ impl App {
         if ev.click("cmdBind")
             && let Some(k) = bind
         {
-            msg = g.rebind(d, k).unwrap_or_else(|e| e);
+            match g.rebind_offer(d, k) {
+                Ok((new, price)) => {
+                    let q = format!("{}{new}{}{}.\n{}", d.t(0x4095_a138), d.t(0x9ef2_f919), commas(price), d.t(0x954a_4cca));
+                    self.dialog = Some(Dialog::Confirm(q, Deed::Bind(k)));
+                }
+                Err(e) => self.boxes.push((d.t(0x3e5c_ab8c).into(), e)),
+            }
         }
         if ev.click("cmdSell")
             && let Some(k) = sell

@@ -10,7 +10,7 @@ use ddj_rules::{
     ai::{Act, Target},
     game::{self, Life},
     mdr::{GameData, square},
-    treasure,
+    monsters, treasure,
 };
 use eframe::egui::{self, Color32, Key};
 
@@ -27,9 +27,10 @@ impl App {
             let flags = if p.floor > 0 { d.floors[p.floor - 1].square(p.x, p.y).flags } else { 0 };
             let mut v = View::default();
             let here = g.party.iter().filter(|m| m.pos.floor == p.floor && m.pos.x == p.x && m.pos.y == p.y).count();
-            v.text("lblRoom", format!("{},{},{} {} [ {here} ]", p.x + 1, p.y + 1, p.floor, ["North", "East", "South", "West"][p.facing as usize]));
-            let notes: Vec<&str> = [(square::STAIRS_UP, "Stairs Up"), (square::STAIRS_DOWN, "Stairs Down"), (square::WATER, "Water"), (square::QUICKSAND, "Quicksand"), (square::FOG, "Fog"), (square::ANTI_MAGIC, "an Anti-Magic field"), (square::CHUTE, "a Chute")].iter().filter(|(b, _)| flags & b != 0).map(|x| x.1).collect();
-            v.text("lblSquareInfo", if notes.is_empty() { String::new() } else { format!("There are {} here.", notes.join(" and ")) });
+            v.text("lblRoom", format!("{},{},{} {} [ {here} ]", p.x + 1, p.y + 1, p.floor, d.t(game::DIRECTIONS[p.facing as usize])));
+            // What just happened on the square, else its stairs or chute (sub0835's lines).
+            let note = [(square::STAIRS_UP, 0xe21e_1250), (square::STAIRS_DOWN, 0x4228_c865), (square::CHUTE, 0x98e9_7440)].into_iter().find(|(b, _)| flags & b != 0).map_or("", |(_, w)| d.t(w));
+            v.text("lblSquareInfo", if g.said[game::SQUARE].is_empty() { note } else { &g.said[game::SQUARE] });
             // The buffer buttons, loaded side by side at run time.
             let b0 = desk.rect(F, "cmdBuffer(0)");
             for i in 0..10u16 {
@@ -43,8 +44,8 @@ impl App {
             v.show("picTrap", chest.is_some()).show("lblTrap", chest.is_some()).show("lblDisarm", chest.is_some());
             if let Some(c) = &chest {
                 let (_, pr) = treasure::disarm_chance(g, d, c);
-                let odds = if pr > 0.65 { "+++" } else if pr > 0.5 { "+" } else if pr > 0.35 { "*" } else { "-" };
-                v.text("lblTrap", if c.magic_lock { "Magically Locked".into() } else { c.guess.name().to_string() }).text("lblDisarm", format!("{odds} {}", "*".repeat(c.sure as usize)));
+                let odds = if pr > 0.5 { "+" } else if pr > 0.35 { "*" } else { "-" };
+                v.text("lblTrap", if c.magic_lock { d.t(0xcd46_ca10) } else { c.guess.name(d) }).text("lblDisarm", format!("{odds} {}", "*".repeat(c.sure as usize)));
             }
             v.enable("cmdAction(3)", chest.is_some() && g.fight.as_ref().is_none_or(|f| f.chest.is_none()));
             // The monster groups: up to four lines, "1. 2 Zombies".
@@ -59,15 +60,14 @@ impl App {
                 v.show("picMonGroups", true).show("lblCurrentGroup", true);
                 for (i, (m, n)) in groups.iter().take(4).enumerate() {
                     let k = format!("lblMonster({i})");
-                    v.show(&k, true).text(&k, format!("{}. {n} {}{}", i + 1, d.monsters[*m].name, if *n > 1 { "s" } else { "" }));
+                    v.show(&k, true).text(&k, format!("{}. {n} {}", i + 1, monsters::plural(d, *m, *n, g.lead().buffs.see_invisible)));
                     if f.peaceful {
                         v.fore(&k, Color32::from_rgb(0, 128, 0));
                     }
                 }
-                if let Some(last) = g.log.iter().rev().find(|l| !l.is_empty()) {
-                    v.show("lblCharacterHit", true).text("lblCharacterHit", last.clone());
-                }
             }
+            v.show("lblCharacterHit", true).text("lblCharacterHit", g.said[game::CHAR_HIT].clone());
+            v.show("lblMonsterHit", true).text("lblMonsterHit", g.said[game::MONSTER_HIT].clone());
             v.show("lblDead", g.lead().life != Life::Alive);
             let fog = flags & square::FOG != 0;
             let art_ref = self.art.as_ref();

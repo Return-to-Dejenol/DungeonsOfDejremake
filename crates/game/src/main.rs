@@ -62,8 +62,8 @@ enum Dialog {
     Confirm(String, Deed),
     /// The original's "Pickup Character": add a saved character to the party.
     Recruit,
-    /// A question for the Seer (character or monster name).
-    Seer,
+    /// A question for the Seer: the button asked (Character 0, Monster 2, Item 3).
+    Seer(u16),
     Macros(usize),
     /// Cloud saves: the server and the sync code.
     Sync,
@@ -76,6 +76,12 @@ enum Dialog {
 enum Deed {
     Raise(usize),
     Rescue(usize),
+    /// Party member, guild.
+    Join(usize, usize),
+    /// Bind the lead's companion tighter.
+    Bind(usize),
+    /// Party member, item slot.
+    Drop(usize, usize),
     /// Download and install a newer release.
     #[cfg(windows)]
     Update,
@@ -97,6 +103,8 @@ struct App {
     styled: bool,
     screen: Screen,
     dialog: Option<Dialog>,
+    /// Message boxes waiting their turn: title, text.
+    boxes: Vec<(String, String)>,
     /// The character the menu would run ("Run "Name""), once loaded.
     loaded: Option<String>,
     /// The city building whose window is open.
@@ -136,10 +144,9 @@ fn today() -> String {
 /// feats down the right, each a title over who set it and with what.
 fn hall(desk: &mut Desk, ctx: &egui::Context, d: &GameData) -> bool {
     const F: &str = "frmHall";
-    const STATS: [&str; 6] = ["Strength", "Intelligence", "Wisdom", "Constitution", "Charisma", "Dexterity"];
-    const TITLES: [&str; 12] = [
-        "Strongest", "Smartest", "Wisest", "Healthiest", "Most Attractive", "Quickest",
-        "Deadliest Creature Defeated", "Most Experienced Explorer", "Wealthiest Explorer", "Master of Fighting", "Master of Magic", "Master of Thieving",
+    // The records' titles (sub32F6), by text id.
+    const TITLES: [u32; 12] = [
+        0xa68a_b0ca, 0x328a_6f32, 0xf7a1_5d2a, 0x1ced_8872, 0x0f3f_3e3f, 0xd163_64c4, 0x333c_9c85, 0xaec6_cc75, 0xa4f5_b4b8, 0xb433_35de, 0x7722_e11f, 0x589c_b0ec,
     ];
     let h = Hall::load(&saves(), String::new());
     let mut v = View::default();
@@ -149,17 +156,17 @@ fn hall(desk: &mut Desk, ctx: &egui::Context, d: &GameData) -> bool {
         let top = (s0[3] + c0[3]) * i32::from(i);
         v.clone_rect(&format!("lbl{side}Stat(0)"), i, [s0[0], s0[1] + top, s0[2], s0[3]]);
         v.clone_rect(&format!("lbl{side}Char(0)"), i, [c0[0], c0[1] + top, c0[2], c0[3]]);
-        let set = r.date.as_ref().map_or("Set by Original RecordHolder ".into(), |t| format!("Set on {t} by "));
+        let set = r.date.as_ref().map_or(d.t(0xe302_134e).into(), |t| format!("{}{t}{}", d.t(0xd39e_c18c), d.t(0x4755_4eae)));
         let what = match j {
-            0..6 => format!("With a {} {}", r.value, STATS[j]),
-            6 => format!("Defeated a \"{}\"", d.monsters.iter().find(|m| i64::from(m.id) == r.value).map_or("(Unknown)", |m| &m.name)),
-            7 => format!("Having {} total experience", stats::commas(r.value)),
-            8 => format!("Having a total of {} gold in the Bank", stats::commas(r.value)),
-            9 => format!("Having a combined fighting skill of {}", r.value),
-            10 => format!("Having a spell knowledge && power of {}", r.value),
-            _ => format!("Having a total thieving skill of {}", r.value),
+            0..6 => format!("{}{} {}", d.t(0xf927_bada), r.value, d.t(game::STAT_NAMES[j])),
+            6 => format!("{}\"{}\"", d.t(0xa36f_fc2c), d.monsters.iter().find(|m| i64::from(m.id) == r.value).map_or(d.t(0xe277_bc82), |m| &m.name)),
+            7 => format!("{}{}{}", d.t(0x4f89_85d4), stats::commas(r.value), d.t(0xf6cd_1089)),
+            8 => format!("{}{}{}", d.t(0x2213_30c6), stats::commas(r.value), d.t(0x39b4_b767)),
+            9 => format!("{}{}", d.t(0x3254_fc96), r.value),
+            10 => format!("{}{}", d.t(0xc408_12fd), r.value),
+            _ => format!("{}{}", d.t(0x21c6_6425), r.value),
         };
-        v.text(&format!("lbl{side}Stat({i})"), TITLES[j]).text(&format!("lbl{side}Char({i})"), format!("{set}\"{}\"\n{what}", r.name));
+        v.text(&format!("lbl{side}Stat({i})"), d.t(TITLES[j])).text(&format!("lbl{side}Char({i})"), format!("{set}\"{}\"\n{what}", h.holder(d, j)));
     }
     let ev = desk.window(ctx, F, v, true);
     ev.click("cmdCommand(0)") || ev.closed
@@ -194,6 +201,12 @@ impl App {
             let _ = ddj_extract::import_files(vec![("MORDOR11.ZIP".into(), SHAREWARE.to_vec())], &dir);
             data = GameData::load(&dir).ok();
         }
+        // Data imported before the remake read the original's text: take it from the
+        // bundled shareware's MORDOR.EXE.
+        if data.as_ref().is_some_and(|d| d.text.is_empty()) {
+            let _ = ddj_extract::import_only(vec![("MORDOR11.ZIP".into(), SHAREWARE.to_vec())], &dir, "MORDOR.EXE");
+            data = GameData::load(&dir).ok();
+        }
         Self {
             tuning: load_tuning(),
             data,
@@ -202,6 +215,7 @@ impl App {
             styled: false,
             screen: Screen::Menu,
             dialog: None,
+            boxes: Vec::new(),
             loaded: None,
             building: None,
             draft: Draft { race: 0, female: false, alignment: 1, stats: [0; 6] },
@@ -278,7 +292,7 @@ impl App {
         g.hall = Hall::load(&saves(), today());
         for name in allies {
             if let Ok(a) = load(&name)
-                && let Err(e) = g.add_ally(a)
+                && let Err(e) = g.add_ally(d, a)
             {
                 g.log.push(e);
             }
@@ -303,7 +317,7 @@ impl App {
     /// experience.
     fn main_window(&mut self, desk: &mut Desk, ui: &mut egui::Ui, d: &GameData, t: &Tuning) {
         // The original's title: its name and version, "(Limited Version)" for the shareware.
-        let title = format!("Mordor 1.1{}", if d.floors.len() < 15 { " (Limited Version)" } else { "" });
+        let title = format!("Mordor 1.1{}", if d.floors.len() < 15 { d.t(0xd92c_9a48) } else { "" });
         let mut v = View::default();
         // The toolbar: hidden in design, shown across the top while playing, with the
         // party's gold and the experience still needed at its right.
@@ -315,7 +329,8 @@ impl App {
             let (lg, le) = (desk.rect("frmMain", "lblGold"), desk.rect("frmMain", "lblExperience"));
             let right = desk.screen.x as i32 - 4;
             v.rect("lblGold", [right - lg[2], lg[1], lg[2], lg[3]]).rect("lblExperience", [right - le[2], le[1], le[2], le[3]]);
-            v.text("lblGold", format!("You have a total of {} Gold.", stats::commas(gold))).text("lblExperience", format!("You need {} more experience for level {}.", stats::commas(need), c.level() + 1));
+            v.text("lblGold", format!("{}{}{}", d.t(0x336b_5380), stats::commas(gold), d.t(0xf4e9_3569)));
+            v.text("lblExperience", format!("{}{}{}{}.", d.t(0x9ca1_2838), stats::commas(need), d.t(0x87e5_d3e9), c.level() + 1));
         }
         let playing = self.game.is_some();
         for i in [1, 2, 3, 5, 7] {
@@ -335,9 +350,15 @@ impl App {
                 // 'P': pool the party's gold to the character shown.
                 if let Some(g) = self.game.as_mut() {
                     let sel = self.sel.min(g.party.len() - 1);
-                    let pooled: u64 = g.party.iter_mut().enumerate().filter(|(i, _)| *i != sel).map(|(_, m)| std::mem::take(&mut m.gold)).sum();
-                    g.party[sel].gold += pooled;
-                    let msg = format!("Pool of party's on-hand gold to \"{}\" completed!", g.party[sel].name);
+                    let msg = if g.party.len() == 1 {
+                        d.t(0x6a6b_6533).into()
+                    } else if g.fight.is_some() {
+                        d.t(0x5df7_32e1).into()
+                    } else {
+                        let pooled: u64 = g.party.iter_mut().enumerate().filter(|(i, _)| *i != sel).map(|(_, m)| std::mem::take(&mut m.gold)).sum();
+                        g.party[sel].gold += pooled;
+                        format!("{}\"{}\"{}", d.t(0x2928_069c), g.party[sel].name, d.t(0xb0af_31db))
+                    };
                     g.log.push(msg);
                     self.persist();
                 }
@@ -353,8 +374,8 @@ impl App {
     fn menu(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData) {
         let mut v = View::default();
         match &self.loaded {
-            Some(name) => v.text("cmdCommand(0)", format!("&Run \"{name}\"")).text("cmdCommand(7)", "&Unload Character"),
-            None => v.text("cmdCommand(0)", "&Create a Character").text("cmdCommand(7)", "&Load Character"),
+            Some(name) => v.text("cmdCommand(0)", format!("{}\"{name}\"", d.t(0x01d8_d032))).text("cmdCommand(7)", d.t(0xb029_33cd)),
+            None => v.text("cmdCommand(0)", d.t(0x976f_efad)).text("cmdCommand(7)", d.t(0xf9fb_4a36)),
         };
         for i in [1, 4, 5] {
             v.show(&format!("cmdCommand({i})"), self.loaded.is_some());
@@ -407,14 +428,14 @@ impl App {
     }
 
     /// "Load which character?": the original's Pickup Character window.
-    fn load_dialog(&mut self, desk: &mut Desk, ctx: &egui::Context) -> bool {
+    fn load_dialog(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData) -> bool {
         let names = game::saved(&saves());
         // The first character comes up chosen, as in the original.
         let st = desk.state("frmInteract", "cmbCharacter");
         st.sel = st.sel.filter(|&i| i < names.len()).or((!names.is_empty()).then_some(0));
         let mut v = View::default();
-        v.caption = Some("Load Character".into());
-        v.text("lblQuestion", "Load which character?").show("txtQuestion", false).show("cmbCharacter", true).items("cmbCharacter", names.clone());
+        v.caption = Some(d.t(0xfbee_e2ea).into());
+        v.text("lblQuestion", d.t(0x2df5_bd1c)).show("txtQuestion", false).show("cmbCharacter", true).items("cmbCharacter", names.clone());
         let ev = desk.window(ctx, "frmInteract", v, true);
         if ev.click("cmdOK") {
             self.loaded = desk.state("frmInteract", "cmbCharacter").sel.and_then(|i| names.get(i)).cloned().or(self.loaded.take());
@@ -445,8 +466,8 @@ impl App {
         let left = r.stat_points - dr.stats.iter().zip(base).map(|(s, b)| s - b).sum::<i16>();
         let mut v = View::default();
         v.items("cmbRace", d.races.iter().map(|r| r.name.clone()).collect());
-        v.items("cmbSex", vec!["Male".into(), "Female".into()]);
-        v.items("cmbAlignment", aligns.iter().map(|&a| ["Good", "Neutral", "Evil"][a as usize].to_string()).collect());
+        v.items("cmbSex", game::SEXES.iter().map(|&s| d.t(s).to_string()).collect());
+        v.items("cmbAlignment", aligns.iter().map(|&a| d.t(game::ALIGNMENTS[usize::from(a)]).to_string()).collect());
         v.text("lblPoints", left.to_string());
         // A stat may go down to the race's minimum, each step a point back, as in the original.
         for i in 0..6 {
@@ -488,9 +509,11 @@ impl App {
         }
         let name = desk.state(F, "txtName").text.trim().to_string();
         if ev.click("cmdSave") || (ctx.input(|i| i.key_pressed(egui::Key::Enter)) && !name.is_empty()) {
+            if name.is_empty() {
+                return self.boxes.push((d.t(0x921e_0cc4).into(), d.t(0xe39e_7d93).into()));
+            }
             if game::saved(&saves()).contains(&name) {
-                self.say("That name is taken.");
-                return;
+                return self.boxes.push((d.t(0x1606_cd29).into(), format!("{}\"{name}\"{}\n{}", d.t(0x2455_44d2), d.t(0x2e4d_ab6e), d.t(0xe341_caf9))));
             }
             match Character::new(d, &name, race, female, alignment, stats) {
                 // As the original: saved and loaded, back at the Main Menu to be run.
@@ -509,37 +532,73 @@ impl App {
 
     /// The window over everything else, if any.
     fn dialog(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData) {
+        if let Some(g) = self.game.as_mut() {
+            self.boxes.extend(g.boxes.drain(..).map(|(t, s)| (d.t(t).into(), s)));
+        }
+        if self.dialog.is_none() && !self.boxes.is_empty() {
+            let (title, text) = self.boxes.remove(0);
+            self.dialog = Some(Dialog::Msg(title, text));
+        }
         let Some(dlg) = self.dialog.clone() else { return };
         let close = match dlg.clone() {
             Dialog::Msg(title, text) => {
                 let mut v = View::default();
                 v.caption = Some(title);
+                desk.fit_msg(&text);
                 v.text("lblText", text);
                 let ev = desk.window(ctx, "dlgMsg", v, true);
                 ev.click("cmdOK") || ev.closed || ctx.input(|i| i.key_pressed(egui::Key::Enter))
             }
             Dialog::Delete(name) => {
                 let mut v = View::default();
-                v.caption = Some("Delete Character".into());
-                v.text("lblText", format!("Delete \"{name}\" for good?")).text("cmdOK", "&Yes").show("cmdNo", true);
+                v.caption = Some(d.t(0x0c8d_4e89).into());
+                let q = format!("{}{name}?", d.t(0x2e25_d27e));
+                desk.fit_msg(&q);
+                v.text("lblText", q).text("cmdOK", "&Yes").show("cmdNo", true);
                 let ev = desk.window(ctx, "dlgMsg", v, true);
                 if ev.click("cmdOK") {
                     let _ = fs::remove(saves().join(format!("{name}.json")));
                     self.sync.changed();
                     self.loaded = None;
+                    self.boxes.push((d.t(0x7c11_a13d).into(), d.t(0xedbd_5b0e).into()));
                 }
                 ev.click("cmdOK") || ev.click("cmdNo") || ev.closed
             }
             Dialog::Confirm(q, deed) => {
                 let mut v = View::default();
+                desk.fit_msg(&q);
                 v.text("lblText", q).text("cmdOK", "&Yes").show("cmdNo", true);
+                // The original's titles: JOIN GUILD, RAISE CHARACTER, Start Search?, Bind Companion.
+                let title = match deed {
+                    Deed::Join(..) => Some(0x705d_1626),
+                    Deed::Raise(_) => Some(0x80cc_be6c),
+                    Deed::Rescue(_) => Some(0x76da_125a),
+                    Deed::Bind(_) => Some(0x3e5c_ab8c),
+                    Deed::Drop(..) => Some(0x7a33_21db),
+                    #[cfg(windows)]
+                    Deed::Update => None,
+                };
+                v.caption = title.map(|t| d.t(t).into());
                 let ev = desk.window(ctx, "dlgMsg", v, true);
                 if ev.click("cmdOK")
                     && let Some(g) = self.game.as_mut()
                 {
                     match deed {
                         Deed::Raise(i) => g.raise(d, i),
-                        Deed::Rescue(i) => g.rescue(i),
+                        Deed::Rescue(i) => g.rescue(d, i),
+                        Deed::Drop(i, slot) => {
+                            g.party[i].items.remove(slot);
+                        }
+                        Deed::Bind(k) => {
+                            if let Err(e) = g.rebind(d, k) {
+                                self.boxes.push((d.t(0x3e5c_ab8c).into(), e));
+                            }
+                        }
+                        Deed::Join(i, guild) => match g.party[i].join(d, guild) {
+                            Ok(s) if !s.is_empty() => g.log.push(s),
+                            Ok(_) => {}
+                            Err(e) => self.boxes.push((d.t(0x8b3c_5ec6).into(), e)),
+                        },
                         #[cfg(windows)]
                         Deed::Update => {}
                     }
@@ -558,10 +617,10 @@ impl App {
             }
             Dialog::Hall => hall(desk, ctx, d),
             Dialog::Options => self.options(desk, ctx),
-            Dialog::Load => self.load_dialog(desk, ctx),
+            Dialog::Load => self.load_dialog(desk, ctx, d),
             Dialog::Import => self.import(desk, ctx),
-            Dialog::Recruit => self.recruit(desk, ctx),
-            Dialog::Seer => self.seer(desk, ctx, d),
+            Dialog::Recruit => self.recruit(desk, ctx, d),
+            Dialog::Seer(b) => self.seer(desk, ctx, d, b),
             Dialog::Macros(i) => self.macros(desk, ctx, d, i),
             Dialog::Sync => self.sync_dialog(desk, ctx),
             Dialog::Clash => self.clash(desk, ctx, d),

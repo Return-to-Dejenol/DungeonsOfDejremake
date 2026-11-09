@@ -144,7 +144,7 @@ impl R<'_> {
 pub const CP1252: [(u8, char); 9] = [(0x85, '…'), (0x91, '‘'), (0x92, '’'), (0x93, '“'), (0x94, '”'), (0x95, '•'), (0x96, '–'), (0x97, '—'), (0x99, '™')];
 
 /// Windows ANSI text.
-fn ansi(b: &[u8]) -> String {
+pub(crate) fn ansi(b: &[u8]) -> String {
     b.iter().map(|&c| CP1252.iter().find(|p| p.0 == c).map_or(char::from(c), |p| p.1)).collect()
 }
 

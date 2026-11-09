@@ -15,6 +15,7 @@ use zip::ZipArchive;
 
 pub mod forms;
 pub mod hlp;
+pub mod text;
 pub mod vfs;
 
 thread_local!(static ONLY: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) });
@@ -106,6 +107,7 @@ fn unzip<R: Read + Seek>(r: R, out: &Path, got: &mut Vec<String>) -> io::Result<
 /// Writes one file, expanding `COMPRESS.EXE` output (name ending in `_`).
 fn store(name: String, data: Vec<u8>, out: &Path, got: &mut Vec<String>) -> io::Result<()> {
     if name == "MORDOR.EXE" {
+        text::extract(&data, out, got)?;
         return forms::extract(&data, out, got);
     }
     let (name, data) = match name.strip_suffix('_') {
@@ -297,12 +299,14 @@ mod tests {
         let _ = fs::remove_dir_all(&out);
         let zip = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/MORDOR11.ZIP");
         let got = import(&zip, &out).unwrap();
-        for f in ["MDATA1.MDR", "MDATA11.MDR", "DUNGEON.MID", "MG11.DLL", "FORMS.JSON", "frmMenu_0.BMP"] {
+        for f in ["MDATA1.MDR", "MDATA11.MDR", "DUNGEON.MID", "MG11.DLL", "FORMS.JSON", "STRINGS.TXT", "frmMenu_0.BMP"] {
             assert!(got.iter().any(|g| g == f), "missing {f}");
         }
         assert_eq!(got.iter().filter(|g| g.ends_with(".MID")).count(), 16);
         assert!(got.iter().any(|g| g.ends_with(".WAV")));
         assert!(!got.iter().any(|g| g.ends_with(".EXE")));
+        // The guild's greeting for visitors, by its id.
+        assert!(text::load(&out).contains_key(&0x8f8c_71eb));
     }
 
     #[test]

@@ -3,7 +3,8 @@
 Decided 2026-11-02; cloud sync built 2026-11-05 (`crates/game/src/sync.rs`, `crates/sync-server`).
 
 - **One format everywhere.** The saves folder holds a JSON file per character, plus
-  `store.json` (the shared store stock) and `hall.json` (the Hall of Records). Desktop and
+  `store.json` (the shared store stock) and `hall.json` (the Hall of Records and the
+  Guildmasters). Desktop and
   Android keep them as files; the web keeps the same bytes in IndexedDB.
 - **Local is the source of truth.** The game never needs a network. Cloud saves are off
   until the player turns them on (Options, where the original had its file backups).

@@ -377,13 +377,22 @@ pub struct GameData {
     pub monsters: Vec<Monster>,
     pub spells: Vec<Spell>,
     pub floors: Vec<Floor>,
+    /// The original's text by id (ddj_extract::text), for what the remake shows.
+    pub text: std::collections::HashMap<u32, String>,
 }
 
 impl GameData {
     /// Reads the tables from an imported `gamedata/` folder.
     pub fn load(dir: &Path) -> io::Result<Self> {
         let f = |n: &str| fs::read(dir.join(n));
-        Self::parse(&f("MDATA1.MDR")?, &f("MDATA2.MDR")?, &f("MDATA3.MDR")?, &f("MDATA5.MDR")?, &f("MDATA11.MDR")?)
+        let mut d = Self::parse(&f("MDATA1.MDR")?, &f("MDATA2.MDR")?, &f("MDATA3.MDR")?, &f("MDATA5.MDR")?, &f("MDATA11.MDR")?)?;
+        d.text = ddj_extract::text::load(dir);
+        Ok(d)
+    }
+
+    /// The original's text with this id; "?" when the import lacks it.
+    pub fn t(&self, id: u32) -> &str {
+        self.text.get(&id).map_or("?", String::as_str)
     }
 
     pub fn parse(m1: &[u8], m2: &[u8], m3: &[u8], m5: &[u8], m11: &[u8]) -> io::Result<Self> {
@@ -515,7 +524,7 @@ impl GameData {
         let du = Mdr { b: m11, size: 20 };
         let floors = (1..=du.count(0)).map(|i| Floor::parse(&du, du.count(i).saturating_sub(1))).collect();
 
-        let mut d = Self { races, guilds, item_types, item_classes, monster_types, monster_families, items, monsters, spells, floors };
+        let mut d = Self { races, guilds, item_types, item_classes, monster_types, monster_families, items, monsters, spells, floors, text: Default::default() };
         crate::magic::add_remake_entries(&mut d);
         Ok(d)
     }

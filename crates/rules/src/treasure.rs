@@ -4,7 +4,7 @@
 
 use crate::{
     Tuning,
-    game::{Character, DEX, Game, INT, THIEVING, WIS},
+    game::{CHAR_HIT, Character, DEX, Game, INT, THIEVING, WIS},
     magic::{GREATER_POTION_OF_EXPERIENCE, POTION_OF_EXPERIENCE},
     mdr::{GameData, Monster, Words, square},
 };
@@ -29,8 +29,10 @@ pub const TRAPS: [Trap; 11] =
     [Trap::None, Trap::PoisonGas, Trap::DiseaseSpores, Trap::Exploding, Trap::Fire, Trap::Slime, Trap::Fate, Trap::Teleporter, Trap::Blackout, Trap::Fear, Trap::Withering];
 
 impl Trap {
-    pub fn name(self) -> &'static str {
-        ["Not Trapped", "Poison Gas", "Disease Spores", "Exploding", "Fire", "Slime", "Fate", "Teleporter", "Blackout", "Fear", "Withering"][self as usize]
+    /// The trap's name, the original's (sub038D's trap table).
+    pub fn name(self, d: &GameData) -> &str {
+        const NAMES: [u32; 11] = [0x0a64_0816, 0x4bf7_7b8c, 0xb104_52ed, 0x83ad_74f4, 0xc0a2_2e6c, 0x2bb2_3f7b, 0x943d_0e03, 0xde72_c5e9, 0xc5a0_fa68, 0x4d6a_e227, 0x10fe_09de];
+        d.t(NAMES[self as usize])
     }
 }
 
@@ -130,18 +132,16 @@ pub fn disarm_chance(g: &Game, d: &GameData, c: &Chest) -> (usize, f64) {
 
 /// After a fight the container stays in the room for the party to open.
 pub fn leave_chest(g: &mut Game, c: Chest) {
-    g.say(format!("The monsters left a {}{}.", if c.chest { "chest" } else { "box" }, if c.magic_lock { ", magically locked" } else { "" }));
     g.chest = Some(c);
 }
 
-pub fn unlock(g: &mut Game) {
+pub fn unlock(g: &mut Game, d: &GameData) {
     let c = g.fight.as_mut().and_then(|f| f.chest.as_mut()).or(g.chest.as_mut());
     match c {
         Some(c) if c.magic_lock => {
             (c.magic_lock, c.unlocked) = (false, true);
-            g.say("The magic lock springs open.");
         }
-        _ => g.say("There's nothing locked here."),
+        _ => g.say(d.t(0xc076_103c)),
     }
 }
 
@@ -154,13 +154,12 @@ pub fn open(g: &mut Game, d: &GameData, t: &Tuning, i: usize) {
         return;
     };
     if c.magic_lock {
-        return g.say("It is magically locked. Cast Charm of Opening.");
+        return;
     }
     let (best, _) = disarm_chance(g, d, &c);
     let who = if in_fight || i != 0 { i } else { best };
     let floor = g.pos().floor as u32;
     let skill = thieving(&g.party[who], d, d.monsters[c.monster].power_level, floor);
-    let name = g.party[who].name.clone();
     if in_fight {
         g.provoke();
         let f = g.fight.as_mut().unwrap();
@@ -170,7 +169,7 @@ pub fn open(g: &mut Game, d: &GameData, t: &Tuning, i: usize) {
         };
         if left > 0 {
             f.opening = Some((who, left));
-            return g.say(format!("{name} works at the {} ({left} more rounds).", if c.chest { "chest" } else { "box" }));
+            return g.tell(who, CHAR_HIT, format!("{}{left}{}", d.t(0x352e_284e), d.t(0x36cc_8329)), None);
         }
         f.opening = None;
         f.chest = None;
@@ -181,10 +180,9 @@ pub fn open(g: &mut Game, d: &GameData, t: &Tuning, i: usize) {
         if f64::from(g.party[who].d100()) <= skill {
             let lv = f64::from(g.party[who].level());
             let xp = (skill * f64::from(d.monsters[c.monster].power_level) / 2.0 / (1.0 + 3.0 * lv / 999.0) * (1.0 - 0.04 * (g.party.len() as f64 - 1.0))).round_ties_even() as u64;
-            let xp = g.party[who].add_xp(d, t, xp);
-            g.say(format!("{name} disarms the {} trap (+{xp} XP).", c.trap.name()));
+            g.party[who].add_xp(d, t, xp);
         } else {
-            g.say(format!("{name} sets off the {} trap!", c.trap.name()));
+            g.tell(who, CHAR_HIT, c.trap.name(d).into(), None);
             if spring(g, d, who, &c) {
                 return;
             }
@@ -216,7 +214,7 @@ fn spring(g: &mut Game, d: &GameData, who: usize, c: &Chest) -> bool {
             for j in g.living() {
                 let res = if c.trap == Trap::Fire { crate::monsters::resist(&g.party[j], d, 0) } else { 0 };
                 let dmg = ((g.party[j].rnd() * per * l * (l + 2.0).ln()).floor() + 1.0) * (1.0 - f64::from(res.clamp(0, 100)) / 200.0);
-                g.hurt(j, dmg as i32);
+                g.hurt(d, j, dmg as i32);
             }
         }
         Trap::Slime => {
@@ -225,7 +223,7 @@ fn spring(g: &mut Game, d: &GameData, who: usize, c: &Chest) -> bool {
                 let s = m.roll(40) as usize;
                 if s < m.items.len() && !(500..512).contains(&d.items[m.items[s].item].w(10)) && m.items[s].item != crate::game::HANDS {
                     let h = m.items.remove(s);
-                    g.say(format!("The slime eats {}!", d.items[h.item].name));
+                    g.say(format!("{}{}{}", d.t(0xc065_8cc9), d.items[h.item].name, d.t(0xc7c7_7f7d)));
                 }
             }
         }
@@ -245,7 +243,7 @@ fn spring(g: &mut Game, d: &GameData, who: usize, c: &Chest) -> bool {
         Trap::Blackout => g.party[who].buffs = Default::default(),
         Trap::Fear => {
             g.party[who].companions.retain(|c| c.bind >= 12);
-            g.say("The companions flee in terror.");
+            g.say(d.t(0xca8d_b82b));
         }
         Trap::Withering => g.party[who].age_days += 28,
         Trap::None => {}
@@ -256,7 +254,7 @@ fn spring(g: &mut Game, d: &GameData, who: usize, c: &Chest) -> bool {
 /// The gold (half again for a chest), then the items: d100 against the monster's item %
 /// (w66; -25 for a chest, worse if unlocked by spell), then a tenth of it for each more.
 fn loot(g: &mut Game, d: &GameData, c: &Chest) {
-    g.share_gold(if c.chest { c.gold * 3 / 2 } else { c.gold });
+    g.share_gold(d, if c.chest { c.gold * 3 / 2 } else { c.gold });
     let mon = &d.monsters[c.monster];
     let l = g.pos().floor as f64;
     let mut chance = i32::from(mon.item_chance);
@@ -266,7 +264,7 @@ fn loot(g: &mut Game, d: &GameData, c: &Chest) {
     }
     while r <= chance && chance > 0 {
         let item = random_item(&mut g.party[0], d, c.monster, c.chest);
-        g.give(d, item);
+        g.give(d, item, c.chest);
         r = g.party[0].d100();
         chance = (f64::from(mon.item_chance) / 10.0).round_ties_even() as i32;
     }

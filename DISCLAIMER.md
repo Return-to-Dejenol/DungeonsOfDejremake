@@ -29,7 +29,9 @@ game's copyrighted content, except the unmodified shareware package described un
 Otherwise they ship only original, project-authored code and assets.
 
 To play, a user supplies their **own copy** of the original game; the software
-then extracts the required data locally on the user's own device. This project
+then extracts the required data locally on the user's own device, including the
+original's on-screen messages, which the game reads from that copy (or the bundled
+shareware) rather than carrying them in its own code. This project
 neither distributes nor transmits the original game's copyrighted data, artwork,
 or audio in extracted or transformed form.
 

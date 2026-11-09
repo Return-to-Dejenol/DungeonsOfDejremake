@@ -7,11 +7,11 @@ use ddj_rules::{
     ai::{Act, Target},
     game::{self, Game, Life, Side},
     magic,
-    mdr::{GameData, square},
+    mdr::{GameData, Words, square},
 };
 use eframe::egui::{self, Color32, Painter, Rect, Stroke, pos2, vec2};
 
-use crate::{App, Dialog, Screen, win::{Desk, Drag, View}};
+use crate::{App, Deed, Dialog, Screen, win::{Desk, Drag, View}};
 
 const SEL_BACK: Color32 = Color32::from_rgb(0, 0, 128);
 
@@ -83,7 +83,7 @@ fn status(m: &game::Character) -> String {
         return "Dead".into();
     }
     let s = &m.status;
-    let ail: String = [(s.poison > 0, "Po"), (s.paralysis > 0, "Pa"), (s.disease > 0, "Di"), (s.stoned, "St")].iter().filter(|x| x.0).map(|x| x.1).collect();
+    let ail: String = [(s.poison > 0, "Po"), (s.disease > 0, "Di"), (s.paralysis > 0, "Pa"), (s.stoned, "St")].iter().filter(|x| x.0).map(|x| x.1).collect();
     if ail.is_empty() { "OK".into() } else { ail }
 }
 
@@ -151,39 +151,42 @@ impl App {
         let (a, df) = c.att_def(d, t);
         let rows: Vec<(String, String)> = match tab {
             0 => {
-                let mut r = vec![
-                    ("Age".into(), c.age().to_string()),
-                    ("Spells".into(), format!("{}/{}", commas(c.sp), commas(c.max_sp(d, t)))),
-                    ("Spell Level".into(), c.level().to_string()),
-                    ("Hits".into(), format!("{}/{}", commas(c.hp), commas(c.max_hp))),
-                    ("Att/Def".into(), format!("{a}/{df}")),
-                    ("Experience".into(), commas(c.xp[c.guild])),
-                    ("Gold".into(), commas(c.gold)),
-                ];
-                for (i, n) in ["Strength", "Intelligence", "Wisdom", "Constitution", "Charisma", "Dexterity"].iter().enumerate() {
-                    r.push(((*n).into(), c.stats[i].to_string()));
+                let mut r: Vec<(String, String)> = [
+                    (0x8ecb_e13c, c.age().to_string()),
+                    (0xcdfb_acee, format!("{}/{}", commas(c.sp), commas(c.max_sp(d, t)))),
+                    (0x24e4_7b2b, c.level().to_string()),
+                    (0xcae5_49bb, format!("{}/{}", commas(c.hp), commas(c.max_hp))),
+                    (0x26cb_6418, format!("{a}/{df}")),
+                    (0xace3_9749, commas(c.xp[c.guild])),
+                    (0x6c94_b6b3, commas(c.gold)),
+                ]
+                .into_iter()
+                .map(|(k, v)| (d.t(k).to_string(), v))
+                .collect();
+                for (i, &n) in game::STAT_NAMES.iter().enumerate() {
+                    r.push((d.t(n).into(), c.stats[i].to_string()));
                 }
                 r
             }
             1 => vec![("Resistances".into(), if c.buffs.resist == 0 { "None".into() } else { format!("{:b}", c.buffs.resist) })],
             2 => vec![
                 ("Race".into(), d.races[c.race].name.clone()),
-                ("Sex".into(), if c.female { "Female" } else { "Male" }.into()),
-                ("Alignment".into(), ["Good", "Neutral", "Evil"][c.alignment as usize].into()),
+                ("Sex".into(), d.t(game::SEXES[usize::from(c.female)]).into()),
+                ("Alignment".into(), d.t(game::ALIGNMENTS[usize::from(c.alignment)]).into()),
                 ("Bank".into(), commas(c.bank)),
                 ("Kills".into(), commas(c.kills)),
             ],
             3 => {
-                let mut r: Vec<(String, String)> = (0..d.guilds.len()).filter(|&i| c.levels[i] > 0).map(|i| (d.guilds[i].name.clone(), format!("Level {}", c.levels[i]))).collect();
-                for (i, n) in game::ABILITIES.iter().enumerate() {
-                    r.push(((*n).into(), format!("{:.0}", c.ability(d, i))));
+                let mut r: Vec<(String, String)> = (0..d.guilds.len()).filter(|&i| c.levels[i] > 0).map(|i| (format!("{} ({})", d.guilds[i].name, c.levels[i]), String::new())).collect();
+                for (i, &n) in game::ABILITIES.iter().enumerate() {
+                    r.push((d.t(n).into(), format!("{:.0}", c.ability(d, i))));
                 }
                 r
             }
             _ => {
                 let mut r = Vec::new();
                 if let Some(m) = c.quest {
-                    r.push(("Quest".into(), d.monsters[m].name.clone()));
+                    r.push((format!("{}{}.", d.t(0x6119_fc50), d.monsters[m].name), String::new()));
                 }
                 if c.buffs.xp_mult > 1.0 {
                     r.push(("Learning".into(), format!("{}x", c.buffs.xp_mult)));
@@ -192,7 +195,7 @@ impl App {
                     r.push(("Protection".into(), format!("+{}", c.buffs.protection)));
                 }
                 if c.buffs.levitate {
-                    r.push(("Levitating".into(), String::new()));
+                    r.push((d.t(0x5480_c8d4).into(), String::new()));
                 }
                 match c.life {
                     Life::Dead(p) => r.push(("Dead on level".into(), format!("{} at {},{}", p.floor, p.x + 1, p.y + 1))),
@@ -245,9 +248,10 @@ impl App {
             }
             v.text(&k, name).show(&k, on && tab == 0);
         }
-        v.text("lblRaceInfo", format!("{} {} ({})", if c.female { "Female" } else { "Male" }, d.races[c.race].name, ["Good", "Neutral", "Evil"][c.alignment as usize]));
+        v.text("lblRaceInfo", format!("{} {} ({})", d.t(game::SEXES[usize::from(c.female)]), d.races[c.race].name, d.t(game::ALIGNMENTS[usize::from(c.alignment)])));
         v.text("lblGuildInfo", format!("{} ({})", d.guilds[c.guild].name, c.level()));
-        v.text("elaGroupInfo", if g.party.len() > 1 { format!("In a party of {}", g.party.len()) } else { "You are Alone".into() });
+        // "Character 2 of 3", or "You are Alone".
+        v.text("elaGroupInfo", if g.party.len() > 1 { format!("{} {}{} {}", d.t(0xec73_40b0), sel + 1, d.t(0xd274_8962), g.party.len()) } else { d.t(0xb952_9b0d).into() });
         // Buffers: the original's ten quick slots, empty in the remake.
         let b0 = desk.rect(F, "lblBuffer(0)");
         for i in 0..10u16 {
@@ -329,7 +333,7 @@ impl App {
             let comp = c.companions.get(k);
             v.show(&format!("picCompanion({k})"), comp.is_some()).show(&format!("lblCompName({k})"), comp.is_some()).show(&format!("lblCompHits({k})"), comp.is_some());
             if let Some(cp) = comp {
-                v.text(&format!("lblCompName({k})"), d.monsters[cp.monster].name.clone()).text(&format!("lblCompHits({k})"), format!("{}/{}", cp.hp, cp.max_hp));
+                v.text(&format!("lblCompName({k})"), d.monsters[cp.monster].name.clone()).text(&format!("lblCompHits({k})"), format!("{}\\{}", cp.hp, cp.max_hp));
                 if let Some(a) = &self.art {
                     let (id, uv) = a.portrait(d.monsters[cp.monster].picture);
                     v.pic(&format!("picCompanion({k})"), id, uv);
@@ -355,9 +359,16 @@ impl App {
                 magic::use_item(g, d, t, sel, it);
             }
             (Some(2), Some(i)) if g.party[sel].items[i].item == game::HANDS => msg = "You can't drop your hands.".into(),
+            // As the original: guild items stay, a cursed one worn stays, else it asks.
             (Some(2), Some(i)) => {
-                let h = g.party[sel].items.remove(i);
-                msg = format!("{} dropped {}.", g.party[sel].name, magic::item_name(d, &h));
+                let h = &g.party[sel].items[i];
+                if (500..512).contains(&d.items[h.item].w(10)) {
+                    msg = d.t(0xd36b_3441).into();
+                } else if h.equipped && magic::cursed(d, h.item, g.party[sel].alignment) {
+                    msg = format!("{}{}{}", d.t(0x8d15_b95b), magic::item_name(d, h), d.t(0x3ddd_f38a));
+                } else {
+                    self.dialog = Some(Dialog::Confirm(format!("{}{}?", d.t(0x4663_7a95), magic::item_name(d, h)), Deed::Drop(sel, i)));
+                }
             }
             (Some(3), Some(i)) => {
                 let h = &g.party[sel].items[i];
@@ -468,7 +479,7 @@ impl App {
         let g = self.game.as_ref().unwrap();
         let p = g.pos();
         let mut v = View::default();
-        v.caption = Some(format!("Automap (Level {})", p.floor));
+        v.caption = Some(format!("{} {})", d.t(0x3ea0_825e), p.floor));
         let size = desk.size("frmAutoMap");
         let (w, h) = (size.x as i32, size.y as i32);
         v.show("hsbLevel", false).show("lblLevel", false).show("lblInfo", false);

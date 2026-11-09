@@ -99,6 +99,20 @@ container's children, 2 closes them, 3 is the next sibling, 4 ends the form. Pic
 are whole BMP (or ICO) files. The importer writes the forms to `FORMS.JSON` and their
 BMPs to `<form>_<n>.BMP`; see [ui.md](ui.md).
 
+## The original's text (MORDOR.EXE's string constants)
+
+The p-code keeps each string constant inline as <link:2><length:2><text>. The importer
+writes every printable run after a 16-bit length (1-1500 bytes, Windows-1252) to
+`STRINGS.TXT`, one a line: all of the program's constants and some harmless noise. The
+remake shows the original's words from there, naming each by its id, the 32-bit FNV-1a
+hash of its UTF-8 text (`ddj_extract::text::id`), so its source holds the ids, never the
+text. A sentence the original built from pieces is built from the same pieces, with the
+remake's numbers and names between them. To find an id, hash the exact piece, spaces
+included: `python -I scripts/re/textid.py "Not enough gold!"` (or `--find gold` to
+search the imported strings). The shareware MORDOR.EXE holds every constant but the registered version's
+ordering notices, and data imported before 2026-11-09 takes its text from the bundled
+shareware.
+
 ## Characters (MDATA4)
 
 Created at run time; MDATA9 lists the names. VB3 random-access records of 2900 bytes:

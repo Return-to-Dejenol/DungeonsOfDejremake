@@ -7,7 +7,7 @@ use crate::{
     mdr::Words,
     Tuning,
     ai::Target,
-    game::{Character, Game, Held, INT, Life, Pos, Status, WIS},
+    game::{CHAR_HIT, Character, Game, Held, INT, Life, Pos, Status, WIS},
     mdr::{GameData, Item, Spell, square},
 };
 
@@ -164,11 +164,11 @@ pub fn new_held(d: &GameData, item: usize, known: bool) -> Held {
     Held { item, equipped: false, charges, known }
 }
 
-/// Unidentified items show only their type, as in the original.
+/// An item's name, or the original's "Unidentified Item", with its charges.
 pub fn item_name(d: &GameData, h: &Held) -> String {
     let it = &d.items[h.item];
     let charges = if h.charges > 0 && consumable(d, h.item) { format!(" [{}]", h.charges) } else { String::new() };
-    if h.known { format!("{}{charges}", it.name) } else { format!("Unidentified {}{charges}", d.item_types.get(it.kind as usize).map_or("item", String::as_str)) }
+    format!("{}{charges}", if h.known { &it.name } else { d.t(0xee45_3c5e) })
 }
 
 fn target_ally(g: &Game, t: Target, caster: usize) -> usize {
@@ -181,11 +181,13 @@ fn target_ally(g: &Game, t: Target, caster: usize) -> usize {
 /// Casts spell `s` for member `i`.
 pub fn cast(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, target: Target) {
     if !castable(&g.party[i], d, t, s) {
-        return g.say(format!("{} can't cast that now.", g.party[i].name));
+        // MAINMOD2.mdrcharCheckCast's reasons.
+        let why = if g.party[i].sp < i32::from(d.spells[s].sp) { 0x08de_a3fd } else { 0x3218_29b9 };
+        return g.tell(i, CHAR_HIT, format!("{}\"{}\"!", d.t(why), d.spells[s].name), None);
     }
     let anti = g.floor(d).is_some_and(|f| f.square(g.pos().x, g.pos().y).flags & square::ANTI_MAGIC != 0);
     if anti {
-        return g.say("The square swallows the spell (anti-magic).");
+        return g.say(d.t(0x533a_0453));
     }
     g.party[i].sp -= i32::from(d.spells[s].sp);
     let p = power(&g.party[i], d, s);
@@ -199,9 +201,12 @@ pub fn use_item(g: &mut Game, d: &GameData, t: &Tuning, i: usize, item: usize) {
     // Only potions, scrolls, tomes and items that cast a spell can be used; a used-up
     // sword or artifact keeps its place at [0] (the store recharges it).
     if !matches!(it.kind, POTION | SCROLL | TOME) && item_spell(d, item).is_none() {
-        return g.say(format!("{name} can't use {}.", it.name));
+        return g.tell(i, CHAR_HIT, d.t(0x3ed9_504a).into(), None);
     }
-    let Some(slot) = g.party[i].items.iter().position(|h| h.item == item && (h.charges > 0 || consumable(d, item))) else { return g.say(format!("{} has no charges left.", it.name)) };
+    let Some(slot) = g.party[i].items.iter().position(|h| h.item == item && (h.charges > 0 || consumable(d, item))) else {
+        let named = format!("\"{name}\"{}", d.t(0x769d_d43e));
+        return g.tell(i, CHAR_HIT, d.t(0x8d26_48cf).into(), Some(named));
+    };
     g.party[i].items[slot].known = true;
     match it.id {
         POTION_OF_EXPERIENCE | GREATER_POTION_OF_EXPERIENCE => {
@@ -212,7 +217,6 @@ pub fn use_item(g: &mut Game, d: &GameData, t: &Tuning, i: usize, item: usize) {
         }
         _ if item_spell(d, item).is_some() => {
             let s = item_spell(d, item).unwrap();
-            g.say(format!("{name} uses {}.", it.name));
             let level = f32::from(d.spells[s].level) + 2.0;
             effect(g, d, t, i, s, level, Target::LowestAlly);
         }
@@ -223,14 +227,19 @@ pub fn use_item(g: &mut Game, d: &GameData, t: &Tuning, i: usize, item: usize) {
                 Some(st) => {
                     let cap = d.races[g.party[i].race].stat_max[st] + 5;
                     let c = &mut g.party[i];
+                    let was = c.stats[st];
                     c.stats[st] = (c.stats[st] + 1).min(cap);
-                    g.say(format!("{name}'s {} rises to {}.", crate::game::STATS[st], g.party[i].stats[st]));
+                    let (by, stat, female) = (c.stats[st] - was, d.t(crate::game::STAT_NAMES[st]), c.female);
+                    // MAINMOD2.mdrcharStatRaiseMessage
+                    let you = format!("{}{stat}{}{by}.", d.t(0x5736_375e), d.t(0x0ea0_01a2));
+                    let named = format!("\"{name}\"{}{}{stat}{}{by}.", d.t(0x3b35_7578), d.t(if female { 0xe43b_05c4 } else { 0x7dac_81f1 }), d.t(0xdc07_e37a));
+                    g.tell(i, CHAR_HIT, you, Some(named));
                 }
                 None if it.name.contains("Youth") => {
                     g.party[i].age_days = g.party[i].age_days.saturating_sub(365);
-                    g.say(format!("{name} feels a year younger."));
+                    g.tell(i, CHAR_HIT, d.t(0x7356_987a).into(), None);
                 }
-                None => g.say(format!("Nothing happens when {name} uses {}.", it.name)),
+                None => g.tell(i, CHAR_HIT, d.t(0x9080_da93).into(), Some(format!("\"{name}\"{}", d.t(0x8366_5842)))),
             }
         }
     }
@@ -247,7 +256,9 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f32, ta
     let caster = g.party[i].name.clone();
     let stat_bonus = |c: &Character, st: usize| 1.0 + 0.02 * f32::from((c.stats[st] - 15).max(0));
     let amount = |g: &mut Game| i32::from(sp.base) + g.party[i].roll((f32::from(sp.per_level.max(0)) * p) as u32 + 1) as i32;
-    g.say(format!("{caster} casts {}.", sp.name));
+    // Out of a fight, alone: the original's "Fireball" thrown.
+    let cast = if g.fight.is_none() && g.party.len() == 1 { format!("\"{}\"{}", sp.name, d.t(0x408b_8649)) } else { format!("{caster} casts {}.", sp.name) };
+    g.say(cast);
     if sp.id == CHARM_OF_EXPERIENCE {
         for m in g.party.iter_mut().filter(|m| m.alive()) {
             m.buffs.xp_mult = m.buffs.xp_mult.max(1.5);
@@ -261,8 +272,6 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f32, ta
             for j in who {
                 let m = &mut g.party[j];
                 m.hp = (m.hp + heal).min(m.max_hp);
-                let name = m.name.clone();
-                g.say(format!("{name} heals {heal}."));
             }
             return;
         }
@@ -275,8 +284,7 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f32, ta
                 10 => st.paralysis = 0,
                 _ => *st = Status::default(),
             }
-            let name = g.party[j].name.clone();
-            return g.say(format!("{name} is cured."));
+            return;
         }
         Some(Magic::Raise) => {
             let Some(j) = (0..g.party.len()).find(|&j| matches!(g.party[j].life, Life::Dead(_))) else { return };
@@ -284,10 +292,9 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f32, ta
                 let m = &mut g.party[j];
                 m.life = Life::Alive;
                 m.hp = if sp.effect == 22 { m.max_hp } else { 1 };
-                let name = m.name.clone();
-                g.say(format!("{name} lives again!"));
+                g.say(d.t(0x97b7_670b));
             } else {
-                g.say("The spell fails to take hold.");
+                g.say(d.t(0x8327_8e1b));
             }
             return;
         }
@@ -296,7 +303,7 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f32, ta
             for j in who {
                 g.party[j].buffs.protection = g.party[j].buffs.protection.max(5 + p as i32);
             }
-            return g.say("A shimmering shield surrounds you.");
+            return;
         }
         _ => {}
     }
@@ -306,30 +313,25 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f32, ta
             for j in who {
                 g.party[j].buffs.resist |= 1 << (sp.effect - 50);
             }
-            g.say("You feel protected.");
         }
         (_, 3 | 203) => {
             for m in g.party.iter_mut().filter(|m| m.alive()) {
                 m.buffs.levitate = true;
             }
-            g.say("You float above the floor.");
         }
         (_, 4 | 204) => {
             for m in g.party.iter_mut().filter(|m| m.alive()) {
                 m.buffs.protection = m.buffs.protection.max(4);
             }
-            g.say("The party fades from sight.");
         }
         (_, 5) => {
             g.party[i].buffs.see_invisible = true;
-            g.say("Your eyes tingle.");
         }
         (_, 7) => {
             let floor = g.pos().floor.max(1);
             let (x, y, f) = g.random_square(d, floor);
             g.fight = None;
             g.set_pos(d, Pos { x, y, floor: f, facing: g.pos().facing });
-            g.say("The party is teleported!");
         }
         (_, 8 | 9) => {
             // Displacement and Ethereal Portal: through the wall ahead. Into rock is death.
@@ -341,11 +343,9 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f32, ta
                 g.set_pos(d, Pos { x, y, ..pos });
                 if rock {
                     for j in g.living() {
-                        g.hurt(j, i32::MAX / 2);
+                        g.hurt(d, j, i32::MAX / 2);
                     }
-                    g.say("The party is fused with rock!");
-                } else {
-                    g.say("You pass through the wall.");
+                    g.say(d.t(0xf350_a09d));
                 }
             }
         }
@@ -353,72 +353,73 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f32, ta
             let Some(f) = g.floor(d) else { return };
             let pos = g.pos();
             let rock = crate::game::ahead(f, pos.x, pos.y, pos.facing).is_some_and(|(x, y)| f.square(x, y).flags & square::ROCK != 0);
-            g.say(if rock { "There is rock ahead." } else { "No rock ahead." });
+            g.say(d.t(if rock { 0x2e1c_8b23 } else { 0x69ab_64ec }));
         }
         (_, 12) => {
             let floor = g.pos().floor;
-            g.say(format!("You are on level {floor}."));
+            g.say(format!("{} {floor}.", d.t(0x5e6f_feb9)));
         }
         (_, 13) => {
             let pos = g.pos();
-            g.say(format!("You are at {},{} facing {}.", pos.x + 1, pos.y + 1, ["north", "east", "south", "west"][pos.facing as usize]));
+            g.say(format!("{}{}.", d.t(0x0b58_e5e4), d.t(crate::game::DIRECTIONS[pos.facing as usize])));
         }
         (_, 14 | 15) => {
+            // Locate: how far right, forward and down each lost member lies.
+            let at = g.pos();
             let lost: Vec<String> = g.party.iter().filter_map(|m| match m.life {
-                Life::Dead(p) => Some(format!("{} at {},{} on level {}", m.name, p.x + 1, p.y + 1, p.floor)),
+                Life::Dead(p) => Some(format!("\"{}\"{}{}{}{}{}{}.", m.name, d.t(0x245a_5613), p.x as i64 - at.x as i64, d.t(0x072c_223a), p.y as i64 - at.y as i64, d.t(0xba09_ee62), p.floor as i64 - at.floor as i64)),
                 _ => None,
             }).collect();
-            g.say(if lost.is_empty() { "You sense no lost souls.".into() } else { format!("You sense {}.", lost.join(", ")) });
+            if lost.is_empty() {
+                g.say("You sense no lost souls.");
+            }
+            lost.into_iter().for_each(|l| g.say(l));
         }
         (_, 16) => {
             let pos = g.pos();
             g.party[i].sanctuary = Some(pos);
-            g.say("This place is now your sanctuary.");
         }
-        (_, 17) => {
-            if let Some(to) = g.party[i].sanctuary {
+        (_, 17) => match g.party[i].sanctuary {
+            Some(to) => {
                 g.fight = None;
                 g.party[i].age_days += 365;
                 g.set_pos(d, to);
-                g.say("The party returns to its sanctuary.");
             }
-        }
+            None => g.say(format!("\"{}\"{}", d.t(0x1536_6ebd), d.t(0xd748_25b0))),
+        },
         (_, 19) => {
             // Fate: sometimes good, sometimes bad.
             let j = target_ally(g, Target::LowestAlly, i);
             if g.party[i].chance(0.5) {
                 let m = &mut g.party[j];
                 m.hp = m.max_hp;
-                g.say("Fate smiles on you.");
             } else {
                 let dmg = 1 + g.party[i].roll(10) as i32;
-                g.hurt(j, dmg);
-                g.say("Fate frowns.");
+                g.hurt(d, j, dmg);
             }
         }
         (_, 21) => {
             for m in &mut g.party {
                 m.status.stoned = false;
             }
-            g.say("Stone turns back to flesh.");
         }
-        (_, 30) => crate::treasure::unlock(g),
+        (_, 30) => crate::treasure::unlock(g, d),
         (7 | 8, _) => crate::monsters::charm(g, d, i, s, p),
         (11 | 12, 75..=86) => {
             g.provoke();
             let kind = sp.effect - 75;
             let Some(f) = g.fight.as_ref() else { return };
             let hits: Vec<usize> = f.alive().filter(|&fi| kind == 5 || d.monsters[f.foes[fi].monster].kind == kind).take(sp.targets.max(1) as usize).collect();
-            if hits.is_empty() {
-                return g.say("It has no effect on these monsters.");
-            }
+            let mut n = 0;
             for fi in hits {
                 let level = f32::from(d.monsters[g.fight.as_ref().unwrap().foes[fi].monster].level);
                 if g.party[i].chance(f64::from(0.6 + 0.05 * (p - level)).clamp(0.1, 0.95)) {
                     let hp = g.fight.as_ref().unwrap().foes[fi].hp;
-                    g.damage_foe(d, t, i, fi, hp, "banishes", 1.0);
+                    g.damage_foe(d, t, i, fi, hp, "banishes", None, 1.0);
+                    n += 1;
                 }
             }
+            g.said_cast(d, i, &sp.name, 0xeb9a_9c27, n, 0);
         }
         _ => offensive(g, d, t, i, s, p, target),
     }
@@ -439,6 +440,7 @@ fn offensive(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f32,
     // Sorcerers' elemental spells ignore half of a monster's resistance.
     let pierce = if g.party[i].guild == SORCERER && [0, 1, 2, 5].contains(&sp.class) { 0.5 } else { 1.0 };
     let wizard = g.party[i].guild == WIZARD && school(WIZARD, sp.class);
+    let (mut n, mut hurt, mut slept) = (0, 0, 0);
     for fi in hits {
         let Some(f) = g.fight.as_ref() else { return };
         if f.foes[fi].hp <= 0 {
@@ -451,21 +453,51 @@ fn offensive(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f32,
             if !g.party[i].chance(f64::from(resist)) {
                 g.fight.as_mut().unwrap().foes[fi].asleep = 2 + g.party[i].roll(3) as u16;
                 g.say(format!("The {} is overcome.", m.name));
+                slept += 1;
             }
             continue;
         }
         if sp.effect == 100 && g.party[i].chance(f64::from((0.25 + 0.04 * (p - f32::from(m.level))) * (1.0 - resist)).clamp(0.02, 0.8)) {
             let hp = f.foes[fi].hp;
-            if g.damage_foe(d, t, i, fi, hp, "slays", 1.0) && wizard {
+            if g.damage_foe(d, t, i, fi, hp, "slays", None, 1.0) && wizard {
                 restore_sp(g, d, t, i);
             }
+            n += 1;
             continue;
         }
         let base = i32::from(sp.base) + g.party[i].roll((f32::from(sp.per_level.max(0)) * p) as u32 + 1) as i32;
         let dmg = ((base as f32 * int_bonus * (1.0 - resist)) as i32).max(if resist >= 1.0 { 0 } else { 1 });
-        if g.damage_foe(d, t, i, fi, dmg, "blasts", 1.0) && wizard {
-            restore_sp(g, d, t, i);
+        if g.damage_foe(d, t, i, fi, dmg, "blasts", None, 1.0) {
+            n += 1;
+            if wizard {
+                restore_sp(g, d, t, i);
+            }
+        } else {
+            hurt = dmg;
         }
+    }
+    if slept > 0 {
+        g.said_cast(d, i, &sp.name, 0x298a_4cb9, slept, 0);
+    } else {
+        g.said_cast(d, i, &sp.name, 0x17f1_3590, n, hurt);
+    }
+}
+
+impl Game {
+    /// The controlled character's label after an attack spell (mdrcharCastSpell):
+    /// "You Killed Two!", "You Killed One and damaged one for 9!", "You damaged one for
+    /// 9!", or "You failed in casting "Fireball"!".
+    fn said_cast(&mut self, d: &GameData, i: usize, spell: &str, verb: u32, n: usize, hurt: i32) {
+        if i != 0 {
+            return;
+        }
+        let you = d.t(0x35d0_2f14);
+        self.said[CHAR_HIT] = match (n, hurt) {
+            (0, 0) => format!("{you}{}\"{spell}\"!", d.t(0x5d5d_7642)),
+            (0, h) => format!("{you}{} {h}!", d.t(0x30bb_da77)),
+            (n, 0) => format!("{you}{} {}!", d.t(verb), crate::game::count_word(d, n)),
+            (n, h) => format!("{you}{} {}{} {h}!", d.t(verb), crate::game::count_word(d, n), d.t(0xa013_c0c8)),
+        };
     }
 }
 

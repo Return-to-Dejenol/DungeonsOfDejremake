@@ -5,7 +5,7 @@
 use crate::{
     Tuning,
     ai::{self, Act, Target},
-    game::{BACKSTAB, CRITICAL, Character, DEX, Game, Held, Pos},
+    game::{BACKSTAB, CHAR_HIT, CRITICAL, Character, DEX, Game, Held, MONSTER_HIT, Pos},
     mdr::{GameData, Words},
     treasure::Chest,
 };
@@ -126,13 +126,12 @@ impl Game {
         let peaceful = crate::monsters::peaceful(self, data, m);
         let chest = crate::treasure::chest_for(self, data, m, lair);
         let gold = crate::treasure::gold(&mut self.party[0], mon, n, chest.as_ref().is_some_and(|c| c.magic_lock));
-        self.say(format!(
-            "You encounter {n} {}{}{}{}!",
-            mon.name,
-            if n > 1 { "s" } else { "" },
-            if peaceful { " (peaceful)" } else { "" },
-            if chest.is_some() { " guarding a chest" } else { "" }
-        ));
+        if peaceful {
+            // MONSMOD.monShowMonsters: "2 Dwarves offer to 'j'oin."
+            let offer = format!("{n} {}{}", crate::monsters::plural(data, m, n as usize, true), data.t(if n == 1 { 0xc1ae_c013 } else { 0x57df_86ca }));
+            self.said[MONSTER_HIT].clone_from(&offer);
+            self.say(offer);
+        }
         self.fight = Some(Fight { foes, round: 0, order: None, back, lair, peaceful, chest, defending: vec![false; self.party.len()], gold, opening: None });
     }
 
@@ -142,6 +141,7 @@ impl Game {
         let Some(f) = self.fight.as_mut() else { return };
         f.round += 1;
         f.defending = vec![false; self.party.len()];
+        (self.said[CHAR_HIT], self.said[MONSTER_HIT]) = Default::default();
         crate::monsters::turn_hostile(self, data);
         for i in 0..self.party.len() {
             if self.fight.as_ref().is_none_or(Fight::over) {
@@ -215,13 +215,11 @@ impl Game {
         {
             let p = (50 + 5 * (i32::from(data.monsters[m].stats[5]) - i32::from(self.party[0].stats[DEX]))).max(5);
             if self.party[0].d100() <= p {
-                self.say("The monsters strike as you turn to go!");
                 crate::monsters::attack(self, data, t);
             }
         }
         if self.fight.take().is_some() {
             self.set_pos(data, back);
-            self.say("You leave the way you came.");
         }
     }
 
@@ -231,7 +229,6 @@ impl Game {
             && f.peaceful
         {
             f.peaceful = false;
-            self.say("The monsters turn hostile!");
         }
     }
 
@@ -244,7 +241,7 @@ impl Game {
         };
         let name = self.party[i].name.clone();
         let Some(w) = self.party[i].weapon(data) else {
-            self.say(format!("{name} has no weapon, and defends."));
+            self.fought(i, data.t(0xa7e9_50ed).into(), format!("{name} has no weapon, and defends."));
             return self.defend(i);
         };
         let weapon = &data.items[w];
@@ -255,7 +252,7 @@ impl Game {
             let m = self.fight.as_ref().unwrap().foes[fi].monster;
             let mon = &data.monsters[m];
             if mon.flags & 32 != 0 || mon.flags & 16 != 0 && weapon.level < mon.level / 2 {
-                self.say(format!("{name}'s weapon has no effect on the {}!", mon.name));
+                self.fought(i, data.t(0xfb73_3c80).into(), format!("{name}'s weapon has no effect on the {}!", mon.name));
                 return self.defend(i);
             }
             let c = &mut self.party[i];
@@ -289,16 +286,17 @@ impl Game {
             mult += size_term(data, c, m);
             let dmg = swing(c, att, i32::from(mon.defense), flevel, c.melee_rating(), mult);
             if dmg == 0 {
-                self.say(format!("{name} misses the {}.", mon.name));
+                self.fought(i, data.t(0x0f2f_e6dc).into(), format!("{name} misses the {}.", mon.name));
                 return;
             }
-            let verb = match (critical, backstab) {
-                (true, true) => "severs",
-                (false, true) => "backstabs",
-                (true, false) => "critically hits",
-                _ => "hits",
+            // The label's words for a hit and for a kill (sub1019).
+            let (verb, you) = match (critical, backstab) {
+                (true, true) => ("severs", [0xb6db_bf47, 0x4921_99cb]),
+                (false, true) => ("backstabs", [0x44f6_b1dd, 0x5403_ca7d]),
+                (true, false) => ("critically hits", [0x9a6c_1c4c, 0x2989_57e6]),
+                _ => ("hits", [0x7c13_0ece, 0xdb82_b334]),
             };
-            if !self.damage_foe(data, t, i, fi, dmg, verb, 1.0) {
+            if !self.damage_foe(data, t, i, fi, dmg, verb, Some(you), 1.0) {
                 return;
             }
             match self.fight.as_ref().and_then(|f| f.pick(Target::First)) {
@@ -308,10 +306,20 @@ impl Game {
         }
     }
 
-    /// Applies damage to a foe, awards the dealer's XP and handles the kill. `share` is
-    /// the XP rate (companions earn a quarter for their master).
+    /// What member i did in a fight: the original's "You" words in the controlled
+    /// character's label, and the member's own line in Messages.
+    pub(crate) fn fought(&mut self, i: usize, you: String, line: String) {
+        if i == 0 {
+            self.said[CHAR_HIT] = you;
+        }
+        self.say(line);
+    }
+
+    /// Applies damage to a foe, awards the dealer's XP and handles the kill. `you` are
+    /// the label's words for a hit and for a kill; `share` is the XP rate (companions
+    /// earn a quarter for their master).
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn damage_foe(&mut self, data: &GameData, t: &Tuning, i: usize, fi: usize, dmg: i32, verb: &str, share: f64) -> bool {
+    pub(crate) fn damage_foe(&mut self, data: &GameData, t: &Tuning, i: usize, fi: usize, dmg: i32, verb: &str, you: Option<[u32; 2]>, share: f64) -> bool {
         let Some(f) = self.fight.as_mut() else {
             return false;
         };
@@ -322,7 +330,12 @@ impl Game {
         let xp = self.award(data, t, i, m, dealt, share);
         let name = self.party[i].name.clone();
         let mon = &data.monsters[m].name;
-        self.say(format!("{name} {verb} the {mon} for {dmg}{} (+{xp} XP)", if killed { " and kills it!" } else { "." }));
+        let line = format!("{name} {verb} the {mon} for {dmg}{} (+{xp} XP)", if killed { " and kills it!" } else { "." });
+        match you {
+            Some([_, kill]) if killed => self.fought(i, data.t(kill).into(), line),
+            Some([hit, _]) => self.fought(i, format!("{} {dmg}{}", data.t(hit), data.t(0x6434_a9bd)), line),
+            None => self.say(line),
+        }
         if killed {
             self.kill(data, i, m);
         }
@@ -350,19 +363,30 @@ impl Game {
         for j in self.living() {
             if self.party[j].quest == Some(monster) {
                 self.party[j].quest = None;
-                let name = self.party[j].name.clone();
-                self.say(format!("{name} has completed the guild's quest!"));
+                let line = if self.party.len() == 1 {
+                    data.t(0xaafc_760f).into()
+                } else {
+                    format!("{}{}{}{}", self.quoted(j), data.t(0xafaf_3048), data.t(if self.party[j].female { 0xf4b4_8d8c } else { 0xfdd2_b0cb }), data.t(0x92a3_3eda))
+                };
+                self.say(line);
             }
         }
     }
 
-    /// Gold split evenly among the living (the original's divvying up).
-    pub(crate) fn share_gold(&mut self, gold: u64) {
+    /// Gold split evenly among the living (the original's divvying up), each told its
+    /// share (MONSMOD.monGetGold).
+    pub(crate) fn share_gold(&mut self, data: &GameData, gold: u64) {
         let living = self.living();
+        let share = gold / living.len().max(1) as u64;
         for &j in &living {
-            self.party[j].gold += gold / living.len().max(1) as u64;
+            self.party[j].gold += share;
+            if share > 0 {
+                self.tell(j, CHAR_HIT, format!("{}{share}{}", data.t(0x4982_d859), data.t(0xfde9_4394)), None);
+            }
         }
-        self.say(format!("The party finds {gold} gold."));
+        if share == 0 {
+            self.said[CHAR_HIT] = data.t(0x66b0_fe6a).into();
+        }
     }
 
     fn win(&mut self, _data: &GameData, _t: &Tuning) {
@@ -370,28 +394,29 @@ impl Game {
         let Pos { x, y, floor, .. } = self.pos();
         let area = _data.floors[floor - 1].square(x, y).area;
         self.cleared.push((floor, area));
-        self.say("The room is clear.");
         match f.chest {
             // A container keeps the gold until it is opened.
             Some(mut chest) => {
                 chest.gold = f.gold;
                 crate::treasure::leave_chest(self, chest);
             }
-            None => self.share_gold(f.gold),
+            None => self.share_gold(_data, f.gold),
         }
     }
 
     /// Gives an item to the first living member with room; what they know of it follows
     /// the original's identification roll.
-    pub(crate) fn give(&mut self, data: &GameData, item: Option<usize>) {
+    pub(crate) fn give(&mut self, data: &GameData, item: Option<usize>, chest: bool) {
         let Some(item) = item else { return };
         let Some(j) = self.living().into_iter().find(|&j| self.party[j].items.len() < 40) else {
-            return self.say("An item was found, but nobody had room to carry it.");
+            return self.say(data.t(0x2ec8_5095));
         };
         let known = crate::treasure::identifies(&self.party[j], data, item);
         let held: Held = crate::magic::new_held(data, item, known);
-        let name = self.party[j].name.clone();
-        self.say(format!("{name} finds {}!", crate::magic::item_name(data, &held)));
+        // MONSMOD.monOpenChest: "CHEST: Slot #3, Dagger", by name in a party.
+        let found = format!("{}{}{}{}{}", data.t(if chest { 0x3e05_53f6 } else { 0xd5cb_7ed2 }).to_uppercase(), data.t(0xdc80_56b6), self.party[j].items.len() + 1, data.t(0x89d0_00f1), crate::magic::item_name(data, &held));
+        let line = if self.party.len() == 1 { found } else { format!("{}{}{found}", self.quoted(j), data.t(0x9918_0f02)) };
+        self.say(line);
         self.party[j].items.push(held);
     }
 }

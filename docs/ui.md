@@ -51,6 +51,33 @@ Taken while building; reviewed at play-test.
   No menu bar or printing; a secondary window widens to show a whole table, where
   WinHelp let the player resize it.
 
+- **Guilds** (2026-11-09) speak the original's words, read from MORDOR.EXE
+  (formats.md "The original's text"): the welcome and refusals, "Join"/"Re-Acquaint",
+  the join question with its cost, Exp. Info, and the make-level boxes. The list shows
+  only the guilds that take the character's race and alignment, with its levels. Each
+  guild's Guildmaster starts as the original's (Crashland, level 64, for the Nomads...);
+  a character who makes a higher level takes over, in `hall.json`, and gets the guild's
+  Crest. The original's guild log and the forfeit of a quest when pinned aren't built.
+
+- **Messages** (2026-11-09) are the original's words wherever the remake does what the
+  original did, read from MORDOR.EXE like the guilds'. As the original, the dungeon
+  window's lblCharacterHit, lblMonsterHit and lblSquareInfo tell the controlled
+  character's news as "You hit for 7 damage!", "2 Zombies hit for 13!", "You have fallen
+  into a pit for 5 hits."; the Messages window keeps a line for every member (the
+  original's named form where it has one, else the quoted name and the "You" words, and
+  the remake's own lines for fight actions). The stores', morgue's, Holding's and Seer's
+  refusals and questions are the original's titled message boxes ("Not enough gold!",
+  BUY ITEM). Lines for what the original did silently or showed elsewhere are gone
+  (descending, stairs, a cleared room, a sale, healing, buffs); the remake's own
+  features keep theirs. Also the original's: trap and ability names, full stat names,
+  monster plurals (fn0E23), "Character 2 of 3", the Hall of Records' words and its
+  holders, the creation and delete boxes, the main window's lines.
+- **Not matched yet**, where the remake's rules differ: the Seer's per-target fees and
+  its asking first, rescue by coordinates, raising when the dead character is run, Exit
+  from anywhere, level titles in lblGuildInfo, the character list's level, guild and
+  status, item alignment markers, "points left" at creation, the spell verbs by kind
+  ("Fried", "Froze"), the guild log, and the bank's item slots.
+
 ## Not done yet
 
 - Buffers 1-10 and Pickup/Drop look as in the original but only say they aren't in the
