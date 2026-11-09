@@ -4,8 +4,12 @@ import android.app.NativeActivity;
 import android.content.ClipData;
 import android.content.Intent;
 import android.database.Cursor;
+import android.graphics.Rect;
 import android.net.Uri;
+import android.os.Build;
 import android.provider.OpenableColumns;
+import android.view.View;
+import android.view.WindowInsets;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -14,6 +18,18 @@ import java.io.OutputStream;
 /** The game's activity. The game calls pick() to choose the player's own copy of the
  *  original; the chosen files are copied to files/picked/, where the game reads them. */
 public class Main extends NativeActivity {
+    /** The on-screen keyboard's height in pixels; 0 while it's hidden. */
+    public int keyboard() {
+        View root = getWindow().getDecorView();
+        if (Build.VERSION.SDK_INT >= 30) {
+            WindowInsets w = root.getRootWindowInsets();
+            return w == null ? 0 : w.getInsets(WindowInsets.Type.ime()).bottom;
+        }
+        Rect r = new Rect();
+        root.getWindowVisibleDisplayFrame(r);
+        return Math.max(0, root.getHeight() - r.bottom);
+    }
+
     public void pick() {
         runOnUiThread(new Runnable() {
             public void run() {

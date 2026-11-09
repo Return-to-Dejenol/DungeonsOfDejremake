@@ -8,5 +8,5 @@ $root = Split-Path $PSScriptRoot -Parent
 $version = (Select-String -Path "$root/crates/game/Cargo.toml" -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
 & "$PSScriptRoot/build-installer.ps1"
 & "$PSScriptRoot/build-apk.ps1"
-gh release create "v$version" "$root/target/installer/DejenolRestoration-Setup-$version.exe" "$root/target/android/DejenolRestoration-$version.apk" --repo silvariasereneblossom/DungeonsOfDejremake --target (git -C $root rev-parse HEAD) --title "Dejenol Restoration Project $version" --notes $Notes
+gh release create "v$version" "$root/target/installer/DejenolRestoration-Setup-$version.exe" "$root/target/android/DejenolRestoration-$version.apk" --repo Return-to-Dejenol/DungeonsOfDejremake --target (git -C $root rev-parse HEAD) --title "Dejenol Restoration Project $version" --notes $Notes
 if ($LASTEXITCODE) { throw 'gh release create failed' }

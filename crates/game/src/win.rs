@@ -57,6 +57,7 @@ pub struct View<'a> {
     drags: HashMap<String, Drag>,
     rects: HashMap<String, [i32; 4]>,
     bolds: std::collections::HashSet<String>,
+    tab_h: HashMap<String, f32>,
     paints: Vec<(String, PaintFn<'a>)>,
     /// Control-array members the original loaded at run time: (base key, new index,
     /// rect in the parent, or None to keep the base's).
@@ -107,6 +108,11 @@ impl<'a> View<'a> {
     /// Moves or resizes a control, as the original's code did at run time.
     pub fn rect(&mut self, k: &str, r: [i32; 4]) -> &mut Self {
         self.rects.insert(k.into(), r);
+        self
+    }
+    /// A tab strip's row height, taller than the original's 17 for touch.
+    pub fn tab_height(&mut self, k: &str, h: f32) -> &mut Self {
+        self.tab_h.insert(k.into(), h);
         self
     }
     pub fn drag(&mut self, k: &str, d: Drag) -> &mut Self {
@@ -261,6 +267,17 @@ pub struct Desk {
     org: Pos2,
     /// The main window's MDI area, in virtual pixels.
     pub client: Rect,
+    /// The virtual desktop: 800x600 on Windows; on phones and the web it fills the
+    /// screen, and is `wide` when the three-column layout fits bigger.
+    pub screen: Vec2,
+    pub wide: bool,
+    /// The layout the play windows were arranged for (wide or not).
+    pub arranged: Option<bool>,
+    /// A touch screen: bigger targets for the smallest controls.
+    pub touch: bool,
+    /// The on-screen keyboard's height (points), and the bottom of the text box typed in.
+    pub keyboard: f32,
+    typing_at: Option<f32>,
     /// The window last clicked, drawn with an active title bar.
     pub active: Option<String>,
     ctx: egui::Context,
@@ -283,16 +300,37 @@ impl Desk {
             s: 1.0,
             org: Pos2::ZERO,
             client: Rect::from_min_size(pos2(0.0, 50.0), vec2(800.0, 550.0)),
+            screen: SCREEN,
+            wide: false,
+            arranged: None,
+            keyboard: 0.0,
+            typing_at: None,
+            touch: cfg!(target_os = "android") || std::env::var_os("DDJ_MOBILE").is_some(),
             active: None,
             ctx: ctx.clone(),
         })
     }
 
-    /// Fits the 800x600 desktop to the screen; call once a frame before any window.
-    pub fn begin(&mut self, screen: Rect) -> Painter {
+    /// Fits the desktop to the screen; call once a frame before any window. With `wide`
+    /// (the three-column layout's size) the desktop grows to fill the screen.
+    pub fn begin(&mut self, screen: Rect, wide: Option<Vec2>) -> Painter {
+        let a = screen.width() / screen.height().max(1.0);
+        let fit = |n: Vec2| (screen.width() / n.x).min(screen.height() / n.y);
+        let fill = |n: Vec2| vec2(n.x.max(n.y * a), n.y.max(n.x / a));
+        self.wide = wide.is_some_and(|w| fit(w) > fit(SCREEN));
+        self.screen = match wide {
+            Some(w) if self.wide => fill(w),
+            Some(_) => fill(SCREEN),
+            None => SCREEN,
+        };
+        self.touch |= self.ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Touch { .. })));
         // A window not laid out yet has no size; keep a usable scale until it has.
-        self.s = (screen.width() / SCREEN.x).min(screen.height() / SCREEN.y).max(0.1);
-        self.org = screen.center() - SCREEN * self.s / 2.0;
+        self.s = fit(self.screen).max(0.1);
+        self.org = screen.center() - self.screen * self.s / 2.0;
+        // Lift the desktop until the text box typed in shows above the keyboard.
+        if let Some(y) = self.typing_at.filter(|_| self.keyboard > 0.0) {
+            self.org.y -= (self.org.y + y * self.s - (screen.bottom() - self.keyboard)).max(0.0);
+        }
         let p = self.ctx.layer_painter(egui::LayerId::background());
         p.rect_filled(screen, 0.0, Color32::BLACK);
         p
@@ -374,13 +412,14 @@ impl Desk {
         let Some(f) = self.forms.get("frmMain").cloned() else { return Ev::default() };
         let p = ui.painter().clone();
         let cv = Cv { p: p.clone(), o: self.org, s: self.s };
-        cv.fill(0.0, 0.0, SCREEN.x, SCREEN.y, SHADOW);
-        cv.fill(0.0, 0.0, SCREEN.x, CAPTION, NAVY);
+        let screen = self.screen;
+        cv.fill(0.0, 0.0, screen.x, screen.y, SHADOW);
+        cv.fill(0.0, 0.0, screen.x, CAPTION, NAVY);
         self.label_text(&cv, Rect::from_min_size(pos2(4.0, 0.0), vec2(700.0, CAPTION)), &Ft { name: "MS Sans Serif".into(), size: 8.25, bold: true, italic: false }, title, Color32::WHITE, 0, true, false);
         let bar = f.controls.iter().find(|c| c.name == "picToolbar").map_or(32.0, |c| c.rect[3] as f32);
-        self.client = Rect::from_min_size(pos2(0.0, CAPTION + bar), vec2(SCREEN.x, SCREEN.y - CAPTION - bar));
+        self.client = Rect::from_min_size(pos2(0.0, CAPTION + bar), vec2(screen.x, screen.y - CAPTION - bar));
         let bar = if v.shown.get("picToolbar") == Some(&true) { bar } else { 0.0 };
-        self.client = Rect::from_min_size(pos2(0.0, CAPTION + bar), vec2(SCREEN.x, SCREEN.y - CAPTION - bar));
+        self.client = Rect::from_min_size(pos2(0.0, CAPTION + bar), vec2(screen.x, screen.y - CAPTION - bar));
         // The MDI area is tiled with the stone picture the original kept on picPalette.
         let stone = f.controls.iter().find(|c| c.name == "picPalette").and_then(|c| num(&c.props, "Picture")).and_then(|n| self.pic("frmMain", n));
         if let Some((tex, size)) = stone {
@@ -391,7 +430,7 @@ impl Desk {
         }
         let mut ev = Ev::default();
         let origin = pos2(0.0, CAPTION);
-        self.draw(ui, &f, origin, vec2(SCREEN.x, bar), v, &mut ev);
+        self.draw(ui, &f, origin, vec2(screen.x, bar), v, &mut ev);
         ev
     }
 
@@ -407,9 +446,9 @@ impl Desk {
         let (b, cap) = Self::frame(&f);
         let outer = self.outer(form);
         let at = *self.pos.entry(form.to_string()).or_insert_with(|| {
-            if dialog { (SCREEN - outer).to_pos2() / 2.0 } else { pos2(f.rect[0] as f32, f.rect[1] as f32) }
+            if dialog { (self.screen - outer).to_pos2() / 2.0 } else { pos2(f.rect[0] as f32, f.rect[1] as f32) }
         });
-        let bounds = if dialog { Rect::from_min_size(Pos2::ZERO, SCREEN) } else { self.client };
+        let bounds = if dialog { Rect::from_min_size(Pos2::ZERO, self.screen) } else { self.client };
         let at = pos2(at.x.clamp(bounds.left(), (bounds.right() - outer.x).max(bounds.left())), at.y.clamp(bounds.top(), (bounds.bottom() - outer.y).max(bounds.top())));
         let mut ev = Ev::default();
         let order = if dialog { egui::Order::Foreground } else { egui::Order::Middle };
@@ -676,7 +715,7 @@ impl Desk {
                 let st = self.state(form, k).tab.min(tabs.len().saturating_sub(1));
                 let per = (num(pr, "TabsPerPage").unwrap_or(tabs.len() as i64).max(1) as usize).min(tabs.len().max(1));
                 let rows = tabs.len().div_ceil(per);
-                let (th, tw) = (17.0, ((w - 4.0) / per as f32).floor());
+                let (th, tw) = (v.tab_h.get(k).copied().unwrap_or(17.0), ((w - 4.0) / per as f32).floor());
                 let front = st / per;
                 cv.fill(x, y, w, h, FACE);
                 cv.edge(x, y + th * rows as f32, w, h - th * rows as f32, true);
@@ -731,6 +770,7 @@ impl Desk {
                 let shown = st.text.clone() + if focused && (ui.input(|i| i.time) * 2.0) as i64 % 2 == 0 { "|" } else { "" };
                 self.label_text(cv, Rect::from_min_size(pos2(x + 4.0, y), vec2(w - 6.0, h)), &ft, &shown, ink, 0, true, false);
                 if focused {
+                    self.typing_at = Some((cv.r(r).bottom() - self.org.y) / self.s + 4.0);
                     // Text input wanted here: a phone's on-screen keyboard, an IME's window.
                     let rect = cv.r(Rect::from_min_size(pos2(x, y), vec2(w, h)));
                     let cursor_rect = Rect::from_min_size(rect.right_top(), vec2(1.0, rect.height()));
@@ -906,6 +946,13 @@ impl Desk {
     #[allow(clippy::too_many_arguments)]
     fn scrollbar(&mut self, ui: &mut egui::Ui, cv: &Cv, id: egui::Id, r: Rect, pos: usize, max: usize, page: usize) -> usize {
         let vertical = r.height() > r.width();
+        // On touch, a thicker bar: over the list to its left, or either side if across.
+        const T: f32 = 26.0;
+        let r = match (self.touch, vertical) {
+            (false, _) => r,
+            (true, true) => r.with_min_x(r.max.x - T.max(r.width())),
+            (true, false) => r.expand2(vec2(0.0, (T - r.height()).max(0.0) / 2.0)),
+        };
         let (len, thick) = if vertical { (r.height(), r.width()) } else { (r.width(), r.height()) };
         let along = |a: f32, l: f32| if vertical { Rect::from_min_size(pos2(r.left(), r.top() + a), vec2(thick, l)) } else { Rect::from_min_size(pos2(r.left() + a, r.top()), vec2(l, thick)) };
         cv.fill(r.left(), r.top(), r.width(), r.height(), Color32::from_gray(224));
@@ -1199,7 +1246,7 @@ impl Cv {
         for k in 0..4 {
             let k = k as f32;
             let (a, b) = match dir {
-                0 => (pos2(c.x - 3.0 + k, c.y - 2.0 + k), pos2(c.x + 4.0 - k, c.y - 2.0 + k)),
+                0 => (pos2(c.x - 3.0 + k, c.y + 1.0 - k), pos2(c.x + 4.0 - k, c.y + 1.0 - k)),
                 2 => (pos2(c.x - 3.0 + k, c.y - 1.0 + k), pos2(c.x + 4.0 - k, c.y - 1.0 + k)),
                 1 => (pos2(c.x - 1.0 + k, c.y - 3.0 + k), pos2(c.x - 1.0 + k, c.y + 4.0 - k)),
                 _ => (pos2(c.x + 1.0 - k, c.y - 3.0 + k), pos2(c.x + 1.0 - k, c.y + 4.0 - k)),

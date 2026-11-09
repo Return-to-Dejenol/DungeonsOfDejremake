@@ -40,6 +40,18 @@ pub fn choose() {
     });
 }
 
+/// The on-screen keyboard's height in pixels; 0 while it's hidden.
+pub fn keyboard() -> f32 {
+    let Some(app) = APP.get() else { return 0.0 };
+    // SAFETY: as in `choose`.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) };
+    vm.attach_current_thread(|env| -> jni::errors::Result<i32> {
+        let activity = unsafe { JObject::from_raw(env, app.activity_as_ptr().cast()) };
+        env.call_method(&activity, jni_str!("keyboard"), jni_sig!(() -> jint), &[])?.i()
+    })
+    .map_or(0.0, |h| h as f32)
+}
+
 /// The files the picker copied into `files/picked/`, as (name, contents), once there.
 pub fn picked() -> Option<Vec<(String, Vec<u8>)>> {
     let dir = APP.get()?.internal_data_path()?.join("picked");

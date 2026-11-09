@@ -7,7 +7,7 @@ use std::{fs, io, path::Path, process::Command, sync::mpsc, thread};
 use eframe::egui;
 
 /// The latest release (`DDJ_UPDATE_URL` stands in for testing).
-const LATEST: &str = "https://api.github.com/repos/silvariasereneblossom/DungeonsOfDejremake/releases/latest";
+const LATEST: &str = "https://api.github.com/repos/Return-to-Dejenol/DungeonsOfDejremake/releases/latest";
 
 pub struct Release {
     pub version: String,

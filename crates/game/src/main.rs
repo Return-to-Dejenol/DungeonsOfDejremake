@@ -307,13 +307,14 @@ impl App {
         let mut v = View::default();
         // The toolbar: hidden in design, shown across the top while playing, with the
         // party's gold and the experience still needed at its right.
-        v.show("picToolbar", self.game.is_some()).rect("picToolbar", [0, 0, 800, 32]).show("mciMusic", false).show("picPalette", false);
+        v.show("picToolbar", self.game.is_some()).rect("picToolbar", [0, 0, desk.screen.x as i32, 32]).show("mciMusic", false).show("picPalette", false);
         if let Some(g) = &self.game {
             let c = &g.party[self.sel.min(g.party.len() - 1)];
             let gold: u64 = g.party.iter().map(|m| m.gold).sum();
             let need = c.xp_needed(d, t).saturating_sub(c.xp[c.guild]);
             let (lg, le) = (desk.rect("frmMain", "lblGold"), desk.rect("frmMain", "lblExperience"));
-            v.rect("lblGold", [796 - lg[2], lg[1], lg[2], lg[3]]).rect("lblExperience", [796 - le[2], le[1], le[2], le[3]]);
+            let right = desk.screen.x as i32 - 4;
+            v.rect("lblGold", [right - lg[2], lg[1], lg[2], lg[3]]).rect("lblExperience", [right - le[2], le[1], le[2], le[3]]);
             v.text("lblGold", format!("You have a total of {} Gold.", stats::commas(gold))).text("lblExperience", format!("You need {} more experience for level {}.", stats::commas(need), c.level() + 1));
         }
         let playing = self.game.is_some();
@@ -451,6 +452,12 @@ impl App {
         for i in 0..6 {
             v.text(&format!("pnlPanel({i})"), dr.stats[i].to_string()).text(&format!("lblStatInfo({i})"), format!("({}-{})", r.stat_min[i], r.stat_max[i]));
             v.enable(&format!("cmdAdd({i})"), left > 0 && dr.stats[i] < r.stat_max[i]).enable(&format!("cmdSubtract({i})"), dr.stats[i] > r.stat_min[i]);
+            // On touch, row-high buttons either side of the number: down, value, up, range.
+            if desk.touch {
+                let y = desk.rect(F, &format!("pnlPanel({i})"))[1];
+                v.rect(&format!("cmdSubtract({i})"), [81, y - 4, 23, 26]).rect(&format!("pnlPanel({i})"), [105, y, 21, 18]);
+                v.rect(&format!("cmdAdd({i})"), [127, y - 4, 23, 26]).rect(&format!("lblStatInfo({i})"), [152, y + 2, 33, 16]);
+            }
         }
         // The guilds, one a line; those the character could join now in black.
         let g0 = desk.rect(F, "lblGuild(0)");
@@ -891,7 +898,13 @@ impl eframe::App for App {
             return;
         };
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
-            desk.begin(ui.max_rect());
+            let mobile = cfg!(any(target_arch = "wasm32", target_os = "android")) || std::env::var_os("DDJ_MOBILE").is_some();
+            let wide = mobile.then(|| stats::wide_size(&desk));
+            #[cfg(target_os = "android")]
+            {
+                desk.keyboard = android::keyboard() / ctx.pixels_per_point();
+            }
+            desk.begin(ui.max_rect(), wide);
             self.main_window(&mut desk, ui, &data, &tuning);
             match self.screen {
                 Screen::Menu => self.menu(&mut desk, &ctx, &data),

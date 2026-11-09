@@ -18,11 +18,27 @@ const SEL_BACK: Color32 = Color32::from_rgb(0, 0, 128);
 /// The original's default arrangement (sub14B4) on its 800x600 desktop: the character
 /// top left, the city or dungeon beside it, Objects & Spells under that, the party under
 /// the character, the AutoMap beside the party, Messages bottom right.
+/// On a wide desktop (phones, the web), three columns instead: the character; the city
+/// or dungeon over the party and Messages; the AutoMap over Objects & Spells.
 pub fn arrange(desk: &mut Desk) {
-    if desk.pos.contains_key("frmCharStat1") {
+    if desk.pos.contains_key("frmCharStat1") && desk.arranged == Some(desk.wide) {
         return;
     }
+    desk.arranged = Some(desk.wide);
     let o = desk.client.min;
+    if desk.wide {
+        let mut x = o.x + 1.0;
+        for col in COLS {
+            let mut y = o.y + 1.0;
+            for &f in col {
+                desk.pos.insert(f.into(), pos2(x, y));
+                y += desk.outer(f).y + 1.0;
+            }
+            x += col.iter().map(|f| desk.outer(f).x).fold(0.0, f32::max) + 1.0;
+        }
+        desk.pos.insert("frmCityMain".into(), desk.pos["frmDungeonMain"]);
+        return;
+    }
     let (c1, dn, c3, c4) = (desk.outer("frmCharStat1"), desk.outer("frmDungeonMain"), desk.outer("frmCharStat3"), desk.outer("frmCharStat4"));
     let dun = o + vec2(1.0 + c1.x + 1.0, 1.0);
     let below = dun.y + dn.y + 4.0;
@@ -37,6 +53,14 @@ pub fn arrange(desk: &mut Desk) {
     ] {
         desk.pos.insert(f.into(), p);
     }
+}
+
+const COLS: [&[&str]; 3] = [&["frmCharStat1"], &["frmDungeonMain", "frmParty", "frmCharStat4"], &["frmAutoMap", "frmCharStat3"]];
+
+/// The three columns' desktop size, with the main window's title bar and toolbar (50).
+pub fn wide_size(desk: &Desk) -> egui::Vec2 {
+    let col = |c: &[&str]| c.iter().map(|f| desk.outer(f)).fold(vec2(0.0, 0.0), |a, b| vec2(a.x.max(b.x + 1.0), a.y + b.y + 1.0));
+    COLS.iter().map(|c| col(c)).fold(vec2(1.0, 0.0), |a, b| vec2(a.x + b.x, a.y.max(b.y + 51.0)))
 }
 
 /// A number with thousands separators, as the original shows gold and experience.
@@ -117,6 +141,13 @@ impl App {
         let mut v = View::default();
         v.caption = Some(format!("\"{}\"", c.name));
         v.show("elaTabFrame(0)", tab != 5).show("elaTabFrame(1)", tab == 5).show("picTabPicture", false);
+        if desk.touch {
+            v.tab_height("tabStatTab", 26.0);
+            for k in ["elaTabFrame(0)", "elaTabFrame(1)"] {
+                let r = desk.rect(F, k);
+                v.rect(k, [r[0], r[1] + 12, r[2], r[3] - 12]);
+            }
+        }
         let (a, df) = c.att_def(d, t);
         let rows: Vec<(String, String)> = match tab {
             0 => {
@@ -240,6 +271,11 @@ impl App {
         let mut v = View::default();
         for i in 0..3 {
             v.show(&format!("elaTabFrame({i})"), tab == i);
+        }
+        // Clear of the touch screen's thicker scroll bar.
+        for i in (0..4).filter(|_| desk.touch) {
+            let r = desk.rect(F, &format!("cmdCommand({i})"));
+            v.rect(&format!("cmdCommand({i})"), [r[0] - 9, r[1], r[2], r[3]]);
         }
         // Items: sixteen-pixel rows in a strip that the scroll bar slides.
         let item = desk.rect(F, "lblItem(0)");
