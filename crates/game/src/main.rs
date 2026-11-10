@@ -508,7 +508,12 @@ impl App {
             self.screen = Screen::Menu;
         }
         let name = desk.state(F, "txtName").text.trim().to_string();
-        if ev.click("cmdSave") || (ctx.input(|i| i.key_pressed(egui::Key::Enter)) && !name.is_empty()) {
+        // Enter saves at a keyboard; on a touch screen it only puts the keyboard away.
+        let enter = ctx.input(|i| i.key_pressed(egui::Key::Enter));
+        if enter && desk.touch {
+            desk.focus = None;
+        }
+        if ev.click("cmdSave") || (enter && !desk.touch && !name.is_empty()) {
             if name.is_empty() {
                 return self.boxes.push((d.t(0x921e_0cc4).into(), d.t(0xe39e_7d93).into()));
             }
@@ -958,12 +963,12 @@ impl eframe::App for App {
         };
         egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
             let mobile = cfg!(any(target_arch = "wasm32", target_os = "android")) || std::env::var_os("DDJ_MOBILE").is_some();
-            let wide = mobile.then(|| stats::wide_size(&desk));
+            let layouts = if mobile { stats::layout_sizes(&desk) } else { Vec::new() };
             #[cfg(target_os = "android")]
             {
                 desk.keyboard = android::keyboard() / ctx.pixels_per_point();
             }
-            desk.begin(ui.max_rect(), wide);
+            desk.begin(ui.max_rect(), &layouts);
             self.main_window(&mut desk, ui, &data, &tuning);
             match self.screen {
                 Screen::Menu => self.menu(&mut desk, &ctx, &data),

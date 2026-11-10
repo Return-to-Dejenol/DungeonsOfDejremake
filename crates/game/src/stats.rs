@@ -18,23 +18,26 @@ const SEL_BACK: Color32 = Color32::from_rgb(0, 0, 128);
 /// The original's default arrangement (sub14B4) on its 800x600 desktop: the character
 /// top left, the city or dungeon beside it, Objects & Spells under that, the party under
 /// the character, the AutoMap beside the party, Messages bottom right.
-/// On a wide desktop (phones, the web), three columns instead: the character; the city
-/// or dungeon over the party and Messages; the AutoMap over Objects & Spells.
+/// On phones and the web, one of `LAYOUTS` instead, the city where the dungeon is.
 pub fn arrange(desk: &mut Desk) {
-    if desk.pos.contains_key("frmCharStat1") && desk.arranged == Some(desk.wide) {
+    if desk.pos.contains_key("frmCharStat1") && desk.arranged == Some(desk.layout) {
         return;
     }
-    desk.arranged = Some(desk.wide);
+    desk.arranged = Some(desk.layout);
     let o = desk.client.min;
-    if desk.wide {
-        let mut x = o.x + 1.0;
-        for col in COLS {
-            let mut y = o.y + 1.0;
-            for &f in col {
-                desk.pos.insert(f.into(), pos2(x, y));
-                y += desk.outer(f).y + 1.0;
+    if let Some(l) = desk.layout {
+        let mut y = o.y + 1.0;
+        for row in LAYOUTS[l] {
+            let mut x = o.x + 1.0;
+            for col in *row {
+                let mut cy = y;
+                for &f in *col {
+                    desk.pos.insert(f.into(), pos2(x, cy));
+                    cy += desk.outer(f).y + 1.0;
+                }
+                x += col.iter().map(|f| desk.outer(f).x).fold(0.0, f32::max) + 1.0;
             }
-            x += col.iter().map(|f| desk.outer(f).x).fold(0.0, f32::max) + 1.0;
+            y += row_size(desk, row).y;
         }
         desk.pos.insert("frmCityMain".into(), desk.pos["frmDungeonMain"]);
         return;
@@ -55,12 +58,25 @@ pub fn arrange(desk: &mut Desk) {
     }
 }
 
-const COLS: [&[&str]; 3] = [&["frmCharStat1"], &["frmDungeonMain", "frmParty", "frmCharStat4"], &["frmAutoMap", "frmCharStat3"]];
+/// The play windows' layouts for phones and the web: rows of columns of windows.
+/// Landscape: the character; the dungeon over the party and Messages; the AutoMap over
+/// Objects & Spells. Portrait: the dungeon, Messages, the character beside the AutoMap
+/// over the party, then Objects & Spells.
+pub const LAYOUTS: [&[&[&[&str]]]; 2] = [
+    &[&[&["frmCharStat1"], &["frmDungeonMain", "frmParty", "frmCharStat4"], &["frmAutoMap", "frmCharStat3"]]],
+    &[&[&["frmDungeonMain"]], &[&["frmCharStat4"]], &[&["frmCharStat1"], &["frmAutoMap", "frmParty"]], &[&["frmCharStat3"]]],
+];
 
-/// The three columns' desktop size, with the main window's title bar and toolbar (50).
-pub fn wide_size(desk: &Desk) -> egui::Vec2 {
+fn row_size(desk: &Desk, row: &[&[&str]]) -> egui::Vec2 {
     let col = |c: &[&str]| c.iter().map(|f| desk.outer(f)).fold(vec2(0.0, 0.0), |a, b| vec2(a.x.max(b.x + 1.0), a.y + b.y + 1.0));
-    COLS.iter().map(|c| col(c)).fold(vec2(1.0, 0.0), |a, b| vec2(a.x + b.x, a.y.max(b.y + 51.0)))
+    row.iter().map(|c| col(c)).fold(vec2(1.0, 0.0), |a, b| vec2(a.x + b.x, a.y.max(b.y)))
+}
+
+/// Each layout's desktop size, with the main window's title bar and toolbar (51), and
+/// wide enough for the Main Menu.
+pub fn layout_sizes(desk: &Desk) -> Vec<egui::Vec2> {
+    let menu = desk.outer("frmMenu").x + 2.0;
+    LAYOUTS.iter().map(|l| l.iter().map(|r| row_size(desk, r)).fold(vec2(menu, 51.0), |a, b| vec2(a.x.max(b.x), a.y + b.y))).collect()
 }
 
 /// A number with thousands separators, as the original shows gold and experience.

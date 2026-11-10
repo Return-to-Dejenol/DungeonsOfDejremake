@@ -268,11 +268,11 @@ pub struct Desk {
     /// The main window's MDI area, in virtual pixels.
     pub client: Rect,
     /// The virtual desktop: 800x600 on Windows; on phones and the web it fills the
-    /// screen, and is `wide` when the three-column layout fits bigger.
+    /// screen, in the play windows' layout (`stats::LAYOUTS`) that shows them biggest.
     pub screen: Vec2,
-    pub wide: bool,
-    /// The layout the play windows were arranged for (wide or not).
-    pub arranged: Option<bool>,
+    pub layout: Option<usize>,
+    /// The layout the play windows were arranged for.
+    pub arranged: Option<Option<usize>>,
     /// A touch screen: bigger targets for the smallest controls.
     pub touch: bool,
     /// The on-screen keyboard's height (points), and the bottom of the text box typed in.
@@ -301,7 +301,7 @@ impl Desk {
             org: Pos2::ZERO,
             client: Rect::from_min_size(pos2(0.0, 50.0), vec2(800.0, 550.0)),
             screen: SCREEN,
-            wide: false,
+            layout: None,
             arranged: None,
             keyboard: 0.0,
             typing_at: None,
@@ -311,16 +311,17 @@ impl Desk {
         })
     }
 
-    /// Fits the desktop to the screen; call once a frame before any window. With `wide`
-    /// (the three-column layout's size) the desktop grows to fill the screen.
-    pub fn begin(&mut self, screen: Rect, wide: Option<Vec2>) -> Painter {
+    /// Fits the desktop to the screen; call once a frame before any window. Given the
+    /// sizes of the play windows' layouts (phones, the web), the desktop fills the screen
+    /// in the one that shows it biggest, or the original's when none beats it.
+    pub fn begin(&mut self, screen: Rect, layouts: &[Vec2]) -> Painter {
         let a = screen.width() / screen.height().max(1.0);
         let fit = |n: Vec2| (screen.width() / n.x).min(screen.height() / n.y);
         let fill = |n: Vec2| vec2(n.x.max(n.y * a), n.y.max(n.x / a));
-        self.wide = wide.is_some_and(|w| fit(w) > fit(SCREEN));
-        self.screen = match wide {
-            Some(w) if self.wide => fill(w),
-            Some(_) => fill(SCREEN),
+        self.layout = (0..layouts.len()).filter(|&i| fit(layouts[i]) > fit(SCREEN)).max_by(|&i, &j| fit(layouts[i]).total_cmp(&fit(layouts[j])));
+        self.screen = match self.layout {
+            Some(i) => fill(layouts[i]),
+            None if !layouts.is_empty() => fill(SCREEN),
             None => SCREEN,
         };
         self.touch |= self.ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Touch { .. })));
