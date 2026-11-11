@@ -10,7 +10,9 @@ It does **not** apply to:
 - downloadable game binaries, executables, APKs, or other GitHub release
   assets, which are governed by the [Dungeons of Dej'remake End User License
   Agreement](EULA.txt);
-- the bundled shareware fixture or any other original-game content; or
+- the bundled shareware fixture or any other original-game content;
+- the Liberation fonts in `assets/fonts/`, under the SIL Open Font License
+  (`assets/fonts/LICENSE-Liberation.txt`); or
 - Decklin's Domain intellectual property, including the *Depths of Dejenol* and
   *Darkness Awakening* trademarks.
 

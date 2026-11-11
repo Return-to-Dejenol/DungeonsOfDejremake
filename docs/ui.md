@@ -24,7 +24,12 @@ Decided 2026-11-04: what the player sees should look exactly like the original.
 - **Text** uses the system's own MS Sans Serif bitmap font (`sserife.fon`) when there is
   one (Windows), drawn pixel for pixel; bold is drawn twice a pixel apart, as Windows
   did. Courier New, Arial and Times New Roman use the system's TrueType files. The web
-  and other systems fall back to egui's fonts, which is close but not exact.
+  and Android draw MS Sans Serif and Arial with Liberation Sans and Times New Roman with
+  Liberation Serif (assets/fonts, SIL OFL), regular, bold and the Main Menu's bold
+  italic; close, not exact.
+- **Touch screens** (2026-11-10): two fingers pinch the whole desktop up to 3x and move
+  it about; pinching back out fits it again. Buttons, check boxes and option buttons
+  take taps 5 pixels past their edges.
 
 ## Where the remake's own features went
 

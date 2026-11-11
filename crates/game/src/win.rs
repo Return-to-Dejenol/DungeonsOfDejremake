@@ -230,17 +230,20 @@ pub struct Ft {
     pub italic: bool,
 }
 
-/// TrueType faces from the system (Windows), registered as egui families; families with
-/// no file fall back to egui's own fonts so they always exist.
+/// TrueType faces from the system (Windows), registered as egui families. Elsewhere MS
+/// Sans Serif and Arial are Liberation Sans and Times New Roman is Liberation Serif
+/// (assets/fonts, SIL OFL), for a real bold; other families fall back to egui's fonts.
 pub fn register_fonts(ctx: &egui::Context) {
     let mut defs = egui::FontDefinitions::default();
     let dir = Path::new("C:/Windows/Fonts");
-    for (family, files) in [("ms", ["micross.ttf", "micross.ttf"]), ("cour", ["cour.ttf", "courbd.ttf"]), ("times", ["times.ttf", "timesbd.ttf"]), ("arial", ["arial.ttf", "arialbd.ttf"]), ("symbol", ["symbol.ttf", "symbol.ttf"])] {
+    // Faces 0 regular, 1 bold, 2 bold italic (the Main Menu's subtitle is the only italic).
+    for (family, files) in [("ms", ["micross.ttf", "micross.ttf", "arialbi.ttf"]), ("cour", ["cour.ttf", "courbd.ttf", "courbi.ttf"]), ("times", ["times.ttf", "timesbd.ttf", "timesbi.ttf"]), ("arial", ["arial.ttf", "arialbd.ttf", "arialbi.ttf"]), ("symbol", ["symbol.ttf", "symbol.ttf", "symbol.ttf"])] {
         for (bold, file) in files.iter().enumerate() {
             let name = format!("{family}{bold}");
             let mut list = Vec::new();
-            if let Ok(data) = std::fs::read(dir.join(file)) {
-                defs.font_data.insert(name.clone(), egui::FontData::from_owned(data).into());
+            let data = std::fs::read(dir.join(file)).map(egui::FontData::from_owned).ok().or_else(|| bundled_font(family, bold).map(egui::FontData::from_static));
+            if let Some(data) = data {
+                defs.font_data.insert(name.clone(), data.into());
                 list.push(name.clone());
             }
             let fallback = if family == "cour" { egui::FontFamily::Monospace } else { egui::FontFamily::Proportional };
@@ -249,6 +252,23 @@ pub fn register_fonts(ctx: &egui::Context) {
         }
     }
     ctx.set_fonts(defs);
+}
+
+#[cfg(not(windows))]
+fn bundled_font(family: &str, bold: usize) -> Option<&'static [u8]> {
+    match (family, bold) {
+        ("ms" | "arial", 0) => Some(include_bytes!("../../../assets/fonts/LiberationSans-Regular.ttf")),
+        ("ms" | "arial", 1) => Some(include_bytes!("../../../assets/fonts/LiberationSans-Bold.ttf")),
+        ("ms" | "arial", _) => Some(include_bytes!("../../../assets/fonts/LiberationSans-BoldItalic.ttf")),
+        ("times", 0) => Some(include_bytes!("../../../assets/fonts/LiberationSerif-Regular.ttf")),
+        ("times", _) => Some(include_bytes!("../../../assets/fonts/LiberationSerif-Bold.ttf")),
+        _ => None,
+    }
+}
+
+#[cfg(windows)]
+fn bundled_font(_: &str, _: usize) -> Option<&'static [u8]> {
+    None
 }
 
 /// The MDI desktop: the forms, their pictures, open windows and control state.
@@ -275,6 +295,9 @@ pub struct Desk {
     pub arranged: Option<Option<usize>>,
     /// A touch screen: bigger targets for the smallest controls.
     pub touch: bool,
+    /// Pinch zoom (1 to 3) and where the zoomed desktop sits, from the fitted place.
+    zoom: f32,
+    shift: Vec2,
     /// The on-screen keyboard's height (points), and the bottom of the text box typed in.
     pub keyboard: f32,
     typing_at: Option<f32>,
@@ -296,6 +319,8 @@ impl Desk {
             pos: HashMap::new(),
             st: HashMap::new(),
             focus: None,
+            zoom: 1.0,
+            shift: Vec2::ZERO,
             combo: None,
             s: 1.0,
             org: Pos2::ZERO,
@@ -326,8 +351,22 @@ impl Desk {
         };
         self.touch |= self.ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Touch { .. })));
         // A window not laid out yet has no size; keep a usable scale until it has.
-        self.s = fit(self.screen).max(0.1);
-        self.org = screen.center() - self.screen * self.s / 2.0;
+        let s0 = fit(self.screen).max(0.1);
+        let fitted = |s: f32| screen.center() - self.screen * s / 2.0;
+        let mut org = fitted(s0 * self.zoom) + self.shift;
+        // Two fingers pinch the desktop bigger (3x at most) and move it about.
+        if let Some(m) = self.ctx.input(|i| i.multi_touch()) {
+            let z = (self.zoom * m.zoom_delta).clamp(1.0, 3.0);
+            org = m.center_pos - (m.center_pos - org) * (z / self.zoom) + m.translation_delta;
+            self.zoom = z;
+        }
+        self.s = s0 * self.zoom;
+        // Zoomed, the desktop always covers the screen; fitted, it sits in the middle.
+        let (size, mid) = (self.screen * self.s, fitted(self.s));
+        let keep = |o: f32, mid: f32, len: f32, lo: f32, hi: f32| if len <= hi - lo + 0.5 { mid } else { o.clamp(hi - len, lo) };
+        org = pos2(keep(org.x, mid.x, size.x, screen.left(), screen.right()), keep(org.y, mid.y, size.y, screen.top(), screen.bottom()));
+        self.shift = org - mid;
+        self.org = org;
         // Lift the desktop until the text box typed in shows above the keyboard.
         if let Some(y) = self.typing_at.filter(|_| self.keyboard > 0.0) {
             self.org.y -= (self.org.y + y * self.s - (screen.bottom() - self.keyboard)).max(0.0);
@@ -576,7 +615,10 @@ impl Desk {
         let id = ui.scope_id().with((form, k));
         let back_of = |dflt: Color32| v.back.get(k).copied().unwrap_or_else(|| num(pr, "BackColor").map_or(dflt, vb));
         let sense = if v.drags.contains_key(k) { Sense::click_and_drag() } else { Sense::click() };
-        let resp = ui.interact(cv.r(r), id, sense);
+        // On a touch screen buttons take taps a few pixels past their edges.
+        let button = matches!(c.kind.as_str(), "CommandButton" | "sscommand" | "CheckBox" | "OptionButton" | "sscheck" | "ssoption");
+        let hit = if self.touch && button { cv.r(r).expand(5.0 * cv.s) } else { cv.r(r) };
+        let resp = ui.interact(hit, id, sense);
         if let Some(d) = v.drags.get(k) {
             resp.dnd_set_drag_payload(*d);
         }
@@ -1007,7 +1049,7 @@ impl Desk {
             "symbol" => "symbol",
             _ => "ms",
         };
-        FontId::new((ft.size * 96.0 / 72.0 * self.s).max(1.0), egui::FontFamily::Name(format!("{fam}{}", u8::from(ft.bold)).into()))
+        FontId::new((ft.size * 96.0 / 72.0 * self.s).max(1.0), egui::FontFamily::Name(format!("{fam}{}", if ft.italic { 2 } else { u8::from(ft.bold) }).into()))
     }
 
     pub fn line_height(&self, ft: &Ft) -> f32 {

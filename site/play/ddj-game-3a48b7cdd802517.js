@@ -1,6 +1,6 @@
 import { fetch_bytes, idb_del, idb_put } from './snippets/ddj-extract-cc4a816fa57be21a/inline0.js';
-import { http } from './snippets/ddj-game-09fa588414c79187/inline0.js';
-import { pick } from './snippets/ddj-game-09fa588414c79187/inline1.js';
+import { http } from './snippets/ddj-game-5f79b87f95ebb67f/inline0.js';
+import { pick } from './snippets/ddj-game-5f79b87f95ebb67f/inline1.js';
 import * as import1 from "./snippets/ddj-extract-cc4a816fa57be21a/inline0.js"
 
 
@@ -1191,7 +1191,7 @@ function __wbg_get_imports() {
             getDataViewMemory0().setInt32((arg0 >>> 0) + 4 * 1, len1, true);
             getDataViewMemory0().setInt32((arg0 >>> 0) + 4 * 0, ptr1, true);
         }, arguments); },
-        __wbg_http_a26d1982ab82efc0: function(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
+        __wbg_http_e245d45ed4064c11: function(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
             let v0;
             if (arg6 !== 0) {
                 v0 = getStringFromWasm0(arg6, arg7);
@@ -1710,7 +1710,7 @@ function __wbg_get_imports() {
             const ret = arg0.performance;
             return ret;
         },
-        __wbg_pick_dc089451026bea27: function(arg0) {
+        __wbg_pick_bca1dbc0bb3d7eca: function(arg0) {
             const ret = pick(arg0 !== 0);
             return ret;
         },
@@ -2849,7 +2849,7 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 4096, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 4094, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen_a1641b8294d32c60___convert__closures_____invoke___wasm_bindgen_a1641b8294d32c60___JsValue__core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_a1641b8294d32c60___JsError___true_);
             return ret;
         },
