@@ -16,8 +16,12 @@ build (2026-11-04) and the Android APK (2026-11-05).
   document picker (`android/Main.java` copies them into the app's storage). Built by
   `scripts/build-apk.ps1` without Gradle, for arm64 and x86_64, Android 8 and up, in either orientation. It is
   signed with `~/.android/dejenol-release.jks` (made on the first build): keep that key,
-  since an APK signed with another can't update an installed copy. Updates are a new APK;
-  the Windows updater isn't built here.
+  since an APK signed with another can't update an installed copy. Updates are a new APK,
+  which the game offers itself (as Windows does): once a day, or Options' Check Updates, it
+  asks GitHub for the latest release, downloads its APK and hands it to Android's
+  installer (a PackageInstaller session, `android/Main.java` install()), which asks the
+  player, the first time to allow installs from the game, and replaces the app, saves and
+  all.
 - **Web.** A static WASM build of the same eframe app (`crates/game/index.html`, built
   with trunk into `target/web/`). The player drops or chooses their files in the
   browser, which keeps them and the saves in IndexedDB (`crates/extract/src/vfs.rs`).

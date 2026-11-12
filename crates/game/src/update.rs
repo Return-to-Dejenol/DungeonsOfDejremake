@@ -1,8 +1,10 @@
-//! Updates for the Windows game: at start, at most once a day, it asks GitHub for the
-//! project's latest release. A newer one is offered; once accepted its Setup is downloaded
-//! and run silently, and the installer upgrades in place and starts the game again.
+//! Updates for the Windows game and the APK: at start, at most once a day, it asks GitHub
+//! for the project's latest release. A newer one is offered; once accepted, Windows
+//! downloads its Setup and runs it silently, the installer upgrading in place and starting
+//! the game again; Android downloads its APK and hands it to the system's installer, which
+//! asks the player and replaces the app, saves and all (the same signing key).
 
-use std::{fs, io, path::Path, process::Command, sync::mpsc, thread};
+use std::{fs, io, path::Path, sync::mpsc, thread};
 
 use eframe::egui;
 
@@ -11,8 +13,12 @@ const LATEST: &str = "https://api.github.com/repos/Return-to-Dejenol/DungeonsOfD
 
 pub struct Release {
     pub version: String,
+    /// The Setup (Windows) or the APK (Android) to download.
     setup: String,
 }
+
+/// The release asset this build installs.
+const ASSET: &str = if cfg!(windows) { ".exe" } else { ".apk" };
 
 /// Whether version `tag` ("v0.2.0") is newer than `mine`.
 fn newer(tag: &str, mine: &str) -> bool {
@@ -20,11 +26,15 @@ fn newer(tag: &str, mine: &str) -> bool {
     parts(tag) > parts(mine)
 }
 
-/// A GET over Windows' own TLS (SChannel) and its trusted roots.
+/// A GET over Windows' own TLS (SChannel) and its trusted roots; elsewhere rustls.
 fn get(url: &str) -> Result<ureq::Body, ureq::Error> {
-    use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
-    let tls = TlsConfig::builder().provider(TlsProvider::NativeTls).root_certs(RootCerts::PlatformVerifier).build();
-    let agent: ureq::Agent = ureq::Agent::config_builder().tls_config(tls).build().into();
+    let config = ureq::Agent::config_builder();
+    #[cfg(windows)]
+    let config = {
+        use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
+        config.tls_config(TlsConfig::builder().provider(TlsProvider::NativeTls).root_certs(RootCerts::PlatformVerifier).build())
+    };
+    let agent: ureq::Agent = config.build().into();
     Ok(agent.get(url).header("User-Agent", "DejenolRestoration").call()?.into_body())
 }
 
@@ -36,7 +46,7 @@ fn check(ctx: Option<egui::Context>) -> mpsc::Receiver<Result<Option<Release>, S
         let json = get(&url).and_then(|mut b| b.read_to_string()).map_err(|e| e.to_string());
         let r = json.and_then(|j| serde_json::from_str::<serde_json::Value>(&j).map_err(|e| e.to_string())).map(|r| {
             let tag = r["tag_name"].as_str().unwrap_or_default().to_owned();
-            let setup = r["assets"].as_array().into_iter().flatten().filter_map(|a| a["browser_download_url"].as_str()).find(|u| u.ends_with(".exe"));
+            let setup = r["assets"].as_array().into_iter().flatten().filter_map(|a| a["browser_download_url"].as_str()).find(|u| u.ends_with(ASSET));
             setup.filter(|_| newer(&tag, env!("CARGO_PKG_VERSION"))).map(|s| Release { version: tag.trim_start_matches('v').into(), setup: s.into() })
         });
         let _ = tx.send(r);
@@ -45,13 +55,18 @@ fn check(ctx: Option<egui::Context>) -> mpsc::Receiver<Result<Option<Release>, S
     rx
 }
 
-/// Downloads the release's Setup and starts it silently; the game should then close.
+/// Downloads the release's Setup or APK and starts installing it. Windows' Setup runs
+/// silently and the game should then close; Android's installer asks the player first.
 pub fn install(r: &Release) -> Result<(), String> {
-    let path = std::env::temp_dir().join(format!("DejenolRestoration-Setup-{}.exe", r.version));
+    let dir = if cfg!(windows) { std::env::temp_dir() } else { ddj_extract::home() };
+    let path = dir.join(format!("DejenolRestoration-update{ASSET}"));
     let fail = |e: &dyn std::fmt::Display| format!("Could not download version {}: {e}", r.version);
     let mut body = get(&r.setup).map_err(|e| fail(&e))?.into_reader();
     io::copy(&mut body, &mut fs::File::create(&path).map_err(|e| fail(&e))?).map_err(|e| fail(&e))?;
-    Command::new(&path).args(["/SILENT", "/SP-", "/NOCANCEL", "/CLOSEAPPLICATIONS"]).spawn().map_err(|e| format!("Could not start the update: {e}"))?;
+    #[cfg(windows)]
+    std::process::Command::new(&path).args(["/SILENT", "/SP-", "/NOCANCEL", "/CLOSEAPPLICATIONS"]).spawn().map_err(|e| format!("Could not start the update: {e}"))?;
+    #[cfg(target_os = "android")]
+    crate::android::install(&path).map_err(|e| format!("Could not start the update: {e}"))?;
     Ok(())
 }
 
@@ -105,7 +120,7 @@ impl Updater {
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || {
             let res = install(&r);
-            if res.is_ok() {
+            if res.is_ok() && cfg!(windows) {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             let _ = tx.send(res);

@@ -23,7 +23,7 @@ mod party;
 mod stats;
 mod sync;
 mod town;
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "android"))]
 mod update;
 mod win;
 #[cfg(target_arch = "wasm32")]
@@ -83,7 +83,7 @@ enum Deed {
     /// Party member, item slot.
     Drop(usize, usize),
     /// Download and install a newer release.
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "android"))]
     Update,
 }
 
@@ -124,7 +124,7 @@ struct App {
     heard: usize,
     /// The HelpLesson's windows, while open.
     help: Option<help::Viewer>,
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "android"))]
     updater: update::Updater,
     sync: sync::Sync,
 }
@@ -229,7 +229,7 @@ impl App {
             audio_tried: false,
             heard: 0,
             help: None,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "android"))]
             updater: update::Updater::start(&saves(), &today()),
             sync: sync::Sync::load(),
         }
@@ -580,7 +580,7 @@ impl App {
                     Deed::Rescue(_) => Some(0x76da_125a),
                     Deed::Bind(_) => Some(0x3e5c_ab8c),
                     Deed::Drop(..) => Some(0x7a33_21db),
-                    #[cfg(windows)]
+                    #[cfg(any(windows, target_os = "android"))]
                     Deed::Update => None,
                 };
                 v.caption = title.map(|t| d.t(t).into());
@@ -604,15 +604,15 @@ impl App {
                             Ok(_) => {}
                             Err(e) => self.boxes.push((d.t(0x8b3c_5ec6).into(), e)),
                         },
-                        #[cfg(windows)]
+                        #[cfg(any(windows, target_os = "android"))]
                         Deed::Update => {}
                     }
                     self.persist();
                 }
-                #[cfg(windows)]
+                #[cfg(any(windows, target_os = "android"))]
                 if ev.click("cmdOK") && deed == Deed::Update {
                     self.updater.accept(ctx);
-                    self.say("Downloading the update. The game will close while it installs, then start again.");
+                    self.say(if cfg!(windows) { "Downloading the update. The game will close while it installs, then start again." } else { "Downloading the update. Android will ask to install it." });
                 }
                 ev.click("cmdOK") || ev.click("cmdNo") || ev.closed
             }
@@ -679,7 +679,7 @@ impl App {
             self.sync.now(ctx, self.game.is_none());
         }
         // The answer comes once this window is closed.
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "android"))]
         if ev.click("cmdUpdate") {
             self.updater.check_now(ctx);
             return true;
@@ -853,8 +853,9 @@ impl App {
 
 /// The remake's own windows, in the original's style.
 fn add_windows(desk: &mut Desk) {
-    // Check for Updates beside Import Game in Options (Windows: the updater installs Setup).
-    #[cfg(windows)]
+    // Check for Updates beside Import Game in Options (Windows runs the new Setup; Android
+    // hands the new APK to its installer).
+    #[cfg(any(windows, target_os = "android"))]
     if let Some(f) = desk.forms.get_mut("frmOptions") {
         let import = f.controls.iter_mut().find(|c| c.name == "cmdCommand" && c.index == Some(3));
         let parent = import.map(|c| {
@@ -1002,7 +1003,7 @@ impl eframe::App for App {
                 self.help = None;
             }
             // A newer release, offered once nothing else is asked; a failed download said.
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "android"))]
             {
                 if self.dialog.is_none() {
                     match self.updater.offer() {

@@ -52,6 +52,20 @@ pub fn keyboard() -> f32 {
     .map_or(0.0, |h| h as f32)
 }
 
+/// Hands a downloaded APK to the system's installer (Main.install), which asks the player
+/// and then replaces the app.
+pub fn install(apk: &std::path::Path) -> Result<(), String> {
+    let app = APP.get().ok_or("no activity")?;
+    // SAFETY: as in `choose`.
+    let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) };
+    vm.attach_current_thread(|env| -> jni::errors::Result<()> {
+        let activity = unsafe { JObject::from_raw(env, app.activity_as_ptr().cast()) };
+        let path = env.new_string(apk.to_string_lossy())?;
+        env.call_method(&activity, jni_str!("install"), jni_sig!("(Ljava/lang/String;)V"), &[(&path).into()]).map(drop)
+    })
+    .map_err(|e| e.to_string())
+}
+
 /// The files the picker copied into `files/picked/`, as (name, contents), once there.
 pub fn picked() -> Option<Vec<(String, Vec<u8>)>> {
     let dir = APP.get()?.internal_data_path()?.join("picked");
