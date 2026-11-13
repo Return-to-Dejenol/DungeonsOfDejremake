@@ -184,7 +184,13 @@ impl App {
                 }
                 r
             }
-            1 => vec![("Resistances".into(), if c.buffs.resist == 0 { "None".into() } else { format!("{:b}", c.buffs.resist) })],
+            // As the original: each resistance (the race's, or an item's or spell's) or " -".
+            1 => std::iter::once((d.t(0xe0be_bc84).into(), String::new()))
+                .chain(game::RESISTANCES.iter().enumerate().map(|(i, &n)| {
+                    let r = ddj_rules::monsters::resist(c, d, i);
+                    (d.t(n).into(), if r > 0 { format!("{r}%") } else { d.t(0xa4c5_9e16).into() })
+                }))
+                .collect(),
             2 => vec![
                 ("Race".into(), d.races[c.race].name.clone()),
                 ("Sex".into(), d.t(game::SEXES[usize::from(c.female)]).into()),
@@ -228,9 +234,10 @@ impl App {
         let mut top = s0[1];
         for i in 0..13u16 {
             if i > 0 {
-                top += h + match i {
-                    1 | 3 => half,
-                    7 => 2 * half,
+                // The resistances: a half row under the heading, then one block.
+                top += h + match (tab, i) {
+                    (1, 1) | (0 | 2.., 1 | 3) => half,
+                    (0 | 2.., 7) => 2 * half,
                     _ => 0,
                 };
             }
@@ -246,11 +253,14 @@ impl App {
             }
             if i > 0 {
                 v.clone_rect("lblStatInfo(0)", i, [i0[0], top, i0[2], h]);
+            } else if tab == 1 {
+                v.rect("lblStatInfo(0)", [i0[0], top, stat[0] + stat[2] - i0[0], h]);
             }
             let (name, value) = rows.get(usize::from(i)).cloned().unwrap_or_default();
             v.text(&format!("lblStatInfo({i})"), name).text(&format!("lblStat({i})"), value);
         }
         v.show("elaBorder", tab == 0);
+        v.show("lblStat(0)", tab != 1);
         // The ailments, one fixed row each, beside the stats.
         let sp = desk.rect(F, "lblSpecial(0)");
         let first = s0[1] + 6 * h + 2 * half + 2 * h;
@@ -430,7 +440,7 @@ impl App {
     }
 
     /// Party Information: a row a member; Switch To, Options (the remake's macros) and
-    /// Leave.
+    /// Leave, and the remake's < > (the member shown) and Up / Down (the order).
     pub(crate) fn party_window(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData, _t: &Tuning) {
         const F: &str = "frmParty";
         let g = self.game.as_ref().unwrap();
@@ -466,6 +476,18 @@ impl App {
         }
         let town = self.screen == Screen::Town;
         v.enable("cmdCommand(0)", sel > 0 && g.party[sel].alive()).enable("cmdCommand(2)", town && sel > 0);
+        let (b1, b2) = (desk.rect(F, "cmdCommand(1)"), desk.rect(F, "cmdCommand(2)"));
+        // The remake's four buttons between Options and a narrower Leave.
+        let leave = b2[2] / 2;
+        v.rect("cmdCommand(2)", [b2[0] + b2[2] - leave, b2[1], leave, b2[3]]);
+        let unit = (b2[0] + b2[2] - leave - b1[0] - b1[2] - 10) / 10;
+        let (n, calm) = (g.party.len(), g.fight.is_none());
+        let mut x = b1[0] + b1[2] + 2;
+        for (k, cap, wide, on) in [(3, "<", 2, n > 1), (4, ">", 2, n > 1), (5, "Up", 3, calm && sel > 1), (6, "Down", 3, calm && sel > 0 && sel + 1 < n)] {
+            v.clone_rect("cmdCommand(0)", k, [x, b1[1], unit * wide, b1[3]]);
+            v.text(&format!("cmdCommand({k})"), cap).enable(&format!("cmdCommand({k})"), on);
+            x += unit * wide + 2;
+        }
         let ev = desk.window(ctx, F, v, false);
         for base in ["lblName", "lblHits", "lblSpells", "lblStatus", "lblOption"] {
             if let Some(i) = ev.index(base) {
@@ -479,6 +501,13 @@ impl App {
                 self.sel = 0;
             }
             Some(1) => self.dialog = Some(Dialog::Macros(sel)),
+            Some(3) => self.sel = (sel + n - 1) % n,
+            Some(4) => self.sel = (sel + 1) % n,
+            Some(k @ (5 | 6)) => {
+                self.sel = if k == 5 { sel - 1 } else { sel + 1 };
+                g.reorder(sel, self.sel);
+                self.persist();
+            }
             Some(2) => {
                 if let Some(c) = g.dismiss(sel) {
                     let _ = c.save(&crate::saves());

@@ -117,6 +117,11 @@ pub fn kind(sp: &Spell) -> Option<Magic> {
     }
 }
 
+/// The strongest known spell of a kind the character's stats allow, whatever its SP.
+pub fn best_known(c: &Character, d: &GameData, k: Magic) -> Option<usize> {
+    known(c, d).into_iter().filter(|&s| kind(&d.spells[s]) == Some(k) && (0..6).all(|i| c.stats[i] >= d.spells[s].stat_req[i])).max_by_key(|&s| (d.spells[s].level, d.spells[s].base))
+}
+
 /// The strongest castable spell of a kind (cures: one that fits someone's ailment).
 pub fn best(g: &Game, d: &GameData, t: &Tuning, i: usize, k: Magic) -> Option<usize> {
     let c = &g.party[i];

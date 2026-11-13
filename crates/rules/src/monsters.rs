@@ -57,7 +57,7 @@ const ACID_RES: usize = 10;
 /// Resistance in percent for slot `r`: the race's, or 90 from an item or spell that
 /// grants it (the original lets an item's 90 replace a higher race value; the higher
 /// counts here).
-pub(crate) fn resist(c: &Character, d: &GameData, slot: usize) -> i32 {
+pub fn resist(c: &Character, d: &GameData, slot: usize) -> i32 {
     let race = i32::from(d.races[c.race].resist.get(slot).copied().unwrap_or(0));
     let item = c.items.iter().any(|h| h.equipped && d.items[h.item].long(24) >> slot & 1 != 0);
     if item || c.buffs.resist & (1 << slot) != 0 { race.max(90) } else { race }

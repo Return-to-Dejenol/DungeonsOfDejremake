@@ -30,6 +30,8 @@ pub const MAX_PARTY: usize = 4;
 pub const ALIGNMENTS: [u32; 3] = [0x7a8c_7df8, 0xe933_0778, 0x6fc6_dfe7];
 pub const MAKE_LEVEL: u32 = 0x3457_7b25;
 /// Text ids of the stats' full names, the directions, and the counts "One" to "Ten".
+/// The resistances' names, in the race order.
+pub const RESISTANCES: [u32; 11] = [0x0ed7_62f9, 0x6a72_bc2f, 0x2586_66d3, 0xe669_8669, 0xb31a_5d05, 0xbc3e_60d1, 0xb960_112c, 0x6dd4_ca9a, 0xcc56_5075, 0x8610_3bb9, 0xd532_cfc8];
 pub const STAT_NAMES: [u32; 6] = [0xda4d_03d0, 0xae1e_75e2, 0x7421_f406, 0xdcbe_e1c6, 0x32eb_1663, 0x43a8_0f2f];
 pub const DIRECTIONS: [u32; 4] = [0x675e_4fa4, 0x6733_095c, 0xb3e2_9f1a, 0x6b15_95ce];
 const COUNTS: [u32; 10] = [0x1cb1_b18f, 0x20af_1fc9, 0x2e43_0863, 0xaf96_41c5, 0x2ee0_8fb5, 0x2cbc_324b, 0xdb3f_1e9e, 0xa6f5_0710, 0x9652_bb75, 0x1f8c_8bf4];
@@ -244,7 +246,7 @@ impl Character {
             buffs: Buffs::default(),
             seen: Vec::new(),
             kills: 0,
-            macros: ai::preset(ai::Role::Fighter),
+            macros: ai::preset(ai::Role::Fighter, |_| None),
             companions: Vec::new(),
             allies: Vec::new(),
             sanctuary: None,
@@ -420,7 +422,13 @@ impl Character {
         self.pay(gold);
         let g = &data.guilds[self.guild];
         let highest = self.levels.iter().all(|&l| l <= self.level());
+        // Unedited preset macros take up the spells the new level brings.
+        let preset = |c: &Self| ai::preset(ai::Role::of(c.guild), |k| crate::magic::best_known(c, data, k));
+        let unedited = self.macros == preset(self);
         self.levels[self.guild] += 1;
+        if unedited {
+            self.macros = preset(self);
+        }
         let level = self.level();
         let mut said = Vec::new();
         if highest {
@@ -517,7 +525,7 @@ impl Character {
         self.pay(cost);
         if self.levels[g] == 0 {
             self.levels[g] = 1;
-            self.macros = ai::preset(ai::Role::of(g));
+            self.macros = ai::preset(ai::Role::of(g), |k| crate::magic::best_known(self, data, k));
         }
         self.guild = g;
         let mut off = false;
@@ -596,7 +604,7 @@ impl Character {
             return Err(io::Error::other(format!("save version {} is newer than this game", c.version)));
         }
         if c.version < 2 {
-            c.macros = ai::preset(ai::Role::of(c.guild));
+            c.macros = ai::preset(ai::Role::of(c.guild), |_| None);
             c.age_days = c.age_days.max(16 * 365);
         }
         // Saves from before Hands was carried get it back in the first slot.
@@ -779,6 +787,15 @@ impl Game {
         let c = self.party.remove(i);
         self.party[0].allies = self.party[1..].iter().map(|m| m.name.clone()).collect();
         Some(c)
+    }
+
+    /// Moves member i to place j among the followers (the leader stays first).
+    pub fn reorder(&mut self, i: usize, j: usize) {
+        if i > 0 && j > 0 && i.max(j) < self.party.len() {
+            let m = self.party.remove(i);
+            self.party.insert(j, m);
+            self.party[0].allies = self.party[1..].iter().map(|m| m.name.clone()).collect();
+        }
     }
 
     /// Puts another living member in control (the original's Switch To).
@@ -1329,6 +1346,7 @@ mod tests {
             c.join(d, guild).unwrap_or_else(|e| panic!("{name}: {e}"));
         }
         c.levels[guild] = level;
+        c.macros = ai::preset(ai::Role::of(guild), |k| magic::best_known(&c, d, k));
         c.max_hp += 6 * level as i32;
         c.hp = c.max_hp;
         kit(d, &mut c);

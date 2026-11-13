@@ -103,24 +103,32 @@ fn rule(when: Vec<Cond>, then: Act) -> Rule {
     Rule { when, then, on: true }
 }
 
-/// Starting macros for a role; the player can edit them.
-pub fn preset(role: Role) -> Vec<Rule> {
+/// The most rules a character keeps, and conditions a rule has.
+pub const MAX_RULES: usize = 12;
+pub const MAX_CONDS: usize = 3;
+
+/// Starting macros for a role; the player can edit them. Spells are the character's
+/// best known of each kind (`best`), and a kind it knows none of is left out.
+pub fn preset(role: Role, best: impl Fn(Magic) -> Option<usize>) -> Vec<Rule> {
     use Cond::*;
     let mut v = vec![rule(vec![SelfHpBelow(20)], Act::Quaff)];
-    match role {
-        Role::Healer => v.extend([
-            rule(vec![AllyDead], Act::CastBest(Magic::Raise, Target::LowestAlly)),
-            rule(vec![PartyHpBelow(60)], Act::CastBest(Magic::MassHeal, Target::LowestAlly)),
-            rule(vec![AllyHpBelow(50)], Act::CastBest(Magic::Heal, Target::LowestAlly)),
-            rule(vec![AllyAiling], Act::CastBest(Magic::Cure, Target::LowestAlly)),
-        ]),
-        Role::Caster => v.extend([
-            rule(vec![FoesAtLeast(3), SelfSpAbove(25)], Act::CastBest(Magic::Sleep, Target::Strongest)),
-            rule(vec![FoesAtLeast(2), SelfSpAbove(20)], Act::CastBest(Magic::MassDamage, Target::Strongest)),
-            rule(vec![SelfSpAbove(30)], Act::CastBest(Magic::Damage, Target::Strongest)),
-        ]),
-        Role::Thief => v.push(rule(vec![Chest, Peaceful], Act::Open)),
-        Role::Fighter => {}
+    let spells: &[(Vec<Cond>, Magic, Target)] = &match role {
+        Role::Healer => vec![
+            (vec![AllyDead], Magic::Raise, Target::LowestAlly),
+            (vec![PartyHpBelow(60)], Magic::MassHeal, Target::LowestAlly),
+            (vec![AllyHpBelow(50)], Magic::Heal, Target::LowestAlly),
+            (vec![AllyAiling], Magic::Cure, Target::LowestAlly),
+        ],
+        Role::Caster => vec![
+            (vec![FoesAtLeast(3), SelfSpAbove(25)], Magic::Sleep, Target::Strongest),
+            (vec![FoesAtLeast(2), SelfSpAbove(20)], Magic::MassDamage, Target::Strongest),
+            (vec![SelfSpAbove(30)], Magic::Damage, Target::Strongest),
+        ],
+        _ => Vec::new(),
+    };
+    v.extend(spells.iter().filter_map(|(when, k, t)| best(*k).map(|s| rule(when.clone(), Act::Cast(s, *t)))));
+    if role == Role::Thief {
+        v.push(rule(vec![Chest, Peaceful], Act::Open));
     }
     v.push(rule(vec![SelfHpBelow(15)], Act::Defend));
     v.push(rule(vec![Always], Act::Fight(Target::Weakest)));

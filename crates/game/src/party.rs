@@ -33,8 +33,8 @@ const CONDS: [&str; 16] = [
     "round at least",
     "round below",
 ];
-const ACTS: [&str; 8] = ["Fight", "Defend", "Cast the best", "Cast", "Drink a healing potion", "Open the chest", "Run", "Wait"];
-const TARGETS: [(&str, Target); 5] = [("the weakest foe", Target::Weakest), ("the strongest foe", Target::Strongest), ("the first foe", Target::First), ("the weakest ally", Target::LowestAlly), ("myself", Target::Myself)];
+const ACTS: [&str; 7] = ["Fight", "Defend", "Cast", "Drink a healing potion", "Open the chest", "Run", "Wait"];
+static TARGETS: [(&str, Target); 5] = [("the weakest foe", Target::Weakest), ("the strongest foe", Target::Strongest), ("the first foe", Target::First), ("the weakest ally", Target::LowestAlly), ("myself", Target::Myself)];
 const MAGICS: [(&str, Magic); 8] = [("heal", Magic::Heal), ("mass heal", Magic::MassHeal), ("damage spell", Magic::Damage), ("group damage spell", Magic::MassDamage), ("cure", Magic::Cure), ("raise", Magic::Raise), ("sleep spell", Magic::Sleep), ("protection", Magic::Protect)];
 
 /// The conditions gathered for the next rule.
@@ -83,8 +83,17 @@ fn act_text(a: &Act, d: &GameData) -> String {
 }
 
 pub(crate) fn describe(r: &Rule, d: &GameData) -> String {
-    let when: Vec<String> = r.when.iter().map(|c| cond_text(c, d)).collect();
-    format!("When {}: {}", when.join(" and "), act_text(&r.then, d))
+    let when: Vec<String> = r.when.iter().filter(|c| **c != Cond::Always).map(|c| cond_text(c, d)).collect();
+    if when.is_empty() { format!("Always: {}", act_text(&r.then, d)) } else { format!("If {}: {}", when.join(", "), act_text(&r.then, d)) }
+}
+
+/// The targets an action can take: foes to fight or harm, allies to help.
+fn targets(act: usize, spell: Option<usize>, d: &GameData) -> &'static [(&'static str, Target)] {
+    match (act, spell.and_then(|s| magic::kind(&d.spells[s]))) {
+        (0, _) | (2, Some(Magic::Damage | Magic::MassDamage | Magic::Sleep)) => &TARGETS[..3],
+        (2, Some(_)) => &TARGETS[3..],
+        _ => &TARGETS,
+    }
 }
 
 impl App {
@@ -98,21 +107,25 @@ impl App {
         }
         let c = &mut g.party[i];
         let known = magic::known(c, d);
+        // Each choice starts on its first entry.
+        for k in ["cmbCond", "cmbAct", "cmbArg", "cmbTarget", "cmbKind"] {
+            let st = desk.state(F, k);
+            st.sel = st.sel.or(Some(0));
+        }
         let cond = desk.state(F, "cmbCond").sel.unwrap_or(0);
         let act = desk.state(F, "cmbAct").sel.unwrap_or(0);
+        let spell = desk.state(F, "cmbArg").sel.and_then(|a| known.get(a).copied());
+        let aims = targets(act, spell, d);
+        let target = desk.state(F, "cmbTarget");
+        target.sel = target.sel.filter(|&t| t < aims.len()).or(Some(0));
         let mut v = View::default();
         v.caption = Some(format!("{}'s Macros", c.name));
         v.items("lstRules", c.macros.iter().map(|r| format!("{} {}", if r.on { "[x]" } else { "[ ]" }, describe(r, d))).collect());
         v.items("cmbCond", CONDS.iter().map(|s| s.to_string()).collect());
-        v.items("cmbKind", d.monster_types.clone()).show("cmbKind", cond == 8).show("txtValue", cond != 8);
+        v.items("cmbKind", d.monster_types.clone()).show("cmbKind", cond == 8).show("txtValue", !matches!(cond, 0 | 8..=13));
         v.items("cmbAct", ACTS.iter().map(|s| s.to_string()).collect());
-        let args: Vec<String> = match act {
-            2 => MAGICS.iter().map(|m| m.0.to_string()).collect(),
-            3 => known.iter().map(|&s| d.spells[s].name.clone()).collect(),
-            _ => Vec::new(),
-        };
-        v.show("cmbArg", !args.is_empty()).items("cmbArg", args).show("cmbTarget", matches!(act, 0 | 2 | 3));
-        v.items("cmbTarget", TARGETS.iter().map(|t| t.0.to_string()).collect());
+        v.show("cmbArg", act == 2).items("cmbArg", known.iter().map(|&s| d.spells[s].name.clone()).collect()).show("cmbTarget", matches!(act, 0 | 2));
+        v.items("cmbTarget", aims.iter().map(|t| t.0.to_string()).collect());
         let conds: Vec<String> = self.rule.conds.iter().map(|c| cond_text(c, d)).collect();
         v.text("lblConds", if conds.is_empty() { "Conditions: none yet (always)".into() } else { format!("Conditions: {}", conds.join(" and ")) });
         let ev = desk.window(ctx, F, v, true);
@@ -131,10 +144,31 @@ impl App {
             (Some("cmdDelete"), Some(k)) => {
                 c.macros.remove(k);
             }
+            (Some("cmdAddCond"), _) if self.rule.conds.len() >= ai::MAX_CONDS => {
+                self.say(format!("A rule has at most {} conditions.", ai::MAX_CONDS));
+                changed = false;
+            }
             (Some("cmdAddCond"), _) => {
                 let text = desk.state(F, "txtValue").text.trim().to_string();
-                let n = text.parse::<u8>().unwrap_or(0).min(100);
                 let kind = desk.state(F, "cmbKind").sel.unwrap_or(0);
+                // Percentages 1-99, foes 1-40, rounds 1-50, names of 1-20 letters.
+                let (lo, hi) = match cond {
+                    5 => (1, 40),
+                    14 | 15 => (1, 50),
+                    _ => (1, 99),
+                };
+                let n = text.parse::<u8>().ok().filter(|n| (lo..=hi).contains(n));
+                let bad = match cond {
+                    7 => (text.is_empty() || text.chars().count() > 20).then(|| "Type a name of 1 to 20 letters.".to_string()),
+                    1..=6 | 14 | 15 if n.is_none() => Some(format!("Type a number from {lo} to {hi}.")),
+                    _ => None,
+                };
+                changed = false;
+                if let Some(msg) = bad {
+                    self.say(msg);
+                    return false;
+                }
+                let n = n.unwrap_or(0);
                 self.rule.conds.push(match cond {
                     1 => Cond::SelfHpBelow(n),
                     2 => Cond::AllyHpBelow(n),
@@ -153,23 +187,30 @@ impl App {
                     15 => Cond::RoundBelow(n),
                     _ => Cond::Always,
                 });
-                changed = false;
             }
             (Some("cmdClear"), _) => {
                 self.rule.conds.clear();
                 changed = false;
             }
+            (Some("cmdTop" | "cmdBottom"), _) if c.macros.len() >= ai::MAX_RULES => {
+                let msg = format!("{} has the most rules, {}; delete one first.", c.name, ai::MAX_RULES);
+                self.say(msg);
+                return false;
+            }
+            (Some("cmdTop" | "cmdBottom"), _) if act == 2 && spell.is_none() => {
+                let msg = format!("{} knows no spells.", c.name);
+                self.say(msg);
+                return false;
+            }
             (Some(b @ ("cmdTop" | "cmdBottom")), _) => {
-                let target = TARGETS[desk.state(F, "cmbTarget").sel.unwrap_or(0).min(TARGETS.len() - 1)].1;
-                let arg = desk.state(F, "cmbArg").sel.unwrap_or(0);
+                let target = aims[desk.state(F, "cmbTarget").sel.unwrap_or(0).min(aims.len() - 1)].1;
                 let then = match act {
                     0 => Some(Act::Fight(target)),
                     1 => Some(Act::Defend),
-                    2 => Some(Act::CastBest(MAGICS[arg.min(MAGICS.len() - 1)].1, target)),
-                    3 => known.get(arg).map(|&s| Act::Cast(s, target)),
-                    4 => Some(Act::Quaff),
-                    5 => Some(Act::Open),
-                    6 => Some(Act::Run),
+                    2 => spell.map(|s| Act::Cast(s, target)),
+                    3 => Some(Act::Quaff),
+                    4 => Some(Act::Open),
+                    5 => Some(Act::Run),
                     _ => Some(Act::Wait),
                 };
                 if let Some(then) = then {
@@ -180,7 +221,7 @@ impl App {
             }
             _ if ev.index("cmdPreset").is_some() => {
                 let role = [Role::Fighter, Role::Healer, Role::Caster, Role::Thief][usize::from(ev.index("cmdPreset").unwrap_or(0)).min(3)];
-                c.macros = ai::preset(role);
+                c.macros = ai::preset(role, |k| magic::best_known(c, d, k));
             }
             _ => changed = false,
         }
@@ -253,9 +294,9 @@ pub(crate) fn add_windows(desk: &mut Desk) {
             ("CommandButton", "cmdAddCond", None, [292, 164, 140, 22], "Add &Condition"),
             ("Label", "lblConds", None, [8, 190, 424, 28], ""),
             ("Label", "lblDo", None, [8, 226, 40, 14], "Do"),
-            ("ComboBox", "cmbAct", None, [50, 222, 140, 21], ""),
-            ("ComboBox", "cmbArg", None, [196, 222, 130, 21], ""),
-            ("ComboBox", "cmbTarget", None, [332, 222, 100, 21], ""),
+            ("ComboBox", "cmbAct", None, [50, 222, 130, 21], ""),
+            ("ComboBox", "cmbArg", None, [186, 222, 120, 21], ""),
+            ("ComboBox", "cmbTarget", None, [312, 222, 120, 21], ""),
             ("CommandButton", "cmdTop", None, [8, 250, 120, 22], "Add at &Top"),
             ("CommandButton", "cmdBottom", None, [134, 250, 120, 22], "Add at &Bottom"),
             ("CommandButton", "cmdClear", None, [260, 250, 90, 22], "Cl&ear"),

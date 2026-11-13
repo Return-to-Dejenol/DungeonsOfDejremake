@@ -39,7 +39,11 @@ Taken while building; reviewed at play-test.
 - **Import Game...**: the Options window, in the slot of its hidden "Screen Saver..."
   button (the original kept its data path in Options-related INI settings).
 - **Party macros**: the Party window's Options button opens the macro editor, a remake
-  window (the original's Party Options only chose one default action).
+  window (the original's Party Options only chose one default action). At most 12 rules
+  of up to 3 conditions; casting names one of the character's spells.
+- **Party order**: the Party window's < and > show the previous or next member, and Up
+  and Down move the shown member among the followers (not in a fight), between Options
+  and a narrower Leave.
 - **Adding an ally**: the toolbar's add-character button ('A' in the original) opens the
   original's "Pickup Character" window with the saved characters.
 - **The Seer**: its Character/Monster/Item buttons ask through the same window.
@@ -89,7 +93,7 @@ Taken while building; reviewed at play-test.
   remake yet; Give, Carry, Combine, Realign, the
   Library, the Guild Log, Exchange Items, Change Password and the Control Panel are
   disabled.
-- The spell list's type filter only offers "All"; the Resist. and Look tabs are sparse.
+- The spell list's type filter only offers "All"; the Look tab is sparse.
 - Window positions are not saved per character as the original saved them.
 - Not matched yet: the store's inner sunken list boxes, its item order and per-alignment
   stock ("0 0 1 0"); Windows 95 title bars are drawn from memory

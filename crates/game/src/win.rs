@@ -839,7 +839,8 @@ impl Desk {
                     if picked {
                         cv.fill(ir.left(), ir.top(), ir.width(), ir.height(), NAVY);
                     }
-                    self.label_text(cv, ir.translate(vec2(2.0, 0.0)), &ft, it, if picked { Color32::WHITE } else { ink }, 0, true, false);
+                    let it = self.one_line(&ft, it, iw - 2.0);
+                    self.label_text(cv, ir.translate(vec2(2.0, 0.0)), &ft, &it, if picked { Color32::WHITE } else { ink }, 0, true, false);
                     let hit = ui.interact(cv.r(ir), id.with(n), Sense::click());
                     if hit.clicked() && enabled {
                         sel = Some(n);
@@ -869,7 +870,7 @@ impl Desk {
                 cv.sunken(x, y, w, h);
                 let items = v.items.get(k).cloned().unwrap_or_default();
                 let sel = self.state(form, k).sel;
-                let shown = sel.and_then(|s| items.get(s)).cloned().unwrap_or(caption.clone());
+                let shown = self.one_line(&ft, sel.and_then(|s| items.get(s)).unwrap_or(&caption), w - 22.0);
                 self.label_text(cv, Rect::from_min_size(pos2(x + 4.0, y), vec2(w - 22.0, h)), &ft, &shown, ink, 0, true, false);
                 let br = Rect::from_min_size(pos2(x + w - 18.0, y + 2.0), vec2(16.0, h - 4.0));
                 cv.fill(br.left(), br.top(), br.width(), br.height(), FACE);
@@ -1106,6 +1107,15 @@ impl Desk {
     /// Draws a caption in `r`: aligned left (0), right (1) or centred (2), top or
     /// vertically centred, word-wrapped, with `&` marking the underlined access key.
     #[allow(clippy::too_many_arguments)]
+    /// A list's or combo's line, cut at the right edge as VB does, never wrapped.
+    fn one_line(&self, ft: &Ft, s: &str, w: f32) -> String {
+        let mut s = s.to_string();
+        while s.len() > 1 && self.width(ft, &s) > w {
+            s.pop();
+        }
+        s
+    }
+
     pub fn label_text(&self, cv: &Cv, r: Rect, ft: &Ft, s: &str, col: Color32, align: u8, middle: bool, amp: bool) {
         let s = if ft.name.eq_ignore_ascii_case("Symbol") { symbol(s) } else { s.to_string() };
         let (plain, under) = if amp { accel(&s) } else { (s.clone(), None) };
