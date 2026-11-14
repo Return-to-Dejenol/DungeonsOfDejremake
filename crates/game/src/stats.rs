@@ -390,7 +390,7 @@ impl App {
                 let h = &g.party[sel].items[i];
                 if (500..512).contains(&d.items[h.item].w(10)) {
                     msg = d.t(0xd36b_3441).into();
-                } else if h.equipped && magic::cursed(d, h.item, g.party[sel].alignment) {
+                } else if h.equipped && magic::cursed(d, h, g.party[sel].alignment) {
                     msg = format!("{}{}{}", d.t(0x8d15_b95b), magic::item_name(d, h), d.t(0x3ddd_f38a));
                 } else {
                     self.dialog = Some(Dialog::Confirm(format!("{}{}?", d.t(0x4663_7a95), magic::item_name(d, h)), Deed::Drop(sel, i)));

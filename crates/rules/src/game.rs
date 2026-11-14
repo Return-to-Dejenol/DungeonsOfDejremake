@@ -92,6 +92,9 @@ pub struct Held {
     /// needing that many steps at the store.
     #[serde(default)]
     pub id: u8,
+    /// Its alignment (MORDOR.EXE): 0 none, 1 good, 2 neutral, 3 evil.
+    #[serde(default)]
+    pub align: u8,
     /// Saves before version 4 kept only "fully identified".
     #[serde(default, rename = "known", skip_serializing)]
     pub(crate) old_known: bool,
@@ -369,8 +372,9 @@ impl Character {
     pub fn mods(&self, d: &GameData) -> [i16; 6] {
         let mut m = [0; 6];
         for h in self.items.iter().filter(|h| h.equipped) {
+            let kin = crate::magic::kin(h, self.alignment);
             for (s, v) in m.iter_mut().enumerate() {
-                *v += d.items[h.item].w(33 + s);
+                *v += crate::magic::aligned(d.items[h.item].w(33 + s), kin);
             }
         }
         m
@@ -386,7 +390,7 @@ impl Character {
     /// A worn item's flag (w7; sub11B9): 0 levitate, 1 invisible, 2 protection, 3 see
     /// invisible.
     fn worn(&self, d: &GameData, bit: u32) -> bool {
-        self.items.iter().any(|h| h.equipped && d.items[h.item].long(7) >> bit & 1 != 0)
+        self.items.iter().any(|h| h.equipped && crate::magic::kin(h, self.alignment) == 0 && d.items[h.item].long(7) >> bit & 1 != 0)
     }
 
     pub fn levitates(&self, d: &GameData) -> bool {
@@ -416,9 +420,12 @@ impl Character {
         let worn = if self.worn(data, 2) { self.level() as i32 / 2 + 1 } else { 0 };
         let p = f64::from(self.buffs.protection.max(worn).max(1));
         let (mut a, mut d) = (10 + bonus + ad(0), 10 + bonus + ad(1) + strong + (3.0 * p.ln().powi(2)).round_ties_even() as i32);
+        // A neighbouring alignment halves an item's A/D, the opposite one negates it.
         for h in self.items.iter().filter(|h| h.equipped) {
-            a += i32::from(data.items[h.item].attack);
-            d += i32::from(data.items[h.item].defense);
+            let (it, kin) = (&data.items[h.item], crate::magic::kin(h, self.alignment));
+            let ad = |v: i16| if kin == 1 { (f64::from(v) / 2.0).round_ties_even() as i32 } else { i32::from(crate::magic::aligned(v, kin)) };
+            a += ad(it.attack);
+            d += ad(it.defense);
         }
         (a, d)
     }
@@ -575,7 +582,7 @@ impl Character {
         if refused {
             return Err(refusal);
         }
-        if self.items.iter().any(|h| h.equipped && crate::magic::cursed(data, h.item, self.alignment)) {
+        if self.items.iter().any(|h| h.equipped && crate::magic::cursed(data, h, self.alignment)) {
             return Err(data.t(0x52e3_ce99).into());
         }
         let cost = self.join_cost(data, g);
@@ -605,7 +612,7 @@ impl Character {
             if self.items[slot].item == HANDS {
                 return Err("Your hands are always ready.".into());
             }
-            if crate::magic::cursed(data, self.items[slot].item, self.alignment) {
+            if crate::magic::cursed(data, &self.items[slot], self.alignment) {
                 return Err(data.t(0x8616_d862).into());
             }
             self.items[slot].equipped = false;
@@ -648,8 +655,8 @@ impl Character {
         if (0..6).any(|s| self.stats[s] < it.w(26 + s)) {
             return refuse(0x0f97_d4af);
         }
-        let mods = self.mods(data);
-        if (0..6).any(|s| self.stats[s] + mods[s] + it.w(33 + s) < data.races[self.race].stat_min[s]) {
+        let (mods, kin) = (self.mods(data), crate::magic::kin(&self.items[slot], self.alignment));
+        if (0..6).any(|s| self.stats[s] + mods[s] + crate::magic::aligned(it.w(33 + s), kin) < data.races[self.race].stat_min[s]) {
             return refuse(0x1735_6505);
         }
         // A weapon takes the place of Hands.
@@ -712,7 +719,7 @@ impl Character {
         }
         // Saves from before Hands was carried get it back in the first slot.
         if !c.items.iter().any(|h| h.item == HANDS) {
-            c.items.insert(0, Held { item: HANDS, equipped: false, charges: 0, id: 0, old_known: true });
+            c.items.insert(0, Held { item: HANDS, equipped: false, charges: 0, id: 0, align: 0, old_known: true });
         }
         c.version = SAVE_VERSION;
         Ok(c)
@@ -1306,30 +1313,48 @@ impl Game {
         &mut self.store
     }
 
-    /// Member `i`'s price for an item (CHA's passive included).
-    pub fn buy_price(&mut self, data: &GameData, i: usize, item: usize) -> u64 {
-        let s = self.stock(data).count(item);
-        store::cha_buy(&self.party[i], data, store::buy_price(data, item, s))
+    /// Member `i`'s price for an item of alignment `al` (CHA's passive included).
+    pub fn buy_price(&mut self, data: &GameData, i: usize, item: usize, al: u8) -> u64 {
+        let s = self.stock(data).count(item, al);
+        store::cha_buy(&self.party[i], data, store::buy_price(data, item, al, s))
     }
 
     pub fn sell_price(&mut self, data: &GameData, i: usize, slot: usize) -> u64 {
         let h = self.party[i].items[slot].clone();
-        let s = self.stock(data).count(h.item);
+        let s = self.stock(data).sell_count(&h);
         store::cha_sell(&self.party[i], data, store::sell_price(data, &h, s))
     }
 
     pub fn identify_price(&mut self, data: &GameData, i: usize, slot: usize) -> u64 {
         let h = self.party[i].items[slot].clone();
-        let s = self.stock(data).count(h.item);
+        let s = self.stock(data).count(h.item, h.align);
         store::identify_price(data, &h, s)
+    }
+
+    /// Realigning a pack item to alignment `to` (1-3) costs 0.72 P, twice that across
+    /// two steps; never a worn one (cmdRealign_Click).
+    pub fn realign(&mut self, data: &GameData, i: usize, slot: usize, to: u8) -> Result<String, (u32, String)> {
+        const TITLE: u32 = 0x4c34_6180;
+        let c = &mut self.party[i];
+        let h = &c.items[slot];
+        if h.equipped {
+            return Err((0x9fa0_af51, data.t(0x5dab_1ecb).into()));
+        }
+        let cost = (0.72 * f64::from(data.items[h.item].price) * if h.align.abs_diff(to) > 1 { 2.0 } else { 1.0 }).round_ties_even() as u64;
+        if c.gold + c.bank < cost {
+            return Err((TITLE, data.t(0x22bd_be43).into()));
+        }
+        c.pay(cost);
+        c.items[slot].align = to;
+        Ok(String::new())
     }
 
     /// The store's services (FRMCTYS) answer in the original's words: Ok is the
     /// Messages line (often none), Err a message box (title's text id, text).
-    pub fn buy(&mut self, data: &GameData, i: usize, item: usize) -> Result<String, (u32, String)> {
+    pub fn buy(&mut self, data: &GameData, i: usize, item: usize, al: u8) -> Result<String, (u32, String)> {
         const BUY: u32 = 0xf158_f0aa;
-        let price = self.buy_price(data, i, item);
-        if self.store.count(item) == 0 {
+        let price = self.buy_price(data, i, item, al);
+        if self.store.count(item, al) == 0 {
             return Err((BUY, "The store has none left.".into()));
         }
         let c = &mut self.party[i];
@@ -1340,8 +1365,8 @@ impl Game {
             return Err((BUY, data.t(0x6ac7_6f90).into()));
         }
         c.pay(price);
-        c.items.push(crate::magic::new_held(data, item, true));
-        self.store.take(item);
+        c.items.push(Held { align: al, ..crate::magic::new_held(data, item, true) });
+        self.store.take(item, al);
         Ok(format!("{}{}{}{}.", data.t(0x4a29_b680), c.items.len(), data.t(0x7dba_5663), data.items[item].name))
     }
 
@@ -1353,7 +1378,7 @@ impl Game {
         if (500..512).contains(&it.w(10)) {
             return data.t(0xdb51_2bd8).into();
         }
-        if self.party[i].items[slot].equipped && crate::magic::cursed(data, self.party[i].items[slot].item, self.party[i].alignment) {
+        if self.party[i].items[slot].equipped && crate::magic::cursed(data, &self.party[i].items[slot], self.party[i].alignment) {
             return data.t(0x0997_b513).into();
         }
         let price = self.sell_price(data, i, slot);
@@ -1597,8 +1622,8 @@ mod tests {
         let (d, t) = (data(), Tuning::load(&[]).unwrap());
         let mut g = Game::new(hero(&d, "Quaffer", 0, 1, 0, 1));
         let potion = d.items.iter().position(|i| i.id == magic::POTION_OF_EXPERIENCE).unwrap();
-        assert_eq!(g.stock(&d).count(potion), crate::store::UNLIMITED);
-        g.buy(&d, 0, potion).unwrap();
+        assert_eq!(g.stock(&d).count(potion, 0), crate::store::UNLIMITED);
+        g.buy(&d, 0, potion, 0).unwrap();
         g.enter_dungeon(&d).unwrap();
         magic::use_item(&mut g, &d, &t, 0, potion);
         assert_eq!(g.party[0].add_xp(&d, &t, 10), 15);
@@ -1728,6 +1753,21 @@ mod tests {
         let (p, full) = (crate::store::identify_price(&d, &h, 0), crate::store::sell_price(&d, &h, 0));
         h.id = 0;
         assert!(crate::store::sell_price(&d, &h, 0) > 2 * full && p > 0 && crate::store::identify_price(&d, &h, 0) == 0);
+        // Alignment: an Evil wearer of a Good sword gets its A/D negated and can't take
+        // it off; a Neutral one gets half (sub0F74). The store keeps one per alignment.
+        let sword = item("Iron Sword");
+        let s = crate::store::Store::fresh(&d);
+        assert_eq!((s.count(sword, 0), s.count(sword, 1), s.count(sword, 3)), (0, 1, 1));
+        let mut evil = hero(&d, "Evil", 0, 2, 1, 20);
+        let bronze = evil.items.iter().position(|h| h.item == item("Bronze Sword")).unwrap();
+        evil.toggle_equip(&d, bronze).unwrap();
+        let bare = evil.att_def(&d, &Tuning::load(&[]).unwrap()).0;
+        evil.items.push(Held { align: 1, ..magic::new_held(&d, sword, true) });
+        let k = evil.items.len() - 1;
+        evil.toggle_equip(&d, k).unwrap();
+        let worn = evil.att_def(&d, &Tuning::load(&[]).unwrap()).0;
+        assert_eq!(worn - bare, -i32::from(d.items[sword].attack));
+        assert!(evil.toggle_equip(&d, k).is_err(), "an opposite item sticks");
     }
 
     /// timAilment_Timer's paralysis: strength = power level, the stay roll, gone with no
@@ -1874,7 +1914,7 @@ mod tests {
         assert_eq!(c.join_cost(&d, 6), 7_465_074);
         let dagger = d.items.iter().position(|i| i.name == "Iron Dagger").unwrap();
         let p = f64::from(d.items[dagger].price);
-        assert_eq!(crate::store::buy_price(&d, dagger, 1), (1.5 * p / 1.15).round() as u64);
+        assert_eq!(crate::store::buy_price(&d, dagger, 0, 1), (1.5 * p / 1.15).round() as u64);
         let kobold = &d.monsters[d.monsters.iter().position(|m| m.name == "Kobold").unwrap()];
         let gold = crate::treasure::gold(&mut c, kobold, 3, false);
         assert!((400..10_000).contains(&gold), "{gold}");

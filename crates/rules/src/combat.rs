@@ -427,6 +427,7 @@ impl Game {
         // fn129A's identification level, and w13 charges give or take up to half.
         let mut held: Held = crate::magic::new_held(data, item, false);
         held.id = crate::treasure::identifies(&self.party[j], data, item);
+        held.align = crate::magic::roll_align(&mut self.party[j], data, item);
         let full = data.items[item].w(13);
         if full > 1 && data.items[item].id < crate::magic::POTION_OF_EXPERIENCE {
             let r = &mut self.party[j];

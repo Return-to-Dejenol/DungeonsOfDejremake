@@ -88,7 +88,9 @@ impl App {
         let sel = self.sel.min(self.game.as_ref().unwrap().party.len() - 1);
         let g = self.game.as_mut().unwrap();
         let search = desk.state(F, "txtSearch").text.to_lowercase();
-        let list: Vec<usize> = g.stock(d).listed(d).into_iter().filter(|&i| d.items[i].name.to_lowercase().contains(&search)).collect();
+        // The alignment tabs (cmdAlign: none, good, neutral, evil) pick the shelf.
+        let al = desk.state(F, "align").sel.unwrap_or(0).min(3) as u8;
+        let list: Vec<usize> = g.stock(d).listed(d, al).into_iter().filter(|&i| d.items[i].name.to_lowercase().contains(&search)).collect();
         let rows = 10usize;
         let top = desk.state(F, "vsbItems").top.min(list.len().saturating_sub(rows));
         let picked = desk.state(F, "buy").sel.filter(|&i| list.contains(&i));
@@ -104,10 +106,10 @@ impl App {
             let (k, ki) = (format!("elaItem({r})"), format!("elaItemInfo({r})"));
             let usable = item.is_some_and(|i| d.items[i].guilds & (1 << g.party[sel].guild) != 0);
             v.text(&k, item.map_or(String::new(), |i| d.items[i].name.clone())).fore(&k, if usable { Color32::BLACK } else { Color32::from_gray(128) });
-            let n = item.map(|i| g.store.count(i));
+            let n = item.map(|i| g.store.count(i, al));
             let unlimited = n.is_some_and(|n| n >= ddj_rules::store::UNLIMITED);
             v.text(&ki, match (item, n) {
-                (Some(i), Some(_)) if unlimited => crate::stats::commas(g.buy_price(d, sel, i)),
+                (Some(i), Some(_)) if unlimited => crate::stats::commas(g.buy_price(d, sel, i, al)),
                 (_, Some(n)) => n.to_string(),
                 _ => String::new(),
             });
@@ -120,14 +122,14 @@ impl App {
         }
         v.text("Label9(1)", "Stock");
         v.text("elaSelectedItem", picked.map_or(String::new(), |i| d.items[i].name.clone()));
-        v.text("elaSelectedItemCost", picked.map_or(String::new(), |i| g.buy_price(d, sel, i).to_string()));
+        v.text("elaSelectedItemCost", picked.map_or(String::new(), |i| g.buy_price(d, sel, i, al).to_string()));
         v.enable("cmdBuy", picked.is_some()).enable("cmdInfo", picked.is_some());
         // The items dropped on the Uncurse and Identify boxes (slots in the member's pack).
         let unc = desk.state(F, "uncurse").sel.filter(|&s| s < g.party[sel].items.len());
         let idd = desk.state(F, "id").sel.filter(|&s| s < g.party[sel].items.len());
         v.text("txtUncurse", unc.map_or(String::new(), |s| magic::item_name(d, &g.party[sel].items[s])));
         v.text("lblUncurse", unc.map_or(String::new(), |s| ddj_rules::store::uncurse_price(d, g.party[sel].items[s].item).to_string()));
-        v.enable("cmdUncurse", unc.is_some_and(|s| g.party[sel].items[s].equipped && magic::cursed(d, g.party[sel].items[s].item, g.party[sel].alignment)));
+        v.enable("cmdUncurse", unc.is_some_and(|s| g.party[sel].items[s].equipped && magic::cursed(d, &g.party[sel].items[s], g.party[sel].alignment)));
         v.text("txtID", idd.map_or(String::new(), |s| magic::item_name(d, &g.party[sel].items[s])));
         v.text("lblValue", idd.map_or(String::new(), |s| g.sell_price(d, sel, s).to_string()));
         v.text("lblIDCost", idd.map_or(String::new(), |s| if g.party[sel].items[s].known() { String::new() } else { g.identify_price(d, sel, s).to_string() }));
@@ -135,6 +137,9 @@ impl App {
         v.enable("cmdSell", idd.is_some()).enable("cmdID", idd.is_some_and(|s| !g.party[sel].items[s].known())).enable("cmdIDInfo", idd.is_some());
         v.text("txtCombine", "").enable("txtCombine", false);
         let ev = desk.window(ctx, F, v, false);
+        if let Some(a) = ev.index("cmdAlign") {
+            desk.state(F, "align").sel = Some(usize::from(a));
+        }
         if let Some(r) = ev.index("elaItem").or(ev.index("elaItemInfo")) {
             desk.state(F, "buy").sel = list.get(top + usize::from(r)).copied();
         }
@@ -151,7 +156,12 @@ impl App {
         if ev.click("cmdBuy")
             && let Some(i) = picked
         {
-            msg = answer(&mut self.boxes, d, g.buy(d, sel, i));
+            msg = answer(&mut self.boxes, d, g.buy(d, sel, i, al));
+        }
+        if let Some(a) = ev.index("cmdRealign")
+            && let Some(s) = idd
+        {
+            msg = answer(&mut self.boxes, d, g.realign(d, sel, s, a as u8 + 1));
         }
         if ev.click("cmdInfo")
             && let Some(i) = picked

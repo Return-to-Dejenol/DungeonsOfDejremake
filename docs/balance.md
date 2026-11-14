@@ -124,10 +124,11 @@ are listed at the end. Notation:
 
 **City** (`store.rs`, `game.rs`, `monsters.rs`):
 - **Stock:**
-  - The store's and Confinement's stock is shared by every character (saves/store.json). Store-only (level 0) items never run out.
-  - Buying costs 1.5 P / (ln s + 1.15) with s in stock (1.3 P for the last one, 0.45 P with nine); store-only items cost P.
+  - The store's and Confinement's stock is shared by every character (saves/store.json). The store counts each item per alignment (none, good, neutral, evil; 9 at most), shown by the alignment buttons. It opens with an aligned level 0-1 item once in each alignment, and unaligned ones without limit (level 0) or five times. Unaligned store-only (level 0) items never run out.
+  - Buying costs 1.5 P / (ln s + 1.15) with s in that alignment's stock (1.3 P for the last one, 0.45 P with nine); unaligned store-only items cost P. Selling counts the item's own alignment (1 if only another has some).
+  - Found items take a random alignment their mask (w20) allows. An item one step from its wearer's alignment gives half its A/D and stat modifiers, an opposite one negates them and sticks as if cursed; only same-aligned or unaligned items give their flags and resistances, and a wrongly aligned item's spell does nothing (an opposite stat item takes away). Realign sets a pack item's alignment for 0.72 P, twice that across two steps.
   - The store pays 0.9 P / (s + 1.15) / (identification level + 1), less for used charges, and nothing for known cursed items. It won't take a cursed item that is worn. Items sold go back on the shelf.
-  - Resting in the city ages a day per 3.25% of hits missing, and restocks: while d100 ≤ days (up to 50), one more event. Each event is 60% new stock from the floors reached and 40% sold off.
+  - Resting in the city ages a day per 3.25% of hits missing, and restocks the store and Confinement separately: while d100 ≤ days (up to 50), one more event. Each event is 60% new stock from the floors reached (retried until a fit is found) and 40% sold off (up to 100 tries for one in stock).
 - **Item services:**
   - Identify: one level a step, for 0.23 P / ((s/2 + 1) × 0.9) / level + 1.
   - Uncurse: 1.6 P; the item comes off, fully identified.
@@ -306,7 +307,7 @@ behaviour is a known gap, not a choice.
   roll reaches the foe's hits, flag-4 monsters immune to player spells).
   **Deliberate change:** the remake's growing max SP pool and its gradual SP regen stay,
   instead of the original's flat 5 x (INT + WIS).
-- **Items (ported but for alignment, Realign and per-alignment stock):** match the original. Equip limits (two hands, the item class's count, the
+- **Items (ported):** match the original. Equip limits (two hands, the item class's count, the
   guild and guild-level rules, natural stat requirements, no stat below the race minimum);
   worn stat modifiers on a separate modified-stat array; levitate, invisible, protection
   and see invisible from worn items; wearable spell items stay when their charges run out

@@ -243,9 +243,33 @@ pub fn consumable(d: &GameData, item: usize) -> bool {
     matches!(d.items[item].kind, 23..=28 | 30 | 31)
 }
 
-/// Cursed (w40, MORDOR.EXE): it sticks once equipped.
-pub fn cursed(d: &GameData, item: usize, _alignment: u8) -> bool {
-    d.items[item].w(40) != 0
+/// Cursed (w40), or of the wearer's opposite alignment: it sticks once equipped (sub0F74).
+pub fn cursed(d: &GameData, h: &Held, alignment: u8) -> bool {
+    d.items[h.item].w(40) != 0 || kin(h, alignment) == 2
+}
+
+/// An item's alignment against its user's (sub0F74): 0 the same or none, 1 a step
+/// apart, 2 opposite.
+pub fn kin(h: &Held, alignment: u8) -> u8 {
+    if h.align == 0 { 0 } else { (h.align - 1).abs_diff(alignment) }
+}
+
+/// A stat modifier through alignment: whole, Int(half) a step apart, negated opposite.
+pub fn aligned(v: i16, kin: u8) -> i16 {
+    match kin {
+        0 => v,
+        1 => v.div_euclid(2),
+        _ => -v,
+    }
+}
+
+/// An alignment from an item's mask (w20; monOpenChest): none unless the mask allows more.
+pub(crate) fn roll_align(r: &mut Character, d: &GameData, item: usize) -> u8 {
+    let mask = d.items[item].long(20);
+    if mask <= 1 {
+        return 0;
+    }
+    (0..100).map(|_| r.roll(4) as u8).find(|&a| mask >> a & 1 != 0).unwrap_or(0)
 }
 
 /// STR, INT, WIS, CON, CHA, DEX needed to equip (w26-31).
@@ -255,14 +279,27 @@ pub fn stat_req(d: &GameData, item: usize) -> [i16; 6] {
 
 pub fn new_held(d: &GameData, item: usize, known: bool) -> Held {
     let charges = if d.items[item].id >= POTION_OF_EXPERIENCE { 1 } else { word(&d.items[item], 13).max(0) };
-    Held { item, equipped: false, charges, id: if known { 0 } else { 2 }, old_known: false }
+    Held { item, equipped: false, charges, id: if known { 0 } else { 2 }, align: 0, old_known: false }
 }
 
-/// An item's name, or the original's "Unidentified Item", with its charges.
+/// An item's name by what is known of it (fn12EF): fully, with its alignment, charges
+/// and curse; its name; its type; its class; or "Unidentified Item".
 pub fn item_name(d: &GameData, h: &Held) -> String {
     let it = &d.items[h.item];
-    let charges = if h.charges > 0 && (consumable(d, h.item) || item_spell(d, h.item).is_some()) { format!(" [{}]", h.charges) } else { String::new() };
-    format!("{}{charges}", if h.known() { &it.name } else { d.t(0xee45_3c5e) })
+    let kind = it.kind as usize;
+    let class = d.item_type_class.get(kind).copied().unwrap_or(0) as usize;
+    match h.id {
+        0 => {
+            let al = if h.align > 0 { format!(" {}", d.t([0x6a77_18bd, 0x7e99_ca7b, 0x82af_9716, 0x8a9e_5a8d][usize::from(h.align.min(3))])) } else { String::new() };
+            let charges = if h.charges > 0 || it.w(13) > 0 { format!(" [{}]", h.charges) } else { String::new() };
+            let curse = if it.w(40) != 0 { d.t(0xe040_1cce) } else { "" };
+            format!("{}{al}{charges}{curse}", it.name)
+        }
+        1 => it.name.clone(),
+        2 => d.item_types.get(kind).cloned().unwrap_or_default(),
+        3 => d.item_classes.get(class).cloned().unwrap_or_default(),
+        _ => d.t(0xee45_3c5e).into(),
+    }
 }
 
 fn target_ally(g: &Game, t: Target, caster: usize) -> usize {
@@ -322,6 +359,12 @@ pub fn use_item(g: &mut Game, d: &GameData, t: &Tuning, i: usize, item: usize) {
         return g.tell(i, CHAR_HIT, d.t(0x8d26_48cf).into(), Some(named));
     };
     g.party[i].items[slot].id = 0;
+    // A wrongly aligned item does nothing, and an opposite stat item takes away.
+    let kin = kin(&g.party[i].items[slot], g.party[i].alignment);
+    if kin == 1 || kin == 2 && it.w(10) != 1 {
+        g.tell(i, CHAR_HIT, d.t(0x9080_da93).into(), Some(format!("\"{name}\"{}", d.t(0x8366_5842))));
+        return spend(g, d, i, slot, item);
+    }
     match it.id {
         POTION_OF_EXPERIENCE | GREATER_POTION_OF_EXPERIENCE => {
             let mult = if it.id == POTION_OF_EXPERIENCE { 1.5 } else { 2.0 };
@@ -349,7 +392,7 @@ pub fn use_item(g: &mut Game, d: &GameData, t: &Tuning, i: usize, item: usize) {
                 1 => {
                     for st in 0..6 {
                         let was = c.stats[st];
-                        c.stats[st] = (was + it.w(33 + st)).clamp(r.stat_min[st], r.stat_max[st] + 5);
+                        c.stats[st] = (was + aligned(it.w(33 + st), kin)).clamp(r.stat_min[st], r.stat_max[st] + 5);
                         if c.stats[st] != was {
                             said.push((st, c.stats[st] - was));
                         }
@@ -377,6 +420,11 @@ pub fn use_item(g: &mut Game, d: &GameData, t: &Tuning, i: usize, item: usize) {
     if it.kind == TOME {
         g.party[i].age_days += 28;
     }
+    spend(g, d, i, slot, item);
+}
+
+/// A use: a charge gone, and a used-up kind thrown away at none.
+fn spend(g: &mut Game, d: &GameData, i: usize, slot: usize, item: usize) {
     let h = &mut g.party[i].items[slot];
     h.charges -= 1;
     if h.charges <= 0 && consumable(d, item) {

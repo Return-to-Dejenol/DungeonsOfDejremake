@@ -21,8 +21,9 @@ const FILE: &str = "store.json";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Store {
-    /// Count per item (index into `GameData::items`).
-    pub items: Vec<u8>,
+    /// Count per item (index into `GameData::items`) and alignment (none, good, neutral,
+    /// evil), as MORDOR.EXE keeps it.
+    pub items: Vec<[u8; 4]>,
     /// Count per monster (index into `GameData::monsters`).
     pub companions: Vec<u8>,
     /// The deepest floor reached: what can appear on the shelves.
@@ -33,18 +34,20 @@ pub struct Store {
 }
 
 impl Store {
-    /// The opening stock (MORDOR.EXE): the six special items once each; every
-    /// uncursed level-0 item without limit and level-1 item five times, up to 200,000
-    /// gold; and two of the first monsters of six kinds in Confinement.
+    /// The opening stock (MORDOR.EXE, sub05C2): the six special items once each; of the
+    /// uncursed level 0-1 items up to 200,000 gold, an aligned one once in each alignment,
+    /// an unaligned one without limit (level 0) or five times; and two of the first
+    /// monsters of six kinds in Confinement.
     pub fn fresh(d: &GameData) -> Self {
         let items = (0..d.items.len())
             .map(|i| {
                 let it = &d.items[i];
                 match () {
-                    _ if (356..=361).contains(&it.id) => 1,
-                    _ if it.level > 1 || it.price == 0 || it.price > 200_000 || it.w(40) != 0 => 0,
-                    _ if it.level == 0 => UNLIMITED,
-                    _ => 5,
+                    _ if (356..=361).contains(&it.id) => [1, 0, 0, 0],
+                    _ if it.level > 1 || it.price == 0 || it.price > 200_000 || it.w(40) != 0 => [0; 4],
+                    _ if it.long(20) > 1 => [0, 1, 1, 1],
+                    _ if it.level == 0 => [UNLIMITED, 0, 0, 0],
+                    _ => [5, 0, 0, 0],
                 }
             })
             .collect();
@@ -70,29 +73,36 @@ impl Store {
         fs::write(dir.join(FILE), serde_json::to_vec(self)?)
     }
 
-    pub fn count(&self, item: usize) -> u8 {
-        self.items.get(item).copied().unwrap_or(0)
+    pub fn count(&self, item: usize, al: u8) -> u8 {
+        self.items.get(item).map_or(0, |n| n[usize::from(al.min(3))])
     }
 
-    /// What the store has, by kind then price.
-    pub fn listed(&self, d: &GameData) -> Vec<usize> {
-        let mut v: Vec<usize> = (0..d.items.len()).filter(|&i| self.count(i) > 0).collect();
+    /// The stock a sale is priced on (fn273B): its alignment's, or 1 when only another
+    /// alignment has some.
+    pub fn sell_count(&self, h: &Held) -> u8 {
+        let n = self.count(h.item, h.align);
+        if n == 0 && (0..4).any(|a| self.count(h.item, a) > 0) { 1 } else { n }
+    }
+
+    /// What the store has in alignment `al`, by kind then price.
+    pub fn listed(&self, d: &GameData, al: u8) -> Vec<usize> {
+        let mut v: Vec<usize> = (0..d.items.len()).filter(|&i| self.count(i, al) > 0).collect();
         v.sort_by_key(|&i| (d.items[i].kind, d.items[i].price));
         v
     }
 
     /// One bought: limited stock goes down.
-    pub(crate) fn take(&mut self, item: usize) {
-        if let Some(n) = self.items.get_mut(item).filter(|n| (1..UNLIMITED).contains(*n)) {
+    pub(crate) fn take(&mut self, item: usize, al: u8) {
+        if let Some(n) = self.items.get_mut(item).map(|n| &mut n[usize::from(al.min(3))]).filter(|n| (1..UNLIMITED).contains(*n)) {
             *n -= 1;
         }
     }
 
-    /// One sold: back on the shelf unless cursed, store-only or partly used.
+    /// One sold: back on its alignment's shelf unless cursed, store-only or partly used.
     pub(crate) fn put(&mut self, d: &GameData, h: &Held) {
         let it = &d.items[h.item];
         let used = magic::consumable(d, h.item) && h.charges < it.w(13);
-        if let Some(n) = self.items.get_mut(h.item).filter(|n| **n < 9)
+        if let Some(n) = self.items.get_mut(h.item).map(|n| &mut n[usize::from(h.align.min(3))]).filter(|n| **n < 9)
             && it.level > 0
             && it.w(40) == 0
             && !used
@@ -101,36 +111,44 @@ impl Store {
         }
     }
 
-    /// Resting `days` in the city restocks (MORDOR.EXE): while d100 <= days (50 at most)
-    /// one more event, 60% bringing an item (and a monster to Confinement), 40% selling
-    /// one off. Deeper floors reached bring deeper finds, the shallow ones likelier.
+    /// Resting `days` in the city restocks (mdrReplenishStore, mdrReplenishCStore): the
+    /// store and Confinement each run events while d100 <= days (50 at most), 60%
+    /// bringing one (retried until a fit is found) and 40% selling one off (up to 100
+    /// tries for one in stock). Deeper floors reached bring deeper finds, the shallow
+    /// ones likelier; an item comes in an alignment its mask allows.
     pub fn restock(&mut self, d: &GameData, rng: &mut Character, days: u32) {
         let p = f64::from(days.clamp(1, 50));
         let deep = self.deepest.clamp(1, 14) as i32;
-        while rng.rnd() * 100.0 <= p {
-            let add = rng.rnd() * 100.0 < 60.0;
+        let level = |rng: &mut Character| {
             let r = rng.d100();
-            let level = (1..=deep).filter(|&a| f64::from(r) < 100.0 * (1.0 - f64::from(a) / f64::from(deep + 1))).count().clamp(1, deep as usize) as i16;
-            let kind = (rng.rnd() * 35.0).round_ties_even() as i16;
-            let items: Vec<(usize, i16)> =
-                (0..d.items.len()).filter(|&i| d.items[i].kind == kind && (1..=level).contains(&d.items[i].level) && d.items[i].w(40) == 0).map(|i| (i, d.items[i].w(6))).collect();
-            if let Some(i) = weighted(rng, &items) {
-                let n = &mut self.items[i];
-                if add && *n < 9 {
-                    *n += 1;
-                } else if !add && (1..UNLIMITED).contains(n) {
-                    *n -= 1;
+            (1..=deep).filter(|&a| f64::from(r) < 100.0 * (1.0 - f64::from(a) / f64::from(deep + 1))).count().clamp(1, deep as usize) as i16
+        };
+        while rng.rnd() * 100.0 <= p {
+            let (add, level) = (rng.rnd() * 100.0 < 60.0, level(rng));
+            for _ in 0..if add { 1000 } else { 100 } {
+                let kind = (rng.rnd() * d.item_types.len() as f64).round_ties_even() as i16;
+                let items: Vec<(usize, i16)> =
+                    (0..d.items.len()).filter(|&i| d.items[i].kind == kind && (1..=level).contains(&d.items[i].level) && d.items[i].w(40) == 0).map(|i| (i, d.items[i].w(6))).collect();
+                let Some(i) = weighted(rng, &items) else { continue };
+                let al = if add { usize::from(magic::roll_align(rng, d, i)) } else { (0..4).find(|&a| (1..UNLIMITED).contains(&self.items[i][a])).unwrap_or(4) };
+                if al < 4 {
+                    let n = &mut self.items[i][al];
+                    if add { *n = (*n + 1).min(9) } else { *n -= 1 }
+                    break;
                 }
             }
-            let kind = (rng.rnd() * 18.0).round_ties_even() as i16;
-            let monsters: Vec<(usize, i16)> =
-                (0..d.monsters.len()).filter(|&m| d.monsters[m].kind == kind && (1..=level).contains(&d.monsters[m].level)).map(|m| (m, d.monsters[m].weight)).collect();
-            if let Some(m) = weighted(rng, &monsters) {
+        }
+        while rng.rnd() * 100.0 <= p {
+            let (add, level) = (rng.rnd() * 100.0 < 60.0, level(rng));
+            for _ in 0..if add { 1000 } else { 100 } {
+                let kind = (rng.rnd() * d.monster_types.len() as f64).round_ties_even() as i16;
+                let monsters: Vec<(usize, i16)> =
+                    (0..d.monsters.len()).filter(|&m| d.monsters[m].kind == kind && (1..=level).contains(&d.monsters[m].level)).map(|m| (m, d.monsters[m].weight)).collect();
+                let Some(m) = weighted(rng, &monsters) else { continue };
                 let n = &mut self.companions[m];
-                if add && *n < 9 {
-                    *n += 1;
-                } else if !add && *n > 0 {
-                    *n -= 1;
+                if add || *n > 0 {
+                    if add { *n = (*n + 1).min(9) } else { *n -= 1 }
+                    break;
                 }
             }
         }
@@ -155,11 +173,11 @@ fn stock(s: u8) -> f64 {
     f64::from(s.clamp(1, 9))
 }
 
-/// The store's price with `s` in stock: a store-only item's own price, otherwise
-/// 1.5 P / (ln s + 1.15): 1.3 P for the last one, 0.45 P with nine.
-pub fn buy_price(d: &GameData, item: usize, s: u8) -> u64 {
+/// The store's price with `s` in stock: an unaligned store-only item's own price,
+/// otherwise 1.5 P / (ln s + 1.15): 1.3 P for the last one, 0.45 P with nine.
+pub fn buy_price(d: &GameData, item: usize, al: u8, s: u8) -> u64 {
     let p = f64::from(d.items[item].price);
-    if d.items[item].level == 0 { p as u64 } else { (1.5 * p / (stock(s).ln() + 1.15)).round_ties_even() as u64 }
+    if d.items[item].level == 0 && al == 0 { p as u64 } else { (1.5 * p / (stock(s).ln() + 1.15)).round_ties_even() as u64 }
 }
 
 /// What the store pays (fn273B): 0.9 P / (s + 1.15) / (identification level + 1), less

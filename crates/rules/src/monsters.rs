@@ -59,7 +59,7 @@ const ACID_RES: usize = 10;
 /// a higher race value).
 pub fn resist(c: &Character, d: &GameData, slot: usize) -> i32 {
     let race = i32::from(d.races[c.race].resist.get(slot).copied().unwrap_or(0));
-    let item = c.items.iter().any(|h| h.equipped && d.items[h.item].long(24) >> slot & 1 != 0);
+    let item = c.items.iter().any(|h| h.equipped && crate::magic::kin(h, c.alignment) == 0 && d.items[h.item].long(24) >> slot & 1 != 0);
     let spell = c.buffs.resist & (1 << slot) != 0;
     race.max(if item { 90 } else { 0 }).max(if spell { 95 } else { 0 })
 }
