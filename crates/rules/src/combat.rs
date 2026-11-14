@@ -174,10 +174,8 @@ impl Game {
                 foe.asleep = foe.asleep.saturating_sub(1);
             }
         }
-        // Paralysis wears off round by round as well as step by step.
-        for m in &mut self.party {
-            m.status.paralysis = m.status.paralysis.saturating_sub(1);
-        }
+        // A round is a tick of the ailment timer (docs/balance.md).
+        self.ailments(data);
     }
 
     /// Carries out one member's action.
@@ -219,6 +217,7 @@ impl Game {
             }
         }
         if self.fight.take().is_some() {
+            self.ailments(data);
             self.set_pos(data, back);
         }
     }
@@ -391,6 +390,8 @@ impl Game {
 
     fn win(&mut self, _data: &GameData, _t: &Tuning) {
         let Some(f) = self.fight.take() else { return };
+        // Paralysis ends with the fight (timAilment_Timer).
+        self.ailments(_data);
         let Pos { x, y, floor, .. } = self.pos();
         let area = _data.floors[floor - 1].square(x, y).area;
         self.cleared.push((floor, area));

@@ -71,7 +71,9 @@ are listed at the end. Notation:
   - The remake's depth and catch-up bonuses apply on top.
 - **Peace:** a good group meets a good leader in peace, and a neutral group 40% of the time. Each round a peaceful group turns hostile at a chance set by the two alignments (15-100) minus 7.5 ln CHA.
 - **Leaving** a fight gives the monsters a free attack, 50% + 5% per point of their DEX over the leader's (5% at least).
-- **Ailments:** poison and disease wear off when d200 + 2 (CON − 10) − 2 × strength beats 185 (195 for disease). Until then poison costs 2 hits a step and disease 1.
+- **Ailments** (timAilment_Timer; one tick is a combat round in a fight and a step outside, never while idle):
+  - Poison and disease wear off when d200 + 2 (CON − 10) − 2 × strength beats 185 (195 for disease). Until then poison costs 2 hits a tick and disease 1. An ailment already there isn't renewed.
+  - Paralysis has the monster's power level p as its strength. Each tick it holds at clamp(ln(0.6 p) / ln 1.02 − (((ln L + L/10) / ln 1.05) / 10 + 1.5 CON + paralysis resistance), 5, 90)%, L the current guild level, and it ends at once when no monsters are left. Meanwhile the stat bonus to attack and defense is lost.
 - **Level-up HP:** the guild's hits; two times in three, d(hits / 5) more; and d(CON − 16) for CON above 16.
 - **Quests:** from level 5, at the guild's quest chance (w32).
 
@@ -302,7 +304,7 @@ behaviour is a known gap, not a choice.
 - **Morgue (ported):** match the original. No raise or rescue without the gold (free for a
   character whose best guild level is 5 or below); the original's raise odds,
   complications and CON loss; a member raised in town gets the window's +10.
-- **Stand-ins replaced by the original rules:** paralysis wear-off (and paralysis ends
+- **Stand-ins replaced by the original rules:** paralysis wear-off (ported, and paralysis ends
   with the fight), poison and disease ticking in fights, guild quests, pits, chutes, water
   and quicksand, companion join offers, charm and binding, death from old age.
 - **Theft and monster spells:** match the original, including theft's gold rule and
@@ -363,8 +365,7 @@ can be changed in `patches/modern.toml` or here.
   yet); badly hurt companions may wander off.
 - **City**: the bank pays fees when the purse runs short (as the original). A guild's
   quest asks for a monster from floor level/5 (the original's choice isn't read yet).
-- **Paralysis** lasts 3 + level/2 rounds or steps (the original's wear-off isn't read
-  yet). The Teleporter trap moves the whole party, and the container is lost.
+- The Teleporter trap moves the whole party, and the container is lost.
 - **Squares**: water may hurt members wearing 12+ defense of gear (a 1 in 4 chance per
   step); quicksand hurts and may swallow a loose item; extinguish squares strip spell
   effects; anti-magic blocks casting; fog hides the view. Random teleporters keep the

@@ -367,16 +367,23 @@ fn specials(g: &mut Game, d: &GameData, m: usize, j: usize) {
         }
     }
     let lvl = w7 as u16;
+    // An ailment already there stays as it is (sub0D1D and its kin).
     if mon.specials & POISON != 0 && c.d100() > resist(c, d, POISON_RES) {
-        c.status.poison = c.status.poison.max(lvl);
+        if c.status.poison == 0 {
+            c.status.poison = lvl;
+        }
         said.push((0x7413_b904, None));
     }
     if mon.specials & DISEASE != 0 && c.d100() > resist(c, d, DISEASE_RES) {
-        c.status.disease = c.status.disease.max(lvl);
+        if c.status.disease == 0 {
+            c.status.disease = lvl;
+        }
         said.push((0x1391_68c1, None));
     }
     if mon.specials & PARALYZE != 0 && c.d100() > (resist(c, d, PARALYSIS_RES) + i32::from(c.stats[CON])).min(95) {
-        c.status.paralysis = c.status.paralysis.max(3 + lvl / 2);
+        if c.status.paralysis == 0 {
+            c.status.paralysis = w37.max(1) as u16;
+        }
         said.push((0x5826_6943, Some(format!("{} - \"{}\"", c.name, d.t(0x2a09_8669)))));
     }
     for (you, named) in said {

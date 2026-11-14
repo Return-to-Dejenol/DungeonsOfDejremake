@@ -96,7 +96,8 @@ pub struct Held {
 /// Lasting conditions; the city cures them on arrival.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Status {
-    /// Steps or rounds left.
+    /// Strengths: poison and disease the monster's level found, paralysis its power
+    /// level (MORDOR.EXE); 0 when well.
     pub poison: u16,
     pub disease: u16,
     pub paralysis: u16,
@@ -355,9 +356,12 @@ impl Character {
     /// defense (docs/balance.md).
     pub fn att_def(&self, data: &GameData, _t: &Tuning) -> (i32, i32) {
         let r = self.melee_rating();
-        let bonus = 4 * ((r - 12).max(0) - (8 - r).max(0));
+        // Paralysis takes the stat bonus away (sub0D1D).
+        let still = self.status.paralysis > 0;
+        let bonus = if still { 0 } else { 4 * ((r - 12).max(0) - (8 - r).max(0)) };
+        let strong = if still { 0 } else { (i32::from(self.stats[STR]) - 15).max(0) };
         let ad = |k: usize| self.guild_best(|g, l| guild_ad(data, g, l)[k]) as i32;
-        let (mut a, mut d) = (10 + bonus + ad(0), 10 + bonus + ad(1) + (i32::from(self.stats[STR]) - 15).max(0) + self.buffs.protection);
+        let (mut a, mut d) = (10 + bonus + ad(0), 10 + bonus + ad(1) + strong + self.buffs.protection);
         for h in self.items.iter().filter(|h| h.equipped) {
             a += i32::from(data.items[h.item].attack);
             d += i32::from(data.items[h.item].defense);
@@ -636,6 +640,15 @@ pub(crate) fn guild_ad(data: &GameData, g: usize, level: u32) -> [f64; 2] {
     [f64::from(steps) * f64::from(gd.single(114)), f64::from(steps) * f64::from(gd.single(116))]
 }
 
+/// The chance paralysis holds another tick (timAilment_Timer): ln(0.6 p) / ln 1.02 less
+/// ((ln L + L / 10) / ln 1.05) / 10 + 1.5 CON + paralysis resistance, 5-90, for strength p
+/// and current guild level L.
+pub(crate) fn paralysis_stay(data: &GameData, c: &Character) -> f64 {
+    let (p, l) = (f64::from(c.status.paralysis), f64::from(c.level().max(1)));
+    let save = ((l.ln() + l / 10.0) / 1.05f64.ln()) / 10.0 + 1.5 * f64::from(c.stats[CON]) + f64::from(crate::monsters::resist(c, data, 8));
+    ((0.6 * p).ln() / 1.02f64.ln() - save).clamp(5.0, 90.0)
+}
+
 /// A raise's odds (fn13D7): clamp(CInt(35 x CON / 4.5 + 10 k), 10, 98), k 1 for the
 /// morgue window and Raise Dead, 2 Restore Flesh, 3 Resurrect.
 pub(crate) fn raise_odds(c: &Character, k: i32) -> i32 {
@@ -912,9 +925,6 @@ impl Game {
             // Peaceful monsters let you walk on through.
             self.fight = None;
         }
-        if self.party.iter().any(|m| m.alive() && m.status.paralysis > 0) {
-            return self.say("A paralysed party member can't be left behind.");
-        }
         let Some(f) = self.floor(data) else { return };
         let Pos { x, y, facing, .. } = self.pos();
         let secret = match facing {
@@ -934,19 +944,29 @@ impl Game {
         self.arrive(data, back);
     }
 
-    /// Each step: poison and disease bite, SP trickles back, and a Healer in the party
-    /// slowly mends everyone (docs/balance.md).
+    /// Each step: an ailment tick, SP trickles back, and a Healer in the party slowly
+    /// mends everyone (docs/balance.md).
     fn walk_effects(&mut self, data: &GameData, t: &Tuning) {
         let healer = self.party.iter().any(|m| m.alive() && m.levels[HEALER] > 0);
-        let mut hurt = Vec::new();
-        for (i, m) in self.party.iter_mut().enumerate().filter(|(_, m)| m.alive()) {
+        for m in self.party.iter_mut().filter(|m| m.alive()) {
             let max_sp = m.max_sp(data, t);
             m.sp = (m.sp + ((f64::from(max_sp) * t.spells.regen_per_step).ceil() as i32)).min(max_sp);
             if healer {
                 m.hp = (m.hp + (m.max_hp / 100).max(1)).min(m.max_hp);
             }
-            // MORDOR.EXE: d200 + 2 (CON - 10) - 2 x strength above 185 (195 for disease)
-            // throws it off; otherwise poison takes 2 hits a step and disease 1.
+        }
+        self.ailments(data);
+        self.companions_step(data);
+    }
+
+    /// One tick of the original's ailment timer (timAilment_Timer): a combat round in a
+    /// fight, a step outside, never while idle (docs/balance.md). Poison and disease wear
+    /// off when d200 + 2 (CON - 10) - 2 x strength beats 185 (195), else bite for 2 (1);
+    /// paralysis wears off at `paralysis_stay`, and at once with no monsters left.
+    pub(crate) fn ailments(&mut self, data: &GameData) {
+        let foes = self.fight.as_ref().is_some_and(|f| !f.over());
+        let mut hurt = Vec::new();
+        for (i, m) in self.party.iter_mut().enumerate().filter(|(_, m)| m.alive()) {
             let con = 2 * i32::from(m.stats[CON] - 10);
             for (k, cure, dmg) in [(0, 185, 2), (1, 195, 1)] {
                 let strength = [m.status.poison, m.status.disease][k];
@@ -958,12 +978,13 @@ impl Game {
                     }
                 }
             }
-            m.status.paralysis = m.status.paralysis.saturating_sub(1);
+            if m.status.paralysis > 0 && (!foes || f64::from(m.d100()) > paralysis_stay(data, m)) {
+                m.status.paralysis = 0;
+            }
         }
         for (i, dmg) in hurt {
             self.hurt(data, i, dmg);
         }
-        self.companions_step(data);
     }
 
     /// Effects of the square just entered, then a possible encounter.
@@ -1555,6 +1576,24 @@ mod tests {
         assert_eq!(raise_odds(c, 1), 98);
         c.stats[CON] = 3;
         assert_eq!((raise_odds(c, 1), raise_odds(c, 2)), (33, 43));
+    }
+
+    /// timAilment_Timer's paralysis: strength = power level, the stay roll, gone with no
+    /// monsters; the stat bonus is lost meanwhile (sub0D1D).
+    #[test]
+    fn paralysis_as_the_original() {
+        let (d, t) = (data(), Tuning::load(&[]).unwrap());
+        let mut g = Game::new(hero(&d, "Still", 0, 1, 1, 5));
+        let c = &mut g.party[0];
+        c.stats = [18, 10, 10, 15, 10, 17];
+        let free = c.att_def(&d, &t);
+        c.status.paralysis = 15;
+        let res = f64::from(crate::monsters::resist(c, &d, 8));
+        assert!((paralysis_stay(&d, c) - (84.12 - res).clamp(5.0, 90.0)).abs() < 0.05, "{}", paralysis_stay(&d, c));
+        let held = c.att_def(&d, &t);
+        assert!(held.0 < free.0 && held.1 < free.1);
+        g.ailments(&d);
+        assert_eq!(g.party[0].status.paralysis, 0, "no monsters, no paralysis");
     }
 
     #[test]
