@@ -2029,7 +2029,7 @@ mod tests {
         let mut g = Game::new(hero(&d, "Tamer", 0, 1, 1, 5));
         g.enter_dungeon(&d).unwrap();
         let orc = d.monsters.iter().position(|m| m.name == "Orc").unwrap();
-        g.party[0].companions.push(crate::monsters::Companion { monster: orc, hp: 20, max_hp: 20, bind: 3, id: 0 });
+        g.party[0].companions.push(crate::monsters::Companion { monster: orc, hp: 20, max_hp: 20, bind: 3, id: 0, align: None });
         let mut ticks = 0;
         while !g.party[0].companions.is_empty() && ticks < 20_000 {
             g.ailments(&d);
@@ -2053,7 +2053,7 @@ mod tests {
         let drake = (0..d.monsters.len()).find(|&m| d.monsters[m].specials & 8 != 0 && d.monsters[m].power_level > 20).unwrap();
         let mut h = Game::new(hero(&d, "Keeper", 0, 1, 1, 5));
         h.enter_dungeon(&d).unwrap();
-        h.party[0].companions.push(crate::monsters::Companion { monster: drake, hp: 500, max_hp: 500, bind: 100, id: 0 });
+        h.party[0].companions.push(crate::monsters::Companion { monster: drake, hp: 500, max_hp: 500, bind: 100, id: 0, align: None });
         let foes = (0..4).map(|_| crate::combat::Foe { monster: orc, hp: 1000, max_hp: 1000, group: 0 }).collect();
         h.fight = Some(crate::combat::Fight { foes, round: 0, order: None, back: h.pos(), lair: false, peaceful: false, chest: None, defending: vec![false], gold: 0, opening: None, offers: vec![0] });
         let t = Tuning::load(&[]).unwrap();

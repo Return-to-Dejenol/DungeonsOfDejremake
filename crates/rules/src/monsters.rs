@@ -26,6 +26,16 @@ pub struct Companion {
     /// How unknown it is (fn121C): 0 known, 1-3 needing that many identifications.
     #[serde(default)]
     pub id: u8,
+    /// Its alignment when Confinement realigned it (0 good, 1 neutral, 2 evil); else
+    /// its monster's (w31).
+    #[serde(default)]
+    pub align: Option<i16>,
+}
+
+impl Companion {
+    pub fn alignment(&self, d: &GameData) -> i16 {
+        self.align.unwrap_or(d.monsters[self.monster].w(31))
+    }
 }
 
 /// How well member c knows a monster it charms (fn121C): its ID skill against
@@ -739,7 +749,8 @@ impl Game {
                 }
                 let comp = m.companions[k].clone();
                 let gone = m.rnd() * 200.0 < leave_chance(m, d, &comp) / strength || comp.bind == 0;
-                let turns = gone && comp.bind > 0 && (mon.w(31).abs_diff(i16::from(m.alignment)) > 1 || mon.w(31) == 2 && m.rnd() * 100.0 < 75.0 || mon.w(31) == 1 && m.rnd() * 100.0 < 15.0);
+                let al = comp.alignment(d);
+                let turns = gone && comp.bind > 0 && (al.abs_diff(i16::from(m.alignment)) > 1 || al == 2 && m.rnd() * 100.0 < 75.0 || al == 1 && m.rnd() * 100.0 < 15.0);
                 if gone {
                     m.companions.remove(k);
                 }
@@ -747,7 +758,7 @@ impl Game {
                 for id in said {
                     self.say(format!("{who}{}", d.t(id)));
                 }
-                if turns && self.fight.as_ref().is_none_or(|f| f.foes.first().is_none_or(|x| d.monsters[x.monster].w(31).abs_diff(mon.w(31)) <= 1)) {
+                if turns && self.fight.as_ref().is_none_or(|f| f.foes.first().is_none_or(|x| d.monsters[x.monster].w(31).abs_diff(al) <= 1)) {
                     // It joins the monsters, or starts a fight of its own.
                     let (pos, n) = (self.pos(), self.party.len());
                     let f = self.fight.get_or_insert_with(|| crate::combat::Fight { foes: Vec::new(), round: 0, order: None, back: pos, lair: false, peaceful: false, chest: None, defending: vec![false; n], gold: 0, opening: None, offers: Vec::new() });
@@ -777,7 +788,7 @@ impl Game {
                     break;
                 }
                 let foe = &mut f.foes[fi];
-                joined.push(Companion { monster: foe.monster, hp: foe.hp, max_hp: foe.max_hp, bind: -10, id: companion_id(&self.party[0], d, foe.monster) });
+                joined.push(Companion { monster: foe.monster, hp: foe.hp, max_hp: foe.max_hp, bind: -10, id: companion_id(&self.party[0], d, foe.monster), align: None });
                 foe.hp = 0;
             }
             f.offers[g] = 0;
@@ -839,7 +850,7 @@ impl Game {
         lead.pay(price);
         let hp = i32::from(d.monsters[m].hp.max(1));
         let bind = (5 + d.monsters[m].level).clamp(1, 10);
-        lead.companions.push(Companion { monster: m, hp, max_hp: hp, bind, id: 0 });
+        lead.companions.push(Companion { monster: m, hp, max_hp: hp, bind, id: 0, align: None });
         if d.monsters[m].level > 0 {
             self.store.companions[m] -= 1;
         }
@@ -863,6 +874,20 @@ impl Game {
         }
         let s = f64::from(self.store.companions.get(c.monster).copied().unwrap_or(0).min(9));
         (0.13 * companion_value(d, c.monster) / ((s / 2.0 + 1.0) * 0.9) / f64::from(c.id) + 1.0).round_ties_even() as u64
+    }
+
+    /// Realigning companion k to `to` (0-2) costs 0.72 x its value, twice that across two
+    /// steps (frmCityCStore's Realign).
+    pub fn realign_companion(&mut self, d: &GameData, k: usize, to: i16) -> Result<String, (u32, String)> {
+        let c = &self.party[0].companions[k];
+        let cost = (0.72 * companion_value(d, c.monster) * if c.alignment(d).abs_diff(to) > 1 { 2.0 } else { 1.0 }).round_ties_even() as u64;
+        let lead = &mut self.party[0];
+        if lead.gold + lead.bank < cost {
+            return Err((0x4c34_6180, d.t(0x22bd_be43).into()));
+        }
+        lead.pay(cost);
+        lead.companions[k].align = Some(to);
+        Ok(String::new())
     }
 
     pub fn identify_companion(&mut self, d: &GameData, k: usize) -> Result<String, (u32, String)> {

@@ -488,6 +488,11 @@ impl App {
         {
             msg = answer(&mut self.boxes, d, g.identify_companion(d, k));
         }
+        if let Some(a) = ev.index("cmdRealign")
+            && let Some(k) = sell
+        {
+            msg = answer(&mut self.boxes, d, g.realign_companion(d, k, a as i16));
+        }
         if ev.click("cmdSell")
             && let Some(k) = sell
         {

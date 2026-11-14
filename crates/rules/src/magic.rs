@@ -659,7 +659,7 @@ fn offensive(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f64,
                 g.award(d, t, i, m, hp, 1.0);
                 g.fight.as_mut().unwrap().foes[fi].hp = 0;
                 let id = crate::monsters::companion_id(&g.party[i], d, m);
-                g.party[i].companions.push(crate::monsters::Companion { monster: m, hp, max_hp: hp, bind: sp.level.clamp(1, 100), id });
+                g.party[i].companions.push(crate::monsters::Companion { monster: m, hp, max_hp: hp, bind: sp.level.clamp(1, 100), id, align: None });
                 charmed += 1;
                 if g.party[i].companions.len() >= crate::monsters::MAX_COMPANIONS {
                     break;
