@@ -134,6 +134,7 @@ are listed at the end. Notation:
 - **Groups:** up to w7 groups from the targeted one, up to w6 monsters of each, one after another; the first that survives ends that group. Kill spells (effect 100) and charms work only when the hits reach the monster's own. Flag 4 monsters resist all spells, flag 8 charms; typed spells (effects 75-99) touch only their monster family.
 - **Charms** join with the hits the monster had, bound at the spell's level. Control, Restrain and Domination raise a companion's binding to the spell's level + ln((10 + spell level)/5); Life Domination binds for life.
 - **Buffs:** Protection holds Int(spell level / 2) + 1, worth CInt(3 ln(P)²) defense. Sight Veil hides its target: monsters that don't see invisible take 0.5 off their multiplier against it. Resistance spells give 95% (items 90%). Levitation, Sight Veil and See Invisible take one member unless mass. All last until the city or death.
+- **Teleport and Displacement** (mdrcharTeleport): out of a fight they take offsets right, forward and (Teleport) down, from the way the party faces; the remake picks them with - and + buttons where the original had them typed, and SP is spent only when they are given. The map wraps round; Teleport moves up to 3 floors. Above the city the party falls to its death (to the morgue); into rock or below the deepest floor it is entombed (Ethereal Portal too): no rescue, no waiting, no morgue, only Resurrect at 10% (complications whenever it fails). In a fight Teleport goes off like an attack spell.
 - **Raise Dead and Resurrect:** fn13D7's odds with +10 and +30; a failure may bring complications (as the morgue). Restore Flesh unstones with +20. Fate re-rolls the caster's hits and SP from 1 to their max.
 
 **City** (`store.rs`, `game.rs`, `monsters.rs`):
@@ -353,8 +354,8 @@ behaviour is a known gap, not a choice.
   levels, bank item storage, Pool, restocking and the minor items): match the original by
   default. Where a rule would hurt play on a phone, it comes back to the owner as its own
   decision first.
-- **Still to port** (2026-11-14): Teleport and Displacement wait on the owner (they take typed
-  offsets).
+- **Teleport and Displacement (ported, owner's choice 2026-11-14):** the original's offsets,
+  picked with - and + buttons instead of typed.
 
 ## Taken while building (review at play-test)
 

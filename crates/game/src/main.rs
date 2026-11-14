@@ -65,6 +65,8 @@ enum Dialog {
     /// A question for the Seer: the button asked (Character 0, Monster 2, Item 3).
     Seer(u16),
     Macros(usize),
+    /// Teleport or Displacement: the offsets, picked with +/- (the original typed them).
+    Teleport,
     /// Cloud saves: the server and the sync code.
     Sync,
     /// A character changed here and on another device: keep which?
@@ -546,6 +548,9 @@ impl App {
             let (title, text) = self.boxes.remove(0);
             self.dialog = Some(Dialog::Msg(title, text));
         }
+        if self.dialog.is_none() && self.game.as_ref().is_some_and(|g| g.teleport_pending.is_some()) {
+            self.dialog = Some(Dialog::Teleport);
+        }
         let Some(dlg) = self.dialog.clone() else { return };
         let close = match dlg.clone() {
             Dialog::Msg(title, text) => {
@@ -635,6 +640,7 @@ impl App {
             Dialog::Recruit => self.recruit(desk, ctx, d),
             Dialog::Seer(b) => self.seer(desk, ctx, d, b),
             Dialog::Macros(i) => self.macros(desk, ctx, d, i),
+            Dialog::Teleport => self.teleport(desk, ctx, d, t),
             Dialog::Sync => self.sync_dialog(desk, ctx),
             Dialog::Clash => self.clash(desk, ctx, d),
         };

@@ -322,8 +322,56 @@ pub fn cast(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, target: 
     if !gate(g, d, i, s) {
         return;
     }
+    // Teleport and Displacement out of a fight ask for offsets first; the SP goes when
+    // they are given.
+    if matches!(d.spells[s].effect, 7 | 8) && g.fight.is_none() {
+        g.teleport_pending = Some((i, s, sp_cost(&g.party[i], d, s)));
+        return;
+    }
     g.party[i].sp -= sp_cost(&g.party[i], d, s);
     effect(g, d, t, i, s, 0, target);
+}
+
+/// Teleport or Displacement with the player's offsets (mdrcharTeleport): right and
+/// forward from the way the party faces, wrapping round the map, and for Teleport down
+/// up to 3 floors. Above the city the party falls to its death; into rock, or below the
+/// deepest floor, it is entombed. None cancels.
+pub fn teleport(g: &mut Game, d: &GameData, t: &Tuning, offsets: Option<(i32, i32, i32)>) {
+    let Some((i, s, cost)) = g.teleport_pending.take() else { return };
+    let Some((right, fwd, down)) = offsets else { return };
+    g.party[i].sp -= cost;
+    g.say(format!("{} casts {}.", g.party[i].name, d.spells[s].name));
+    let p = g.pos();
+    let (dx, dy) = match p.facing % 4 {
+        0 => (right, fwd),
+        1 => (fwd, -right),
+        2 => (-right, -fwd),
+        _ => (-fwd, right),
+    };
+    let down = if d.spells[s].effect == 7 { down.clamp(-3, 3) } else { 0 };
+    let floor = p.floor as i32 + down;
+    if floor <= 0 {
+        g.say(d.t(if g.party.len() == 1 { 0xe7c0_1619 } else { 0xdd15_5c0d }));
+        for m in g.party.iter_mut().filter(|m| m.alive()) {
+            m.hp = 0;
+            m.life = Life::InMorgue;
+            m.pos = Pos::default();
+        }
+        g.fight = None;
+        return;
+    }
+    let to = Pos { x: (p.x as i32 + dx).rem_euclid(30) as usize, y: (p.y as i32 + dy).rem_euclid(30) as usize, floor: floor as usize, facing: p.facing };
+    g.fight = None;
+    let rock = d.floors.get(to.floor - 1).is_none_or(|f| to.x >= f.width || to.y >= f.height || f.square(to.x, to.y).flags & square::ROCK != 0);
+    if rock {
+        let at = Pos { floor: to.floor.min(d.floors.len()), x: to.x.min(29), y: to.y.min(29), ..to };
+        g.set_pos(d, at);
+        let named = format!("{}{}", g.quoted(0), d.t(0xb9f2_1ece));
+        g.say(if g.party.len() == 1 { d.t(0x9a54_4773).into() } else { named });
+        return g.entomb(d);
+    }
+    g.set_pos(d, to);
+    g.arrive(d, t, p);
 }
 
 /// The combat gates and anti-magic, told the original's way; true if the spell may go.
@@ -482,6 +530,10 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, item: i16,
         Some(Magic::Raise) => {
             // fn13D7's odds on the body's CON (Raise Dead +10, Resurrect +30); a failure
             // may bring complications, which raise anyway (fn11A1).
+            // Only Resurrect pulls a body from rock, at 10% (fn13D7), with complications.
+            if let Some(j) = (0..g.party.len()).find(|&j| matches!(g.party[j].life, Life::Dead(_))).filter(|&j| g.party[j].rocked && sp.effect != 22) {
+                return g.tell(j, CHAR_HIT, d.t(0xc17a_78ef).into(), None);
+            }
             let Some(j) = (0..g.party.len()).find(|&j| matches!(g.party[j].life, Life::Dead(_))) else {
                 // A dead companion: 85 + its CON (98 at most), else it is lost; Resurrect
                 // restores it fully, the others to 1 hit (mdrcharCastSpell).
@@ -497,8 +549,10 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, item: i16,
                 return g.say(d.t(if ok { 0x97b7_670b } else { 0x8327_8e1b }));
             };
             let m = &mut g.party[j];
-            let ok = (m.rnd() * 100.0).floor() as i32 <= crate::game::raise_odds(m, i32::from(sp.effect) - 19) || crate::game::complications(d, m).is_some();
+            let odds = if m.rocked { 10 } else { crate::game::raise_odds(m, i32::from(sp.effect) - 19) };
+            let ok = (m.rnd() * 100.0).floor() as i32 <= odds || crate::game::complications(d, m).is_some();
             if ok {
+                m.rocked = false;
                 m.life = Life::Alive;
                 m.hp = if sp.effect == 22 { m.max_hp } else { 1 };
             }
@@ -534,14 +588,12 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, item: i16,
                 }
             }
         }
-        (_, 7) => {
-            let floor = g.pos().floor.max(1);
-            let (x, y, f) = g.random_square(d, floor);
-            g.fight = None;
-            g.set_pos(d, Pos { x, y, floor: f, facing: g.pos().facing });
-        }
-        (_, 8 | 9) => {
-            // Displacement and Ethereal Portal: through the wall ahead. Into rock is death.
+        // In a fight Teleport goes off like an attack spell (fn1448: it is for both).
+        (_, 7) if g.fight.is_some() => offensive(g, d, t, i, s, p, target),
+        // Teleport and Displacement wait for the player's offsets (`teleport`).
+        (_, 7 | 8) => g.teleport_pending = Some((i, s, 0)),
+        (_, 9) => {
+            // Ethereal Portal: through the wall ahead. Into rock is death.
             let Some(f) = g.floor(d) else { return };
             let pos = g.pos();
             if let Some((x, y)) = crate::game::ahead(f, pos.x, pos.y, pos.facing) {
@@ -549,10 +601,8 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, item: i16,
                 g.fight = None;
                 g.set_pos(d, Pos { x, y, ..pos });
                 if rock {
-                    for j in g.living() {
-                        g.hurt(d, j, i32::MAX / 2);
-                    }
                     g.say(d.t(0xf350_a09d));
+                    g.entomb(d);
                 }
             }
         }

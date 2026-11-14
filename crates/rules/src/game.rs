@@ -187,6 +187,9 @@ pub struct Character {
     /// Items kept in the bank, 40 at most (the record's second item list).
     #[serde(default)]
     pub vault: Vec<Held>,
+    /// Dead in solid rock (death kind 8): no rescue, no morgue, only Resurrect.
+    #[serde(default)]
+    pub rocked: bool,
     rng: u64,
 }
 
@@ -280,6 +283,7 @@ impl Character {
             quest: None,
             quest_item: None,
             vault: Vec::new(),
+            rocked: false,
             rng: seed | 1,
         };
         c.sp = c.max_sp(data, &Tuning::load(&[]).expect("built-in tuning"));
@@ -924,7 +928,7 @@ pub(crate) fn raise_odds(c: &Character, k: i32) -> i32 {
 /// of their words); otherwise the body ages 54 days and stays dead (None).
 pub(crate) fn complications(data: &GameData, c: &mut Character) -> Option<u32> {
     let r = &data.races[c.race];
-    if (c.rnd() * 100.0).floor() >= f64::from(c.age_days) / 365.0 / (f64::from(r.lifespan.max(1)) / 2.0) * 100.0 {
+    if !c.rocked && (c.rnd() * 100.0).floor() >= f64::from(c.age_days) / 365.0 / (f64::from(r.lifespan.max(1)) / 2.0) * 100.0 {
         c.age_days += 54;
         return None;
     }
@@ -967,6 +971,9 @@ pub struct Game {
     pub said: [String; 3],
     /// Message boxes for the window to show: title's text id, text.
     pub boxes: Vec<(u32, String)>,
+    /// Teleport or Displacement waiting for the player's offsets: the caster, the spell
+    /// and the SP it will cost (`magic::teleport`).
+    pub teleport_pending: Option<(usize, usize, i32)>,
 }
 
 /// `Game::said` slots, after the dungeon window's lblCharacterHit, lblMonsterHit and
@@ -977,7 +984,7 @@ pub const SQUARE: usize = 2;
 
 impl Game {
     pub fn new(lead: Character) -> Self {
-        Self { party: vec![lead], fight: None, chest: None, rooms: Default::default(), ticks: 0, log: Vec::new(), store: Store::default(), hall: Hall::default(), said: Default::default(), boxes: Vec::new() }
+        Self { party: vec![lead], fight: None, chest: None, rooms: Default::default(), ticks: 0, log: Vec::new(), store: Store::default(), hall: Hall::default(), said: Default::default(), boxes: Vec::new(), teleport_pending: None }
     }
 
     pub fn lead(&self) -> &Character {
@@ -1674,12 +1681,24 @@ impl Game {
         true
     }
 
+    /// Death in solid rock for every living member (mdrcharTeleport): only Resurrect
+    /// brings them back.
+    pub(crate) fn entomb(&mut self, data: &GameData) {
+        for j in self.living() {
+            self.party[j].rocked = true;
+            self.hurt(data, j, i32::MAX / 2);
+        }
+    }
+
     /// Waiting for rescue (cmdWait_Click): each day the body is found at (16 - F) in N,
     /// half again more on a square with flag 23; N is 10,000 for the first
     /// ln(F)² x 100 + 21 days and 1,000 after (100 in floor 1's first rooms). It ages the
     /// days waited and lands in the morgue. The message box's text.
     pub fn wait_for_rescue(&mut self, data: &GameData, i: usize) -> Option<String> {
         let Life::Dead(p) = self.party[i].life else { return None };
+        if self.party[i].rocked {
+            return Some(data.t(0x20be_11b5).into());
+        }
         let f = p.floor.max(1) as f64;
         let (bonus, area) = data.floors.get(p.floor.wrapping_sub(1)).map_or((false, 0), |fl| (fl.square(p.x, p.y).flags >> 23 & 1 != 0, fl.square(p.x, p.y).area));
         let m = &mut self.party[i];
@@ -1707,6 +1726,9 @@ impl Game {
         let Life::Dead(p) = self.party[i].life else { return };
         if !self.charge(data, i, self.rescue_cost(i)) {
             return;
+        }
+        if self.party[i].rocked {
+            return self.say(data.t(0xd170_a6e2));
         }
         if self.party[i].rnd() * 100.0 <= 4.0 * p.floor as f64 {
             return self.say(data.t(0x6601_942a));
@@ -2065,6 +2087,37 @@ mod tests {
         let known = g.companion_sell_price(&d, 0);
         g.party[0].companions[0].id = 2;
         assert_eq!(g.companion_sell_price(&d, 0), (known as f64 / 3.0).round() as u64);
+    }
+
+    /// mdrcharTeleport: offsets from the facing, wrapping; rock entombs (only Resurrect
+    /// helps); above the city the party falls to its death; cancelling costs nothing.
+    #[test]
+    fn teleport_as_the_original() {
+        let (d, t) = (data(), Tuning::load(&[]).unwrap());
+        let tele = d.spells.iter().position(|s| s.effect == 7).unwrap();
+        let mut g = Game::new(hero(&d, "Jumper", 0, 1, 1, 5));
+        g.enter_dungeon(&d).unwrap();
+        let p = Pos { facing: 1, ..g.pos() };
+        g.set_pos(&d, p);
+        g.teleport_pending = Some((0, tele, 7));
+        let sp = g.party[0].sp;
+        magic::teleport(&mut g, &d, &t, None);
+        assert_eq!((g.pos(), g.party[0].sp, g.teleport_pending), (p, sp, None), "cancelled");
+        // Facing east, 2 forward and 1 right is 2 east and 1 south.
+        g.teleport_pending = Some((0, tele, 7));
+        magic::teleport(&mut g, &d, &t, Some((1, 2, 0)));
+        let (x, y) = ((p.x + 2) % 30, (p.y + 29) % 30);
+        let rock = d.floors[0].square(x, y).flags & square::ROCK != 0;
+        assert_eq!(g.party[0].sp, sp - 7);
+        if rock {
+            assert!(g.party[0].rocked && !g.party[0].alive());
+            assert_eq!(g.wait_for_rescue(&d, 0), Some(d.t(0x20be_11b5).into()), "no waiting out of rock");
+        } else {
+            assert_eq!((g.pos().x, g.pos().y), (x, y));
+            g.teleport_pending = Some((0, tele, 0));
+            magic::teleport(&mut g, &d, &t, Some((0, 0, -1)));
+            assert_eq!(g.party[0].life, Life::InMorgue, "teleported above the city");
+        }
     }
 
     /// FRMSEEK: names by a unique beginning; the fee is paid before the search.

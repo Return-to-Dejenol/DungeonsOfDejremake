@@ -250,6 +250,44 @@ impl App {
         ev.click("cmdOK") || ev.click("cmdCancel") || ev.closed
     }
 
+    /// Teleport's and Displacement's offsets (mdrcharTeleport): right, forward and (for
+    /// Teleport) down, each picked with - and + instead of the original's typed line.
+    pub(crate) fn teleport(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData, t: &ddj_rules::Tuning) -> bool {
+        const F: &str = "dlgTeleport";
+        let Some(g) = self.game.as_mut() else { return true };
+        let Some((_, s, _)) = g.teleport_pending else { return true };
+        let deep = d.spells[s].effect == 7;
+        let val = |desk: &mut Desk, k: usize| desk.state(F, &format!("v{k}")).text.parse::<i32>().unwrap_or(0);
+        let mut v = View::default();
+        v.caption = Some(d.spells[s].name.clone());
+        v.text("lblText", format!("{}\n{}", d.t(0xd53f_3035), d.t(if deep { 0xcd34_677f } else { 0x1188_001b })));
+        for k in 0..3 {
+            let n = val(desk, k);
+            v.text(&format!("lblValue({k})"), format!("{n:+}"));
+            for b in ["cmdMinus", "cmdPlus", "lblValue", "lblAxis"] {
+                v.show(&format!("{b}({k})"), k < 2 || deep);
+            }
+        }
+        let ev = desk.window(ctx, F, v, true);
+        for k in 0..3usize {
+            let max = if k == 2 { 3 } else { 29 };
+            let step = i32::from(ev.click(&format!("cmdPlus({k})"))) - i32::from(ev.click(&format!("cmdMinus({k})")));
+            if step != 0 {
+                let n = (val(desk, k) + step).clamp(-max, max);
+                desk.state(F, &format!("v{k}")).text = n.to_string();
+            }
+        }
+        let ok = ev.click("cmdOK");
+        if ok || ev.click("cmdCancel") || ev.closed {
+            let offsets = ok.then(|| (val(desk, 0), val(desk, 1), val(desk, 2)));
+            desk.st.retain(|k, _| !k.starts_with("dlgTeleport."));
+            magic::teleport(g, d, t, offsets);
+            self.persist();
+            return true;
+        }
+        false
+    }
+
     /// The Seer's question for its Character (0), Monster (2) or Item (3) button.
     pub(crate) fn seer(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData, button: u16) -> bool {
         let (caption, question) = match button {
@@ -306,6 +344,29 @@ pub(crate) fn add_windows(desk: &mut Desk) {
             ("CommandButton", "cmdPreset", Some(2), [202, 278, 64, 22], "Caster"),
             ("CommandButton", "cmdPreset", Some(3), [270, 278, 64, 22], "Thief"),
             ("CommandButton", "cmdClose", None, [352, 278, 80, 22], "Close"),
+        ],
+    );
+    desk.synth(
+        "dlgTeleport",
+        "Teleport",
+        260,
+        176,
+        &[
+            ("Label", "lblText", None, [8, 8, 244, 30], ""),
+            ("Label", "lblAxis", Some(0), [8, 48, 80, 18], "Right"),
+            ("CommandButton", "cmdMinus", Some(0), [96, 44, 40, 24], "-"),
+            ("Label", "lblValue", Some(0), [140, 48, 50, 18], "+0"),
+            ("CommandButton", "cmdPlus", Some(0), [194, 44, 40, 24], "+"),
+            ("Label", "lblAxis", Some(1), [8, 78, 80, 18], "Forward"),
+            ("CommandButton", "cmdMinus", Some(1), [96, 74, 40, 24], "-"),
+            ("Label", "lblValue", Some(1), [140, 78, 50, 18], "+0"),
+            ("CommandButton", "cmdPlus", Some(1), [194, 74, 40, 24], "+"),
+            ("Label", "lblAxis", Some(2), [8, 108, 80, 18], "Down"),
+            ("CommandButton", "cmdMinus", Some(2), [96, 104, 40, 24], "-"),
+            ("Label", "lblValue", Some(2), [140, 108, 50, 18], "+0"),
+            ("CommandButton", "cmdPlus", Some(2), [194, 104, 40, 24], "+"),
+            ("CommandButton", "cmdOK", None, [96, 142, 74, 26], "OK"),
+            ("CommandButton", "cmdCancel", None, [178, 142, 74, 26], "Cancel"),
         ],
     );
 }
