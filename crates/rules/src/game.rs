@@ -1925,6 +1925,10 @@ mod tests {
         // MORDOR.EXE: no heals while hostile monsters are about (fn1448).
         let act = crate::ai::decide(&g, &d, &t, 1);
         assert!(!matches!(act, Act::Cast(s, _) if magic::kind(&d.spells[s]) == Some(Magic::Heal)), "{act:?}");
+        // Peaceful monsters override every macro.
+        g.party[1].macros = vec![crate::ai::Rule { on: true, when: vec![crate::ai::Cond::Always], then: Act::Fight(crate::ai::Target::Weakest) }];
+        g.fight.as_mut().unwrap().peaceful = true;
+        assert_eq!(crate::ai::decide(&g, &d, &t, 1), Act::Wait);
         // Between fights the Healer mends the Tank.
         g.fight = None;
         crate::ai::tend(&mut g, &d, &t);

@@ -15,7 +15,7 @@ use crate::{
     win::{Desk, View},
 };
 
-const CONDS: [&str; 16] = [
+const CONDS: [&str; 15] = [
     "Always",
     "my hits below %",
     "an ally's hits below %",
@@ -29,7 +29,6 @@ const CONDS: [&str; 16] = [
     "an ally is ailing",
     "in a lair",
     "a chest is here",
-    "monsters are peaceful",
     "round at least",
     "round below",
 ];
@@ -122,7 +121,7 @@ impl App {
         v.caption = Some(format!("{}'s Macros", c.name));
         v.items("lstRules", c.macros.iter().map(|r| format!("{} {}", if r.on { "[x]" } else { "[ ]" }, describe(r, d))).collect());
         v.items("cmbCond", CONDS.iter().map(|s| s.to_string()).collect());
-        v.items("cmbKind", d.monster_types.clone()).show("cmbKind", cond == 8).show("txtValue", !matches!(cond, 0 | 8..=13));
+        v.items("cmbKind", d.monster_types.clone()).show("cmbKind", cond == 8).show("txtValue", !matches!(cond, 0 | 8..=12));
         v.items("cmbAct", ACTS.iter().map(|s| s.to_string()).collect());
         v.show("cmbArg", act == 2).items("cmbArg", known.iter().map(|&s| d.spells[s].name.clone()).collect()).show("cmbTarget", matches!(act, 0 | 2));
         v.items("cmbTarget", aims.iter().map(|t| t.0.to_string()).collect());
@@ -154,13 +153,13 @@ impl App {
                 // Percentages 1-99, foes 1-40, rounds 1-50, names of 1-20 letters.
                 let (lo, hi) = match cond {
                     5 => (1, 40),
-                    14 | 15 => (1, 50),
+                    13 | 14 => (1, 50),
                     _ => (1, 99),
                 };
                 let n = text.parse::<u8>().ok().filter(|n| (lo..=hi).contains(n));
                 let bad = match cond {
                     7 => (text.is_empty() || text.chars().count() > 20).then(|| "Type a name of 1 to 20 letters.".to_string()),
-                    1..=6 | 14 | 15 if n.is_none() => Some(format!("Type a number from {lo} to {hi}.")),
+                    1..=6 | 13 | 14 if n.is_none() => Some(format!("Type a number from {lo} to {hi}.")),
                     _ => None,
                 };
                 changed = false;
@@ -182,9 +181,8 @@ impl App {
                     10 => Cond::AllyAiling,
                     11 => Cond::Lair,
                     12 => Cond::Chest,
-                    13 => Cond::Peaceful,
-                    14 => Cond::RoundAtLeast(n),
-                    15 => Cond::RoundBelow(n),
+                    13 => Cond::RoundAtLeast(n),
+                    14 => Cond::RoundBelow(n),
                     _ => Cond::Always,
                 });
             }

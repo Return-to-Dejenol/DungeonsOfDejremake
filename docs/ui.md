@@ -73,7 +73,13 @@ Taken while building; reviewed at play-test.
   button (the original kept its data path in Options-related INI settings).
 - **Party macros**: the Party window's Options button opens the macro editor, a remake
   window (the original's Party Options only chose one default action). At most 12 rules
-  of up to 3 conditions; casting names one of the character's spells.
+  of up to 3 conditions; casting names one of the character's spells. No macro runs
+  while the monsters are peaceful.
+- **Monster box icons** (MG11.DLL's MISC sheet, as monShowAlignment and monShowChest):
+  top left a skull for hostile monsters (Asmodeus's own icon for him) or a peace sign
+  for peaceful ones; top right the box, chest or Asmodeus's chest while there is one.
+  The maze shows the original's fog, the water and quicksand strips along its bottom,
+  and Asmodeus's face when his group is in front.
 - **Party order**: the Party window's < and > show the previous or next member, and Up
   and Down move the shown member among the followers (not in a fight), between Options
   and a narrower Leave.

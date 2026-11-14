@@ -127,9 +127,6 @@ pub fn preset(role: Role, best: impl Fn(Magic) -> Option<usize>) -> Vec<Rule> {
         _ => Vec::new(),
     };
     v.extend(spells.iter().filter_map(|(when, k, t)| best(*k).map(|s| rule(when.clone(), Act::Cast(s, *t)))));
-    if role == Role::Thief {
-        v.push(rule(vec![Chest, Peaceful], Act::Open));
-    }
     v.push(rule(vec![SelfHpBelow(15)], Act::Defend));
     v.push(rule(vec![Always], Act::Fight(Target::Weakest)));
     v
@@ -212,8 +209,12 @@ pub fn tend(g: &mut Game, d: &GameData, t: &Tuning) {
     }
 }
 
-/// What member `i` does this round.
+/// What member `i` does this round. Peaceful monsters override every macro: the party
+/// leaves them be unless the controlled character starts it.
 pub fn decide(g: &Game, d: &GameData, t: &Tuning, i: usize) -> Act {
+    if g.fight.as_ref().is_some_and(|f| f.peaceful) {
+        return Act::Wait;
+    }
     for r in g.party[i].macros.iter().filter(|r| r.on) {
         if r.when.iter().all(|c| holds(g, d, t, i, c))
             && let Some(act) = resolve(g, d, t, i, r.then)
@@ -239,9 +240,7 @@ fn fallback(g: &Game, d: &GameData, t: &Tuning, i: usize) -> Act {
         return calm.into_iter().find_map(|(when, act)| when.iter().all(|c| holds(g, d, t, i, c)).then(|| try_(act)).flatten()).unwrap_or(Act::Wait);
     };
     let me = &g.party[i];
-    let tree: [(Vec<Cond>, Act); 9] = [
-        // Peaceful monsters are left alone unless the controlled character starts it.
-        (vec![Peaceful], Act::Wait),
+    let tree: [(Vec<Cond>, Act); 8] = [
         (vec![AllyDead], Act::CastBest(Magic::Raise, Target::LowestAlly)),
         (vec![PartyHpBelow(55)], Act::CastBest(Magic::MassHeal, Target::LowestAlly)),
         (vec![AllyHpBelow(45)], Act::CastBest(Magic::Heal, Target::LowestAlly)),
@@ -265,9 +264,5 @@ fn fallback(g: &Game, d: &GameData, t: &Tuning, i: usize) -> Act {
             return a;
         }
     }
-    if f.peaceful {
-        Act::Wait
-    } else {
-        try_(Act::Fight(Target::Weakest)).unwrap_or(Act::Defend)
-    }
+    try_(Act::Fight(Target::Weakest)).unwrap_or(Act::Defend)
 }

@@ -70,16 +70,18 @@ impl App {
             v.show("lblCharacterHit", true).text("lblCharacterHit", g.said[game::CHAR_HIT].clone());
             v.show("lblMonsterHit", true).text("lblMonsterHit", g.said[game::MONSTER_HIT].clone());
             v.show("lblDead", g.lead().life != Life::Alive);
-            let fog = flags & square::FOG != 0;
             let art_ref = self.art.as_ref();
             v.paint("picMaze2", move |p, r, _| {
-                if fog || p_floor_zero(g) {
+                if p_floor_zero(g) {
                     p.rect_filled(r, 0.0, Color32::from_gray(128));
                 } else {
                     art::dungeon_view(p, r, art_ref, d, g);
                 }
             });
-            v.paint("picMonsters", move |p, r, s| art::monsters(p, r, s, art_ref, d, g));
+            v.paint("picMonsters", move |p, r, s| {
+                art::monsters(p, r, s, art_ref, d, g);
+                art::box_icons(p, r, s, art_ref, d, g);
+            });
             v.swipe("picMaze2").swipe("picMonsters");
             (desk.window(ctx, F, v, false), open)
         };

@@ -18,7 +18,18 @@ pub struct Art {
     wall: TextureHandle,
     backdrop: TextureHandle,
     door: TextureHandle,
+    /// The monster box's 45x45 icons: hostile, peaceful, box, chest, Asmodeus's chest,
+    /// Asmodeus hostile.
+    misc: TextureHandle,
+    /// The dungeon view's fog, the water and quicksand strips, and Asmodeus's face.
+    fog: TextureHandle,
+    water: TextureHandle,
+    sand: TextureHandle,
+    asmo: TextureHandle,
 }
+
+/// Asmodeus's monster id: his own face, icon and chest.
+const ASMODEUS: i16 = 277;
 
 fn crop((w, _, px): &Rgba, x: usize, y: usize, cw: usize, ch: usize) -> ColorImage {
     let mut out = Vec::with_capacity(cw * ch * 4);
@@ -33,6 +44,7 @@ impl Art {
         let dll = fs::read(dir.join("MG11.DLL")).ok()?;
         let mg = |n| ddj_extract::mg_bitmap(&dll, n);
         let (mons, maze, door) = (mg("MONS")?, mg("MAZE")?, mg("DOOR")?);
+        let (water, sand) = (mg("WATR")?, mg("QSND")?);
         // Only the tiled surfaces repeat; pictures are sampled once.
         let tex = |name: &str, img: ColorImage| ctx.load_texture(name, img, TextureOptions::NEAREST_REPEAT);
         let whole = |name: &str, (w, h, px): Rgba| ctx.load_texture(name, ColorImage::from_rgba_unmultiplied([w, h], &px), TextureOptions::NEAREST);
@@ -42,6 +54,12 @@ impl Art {
             backdrop: tex("backdrop", crop(&maze, 2, 0, 28, 100)),
             door: tex("door", crop(&door, 11, 2, 44, 50)),
             mons: whole("mons", mons),
+            misc: whole("misc", mg("MISC")?),
+            fog: tex("fog", crop(&mg("FOG")?, 0, 0, 50, 50)),
+            // The original copies the strips' top 18 rows.
+            water: whole("water", (50, 18, water.2[..50 * 18 * 4].to_vec())),
+            sand: whole("sand", (50, 18, sand.2[..50 * 18 * 4].to_vec())),
+            asmo: whole("asmo", mg("ASMO")?),
         })
     }
 
@@ -106,6 +124,33 @@ pub fn dungeon_view(paint: &egui::Painter, rect: Rect, art: Option<&Art>, d: &Ga
         paint.rect_filled(rect, 0.0, Color32::BLACK);
         return;
     };
+    let flags = f.square(p.x, p.y).flags;
+    let full = Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0));
+    // As mdrmazShowMaze: Asmodeus fills the view when his group is in front; fog hides
+    // it (four tiles); water and quicksand lie across its bottom 18 hundredths.
+    if g.fight.as_ref().is_some_and(|fi| fi.groups_from(0).first().and_then(|&gr| fi.front(gr)).is_some_and(|x| d.monsters[fi.foes[x].monster].id == ASMODEUS)) {
+        paint.image(art.asmo.id(), rect, full, Color32::WHITE);
+        return;
+    }
+    if flags & ddj_rules::mdr::square::FOG != 0 {
+        let mut m = Mesh::with_texture(art.fog.id());
+        m.add_rect_with_uv(rect, Rect::from_min_max(Pos2::ZERO, pos2(2.0, 2.0)), Color32::WHITE);
+        paint.add(m);
+        return;
+    }
+    view(paint, rect, art, f, p);
+    for (bit, tex) in [(ddj_rules::mdr::square::WATER, &art.water), (ddj_rules::mdr::square::QUICKSAND, &art.sand)] {
+        if flags & bit != 0 {
+            let strip = Rect::from_min_max(pos2(rect.left(), rect.bottom() - rect.height() * 0.18), rect.max);
+            let mut m = Mesh::with_texture(tex.id());
+            m.add_rect_with_uv(strip, Rect::from_min_max(Pos2::ZERO, pos2(2.0, 1.0)), Color32::WHITE);
+            paint.add(m);
+        }
+    }
+}
+
+/// The walls and doors ahead.
+fn view(paint: &egui::Painter, rect: Rect, art: &Art, f: &Floor, p: game::Pos) {
     let mut m = Mesh::with_texture(art.backdrop.id());
     m.add_rect_with_uv(rect, Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0)), Color32::WHITE);
     paint.add(m);
@@ -166,5 +211,23 @@ pub fn monsters(paint: &egui::Painter, rect: Rect, s: f32, art: Option<&Art>, d:
         let (id, uv) = art.portrait(d.monsters[m].picture);
         let x = rect.left() + (rect.width() - size * kinds.len().min(4) as f32 - 6.0 * s * (kinds.len().min(4) as f32 - 1.0)) / 2.0 + i as f32 * (size + 6.0 * s);
         paint.image(id, Rect::from_min_size(pos2(x, rect.top() + 4.0 * s), vec2(size, size)), uv, Color32::WHITE);
+    }
+}
+
+/// The monster box's icons, as monShowAlignment and monShowChest: hostile or peaceful
+/// top left while monsters stand, the box or chest top right while there is one.
+pub fn box_icons(paint: &egui::Painter, rect: Rect, s: f32, art: Option<&Art>, d: &GameData, g: &Game) {
+    let Some(art) = art else { return };
+    let icon = |x: f32, tile: f32| {
+        paint.image(art.misc.id(), Rect::from_min_size(pos2(x, rect.top() + 8.0 * s), vec2(45.0 * s, 45.0 * s)), Rect::from_min_size(pos2(tile / 6.0, 0.0), vec2(1.0 / 6.0, 1.0)), Color32::WHITE);
+    };
+    let asmo = |m: usize| d.monsters[m].id == ASMODEUS;
+    if let Some(f) = g.fight.as_ref()
+        && let Some(x) = f.groups_from(0).first().and_then(|&gr| f.front(gr))
+    {
+        icon(rect.left() + 3.0 * s, if f.peaceful { 1.0 } else if asmo(f.foes[x].monster) { 5.0 } else { 0.0 });
+    }
+    if let Some(c) = g.fight.as_ref().and_then(|f| f.chest.as_ref()).or(g.chest.as_ref()) {
+        icon(rect.right() - 51.0 * s, if asmo(c.monster) { 4.0 } else if c.chest { 3.0 } else { 2.0 });
     }
 }

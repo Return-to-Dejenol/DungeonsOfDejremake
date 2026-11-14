@@ -371,11 +371,12 @@ can be changed in `patches/modern.toml` or here.
   the catch-up bonus for levels behind the party's best. Dead members are
   carried and reach the morgue when the party returns. If the character you control
   dies, control passes to the next living member.
-- **Party AI**: each character has macros (ordered "when ... do ..." rules, first match
-  that can be done wins) with Fighter, Healer, Caster and Thief starting sets that name
-  the character's best known spell of each kind (unedited sets take up new spells at
-  each level), and a
-  default decision tree behind them: leave peaceful monsters alone, raise, mass-heal,
+- **Party AI**: peaceful monsters override everything: the members wait until the
+  character you control starts a fight. Otherwise each character has macros (ordered
+  "when ... do ..." rules, first match that can be done wins) with Fighter, Healer and
+  Caster starting sets that name the character's best known spell of each kind
+  (unedited sets take up new spells at each level), and a
+  default decision tree behind them: raise, mass-heal,
   heal, cure, drink a potion when low, group spells on groups, a spell on a foe that
   would take three or more sword rounds, defend when nearly dead, else gang up on the
   weakest foe.
