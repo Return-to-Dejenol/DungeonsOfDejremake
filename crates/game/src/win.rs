@@ -374,7 +374,8 @@ impl Desk {
     /// sizes of the play windows' layouts (phones, the web), the desktop fills the screen
     /// in the one that shows it biggest, or the original's when none beats it.
     pub fn begin(&mut self, screen: Rect, layouts: &[Vec2]) -> Painter {
-        let a = screen.width() / screen.height().max(1.0);
+        // A canvas not laid out yet can have no width: keep the shape finite.
+        let a = screen.width().max(1.0) / screen.height().max(1.0);
         let fit = |n: Vec2| (screen.width() / n.x).min(screen.height() / n.y);
         let fill = |n: Vec2| vec2(n.x.max(n.y * a), n.y.max(n.x / a));
         self.layout = (0..layouts.len()).filter(|&i| fit(layouts[i]) > fit(SCREEN)).max_by(|&i, &j| fit(layouts[i]).total_cmp(&fit(layouts[j])));
@@ -392,7 +393,7 @@ impl Desk {
             self.lift = self.typing_at.filter(|_| self.keyboard > 0.0).map_or(0.0, |y| (y - (screen.bottom() - self.keyboard)).max(0.0));
             let [l, r, b] = self.insets;
             let screen = Rect::from_min_max(screen.min + vec2(l, 0.0), screen.max - vec2(r, b));
-            self.s = (screen.width() / 520.0).min(screen.height() / 420.0);
+            self.s = (screen.width() / 520.0).min(screen.height() / 420.0).max(0.01);
             self.screen = screen.size() / self.s;
             self.org = screen.min;
             return p;
@@ -1489,6 +1490,32 @@ impl Cv {
             } else {
                 self.fill(a.x, a.y, 1.0, b.y - a.y, Color32::BLACK);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A screen with no width or height (a web canvas not laid out yet) places windows at
+    /// finite points: egui panics on a NaN rect.
+    #[test]
+    fn empty_screen_stays_finite() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ddj-win-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(ddj_extract::forms::FILE), "{}").unwrap();
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput { max_texture_side: Some(8192), ..Default::default() }, |_| {}).textures_delta.clear();
+        let mut desk = Desk::new(&ctx, &dir).unwrap();
+        for screen in [Rect::from_min_size(Pos2::ZERO, vec2(0.0, 600.0)), Rect::from_min_size(Pos2::ZERO, vec2(400.0, 0.0)), Rect::ZERO] {
+            ctx.run_ui(egui::RawInput::default(), |_| {
+                desk.begin(screen, &[vec2(540.0, 900.0), vec2(900.0, 500.0)]);
+            })
+            .textures_delta
+            .clear();
+            let r = desk.to_screen(Rect::from_min_size(desk.client.center(), vec2(10.0, 10.0)));
+            assert!(r.min.x.is_finite() && r.min.y.is_finite() && r.max.x.is_finite() && r.max.y.is_finite(), "{screen:?} -> {r:?}");
         }
     }
 }
