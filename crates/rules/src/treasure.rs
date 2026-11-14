@@ -288,8 +288,9 @@ pub fn random_item(r: &mut Character, d: &GameData, m: usize, chest: bool) -> Op
         return d.items.iter().position(|it| it.id == id);
     }
     let max = mon.item_level.max(1);
-    let min = ((f64::from(max) / 2.0).round_ties_even() as i16 + i16::from(chest)).clamp(1, max);
-    for _ in 0..20 {
+    // Asmodeus (id 277) leaves his top three levels (monOpenChest).
+    let mut min = if mon.id == 277 { max - 2 } else { ((f64::from(max) / 2.0).round_ties_even() as i16 + i16::from(chest)).clamp(1, max) };
+    for _ in 0..100 {
         let class = mon.item_classes[r.roll(10) as usize];
         if class < -1 {
             if let Some(i) = d.items.iter().position(|it| it.id == -class - 2) {
@@ -297,8 +298,16 @@ pub fn random_item(r: &mut Character, d: &GameData, m: usize, chest: bool) -> Op
             }
             continue;
         }
+        // Class -1 is any one item type, each as likely.
+        let kind = if class == -1 { r.roll(d.item_types.len() as u32) as i16 } else { class };
+        // A type whose first item from the low level up is already at the top widens
+        // the range a level down.
+        let first = (0..d.items.len()).filter(|&i| d.items[i].kind == kind && d.items[i].level >= min).map(|i| d.items[i].level).min();
+        if first == Some(max) && min > 1 {
+            min -= 1;
+        }
         let fits: Vec<(usize, u32)> = (0..d.items.len())
-            .filter(|&i| (class == -1 || d.items[i].kind == class) && (min..=max).contains(&d.items[i].level) && d.items[i].id < POTION_OF_EXPERIENCE)
+            .filter(|&i| d.items[i].kind == kind && (min..=max).contains(&d.items[i].level) && d.items[i].id < POTION_OF_EXPERIENCE)
             .map(|i| (i, d.items[i].w(6).max(0) as u32))
             .collect();
         let total: u32 = fits.iter().map(|f| f.1).sum();

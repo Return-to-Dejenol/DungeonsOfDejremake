@@ -42,14 +42,14 @@ are listed at the end. Notation:
   - Damage = (ln(L + 5) + 1) / ln 1.2 × s / 30 × a roll of 0.6-1.6 around (s + 10) / 20 × mult. Here s is STR, compressed: s − ln s (ln s − 2.4) 2.25 + 1.
   - The attack/defense gap takes up to (def − att) / 8 off, or adds it when the attacker is stronger.
   - mult above 1 is compressed to mult − ln(mult)².
-- **Swings:** a character swings its swings plus the weapon's (w9). A miss, or a hit that doesn't kill, ends the turn; a kill moves on to the next foe. Every character carries item 0, Hands (two swings at half damage), in its first slot; it is the weapon whenever no other is wielded, and can't be sold, dropped, stolen or destroyed.
-- **Guild swings:** the first extra one comes at level ln(11 − r) × 50, and each next at ln(11 − r) × 2 × the last. A Warrior gets them at 91 and 324.
+- **Swings:** a character swings its swings plus the weapon's (w9). A miss, or a hit that doesn't kill, ends the turn; a kill moves on to the next foe. A group is fought at its front monster. Remake: every character carries item 0, Hands (two swings at half damage), in its first slot; it is the weapon whenever no other is wielded, and can't be sold, dropped, stolen or destroyed. (In the original item 0 is the empty slot, and a character with no weapon defends.)
+- **Guild swings:** the first extra one comes at level ln(11 − r) × 50, and each next at ln(11 − r) × 2 × the last, for guilds whose swing rate is above 0. A Warrior gets them at 91 and 324.
 - **Multiplier:**
   - Fighting: 0.6 + (ln(100 + L) / 1.75 − 2.3) × r² / 2, times the weapon's w18.
   - A critical hit adds 5 and a backstab 2. Their chances are (ln(L/999 + 1) × 100 × ln(r + 1) / 3 − ln(monster level / 999 + 1) × 100) / 2, capped at 50%. Backstab divides by 2 instead of 3 and caps at 75%. Weapons with the critical or backstab flag add more.
   - Size: ±0.1 per step of race size against monster size.
   - An invisible monster halves the multiplier unless you see invisible.
-  - Weapon-resistant monsters ignore weapons below half their level, and weapon-immune monsters ignore all weapons.
+  - Weapon-resistant monsters ignore weapons below half their level (the member defends), and weapon-immune monsters ignore all weapons (it doesn't).
 - **Attack and defense:**
   - 10 each, plus the stat bonus, plus the best guild's A/D, plus items.
   - The stat bonus is +2 per point of STR and DEX above 12, +1 per point of INT and WIS above 14, with mirror penalties below 8. In the remake it is +4 per point of the melee rating above 12 (or below 8).
@@ -81,7 +81,9 @@ are listed at the end. Notation:
 - **Ailments** (timAilment_Timer; one tick is a combat round in a fight and a step outside, never while idle):
   - Poison and disease wear off when d200 + 2 (CON − 10) − 2 × strength beats 185 (195 for disease). Until then poison costs 2 hits a tick and disease 1. An ailment already there isn't renewed.
   - Paralysis has the monster's power level p as its strength. Each tick it holds at clamp(ln(0.6 p) / ln 1.02 − (((ln L + L/10) / ln 1.05) / 10 + 1.5 CON + paralysis resistance), 5, 90)%, L the current guild level, and it ends at once when no monsters are left. Meanwhile the stat bonus to attack and defense is lost.
-- **Level-up HP:** the guild's hits; two times in three, d(hits / 5) more; and d(CON − 16) for CON above 16.
+- **Level-up HP:** new characters start with 15. Up to the guild's HP cap (w1), the guild's hits; two times in three, d(hits / 5) more; and d(CON − 16) for CON above 16 below the cap. Past it exactly w2 (plus the remake's CON at half rate). Hits stop at 999, and a guild at level 999.
+- **Monsters at companions** swing with the same critical, backstab and size terms. Breath hits the target's companions first, each less half its resistance, and the reduced value carries on to the next and to the member (an original quirk). Draining max hits stops at the highest guild level. A peaceful group turns when d100 < the chance.
+- **Treasure class −1** is one item type at random, each as likely; a type whose first item from the low level up is already at the top widens the range a level down. Asmodeus leaves his top three item levels. Gold is split over the whole party, the dead included.
 - **Quests:** from level 5, at the guild's quest chance (w32). 5% of the time the Questmaster lets you off. Above level 15 a quarter are "return one item" (level 1 to Int(Q / 1.5) + 1, worth 100 or more, not cursed); the rest "defeat one monster" of a random type up to level found Q = CInt(L / 25), 1-10 (from the type's first 40% of the time, else from level Q; spawn weights below 10 rarely). A pinned character with a quest open may file for forfeit (not with a cursed item worn): the guild loses Int(ln(L + 1)) levels and the hits they brought.
 - **Squares** (sub0835, sub08F5, timAilment_Timer), F the floor:
   - A pit drops each member for Int(Rnd × (F + 1)/2 × 15.5) × ln(race size + 2) + 1; a member's own levitation saves it but fails (5 + F/4)% of the time.
@@ -177,6 +179,8 @@ are listed at the end. Notation:
 13. The last binding step was cheap; the cost uses the new level.
 14. Opening in a fight with thieving 10 or less raised a run-time error; it takes 10 rounds.
 15. The rescue fee used the floor the player typed; it uses the real floor.
+16. Cure Paralysis cured the caster instead of its target; it cures the target.
+17. MONGEN's type pick counted the first type twice in its running total; the types are weighted as intended.
 
 ## Original guild level cost (measured 2026-11-03, read from MORDOR.EXE 2026-11-04)
 
@@ -352,8 +356,8 @@ can be changed in `patches/modern.toml` or here.
 - **Dungeon view**: the original's stone, floor and door textures on a 3D view up to
   four squares deep, instead of its 50 pre-drawn frames, so it scales to any window.
 - **Party**: you plus up to three saved characters as allies, as upstream; Good and Evil
-  won't travel together. Kill XP is split evenly, then each member gets the catch-up
-  bonus for levels behind the party's best; gold is split evenly. Dead members are
+  won't travel together. Each member earns XP for its own damage (as the original), with
+  the catch-up bonus for levels behind the party's best. Dead members are
   carried and reach the morgue when the party returns. If the character you control
   dies, control passes to the next living member.
 - **Party AI**: each character has macros (ordered "when ... do ..." rules, first match

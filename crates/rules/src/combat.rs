@@ -425,9 +425,11 @@ impl Game {
         for _ in 0..swings {
             let m = self.fight.as_ref().unwrap().foes[fi].monster;
             let mon = &data.monsters[m];
+            // Weapon-resistant monsters ignore weapons below half their level, and the
+            // member defends; immune ones ignore all, with no defending (sub1019).
             if mon.flags & 32 != 0 || mon.flags & 16 != 0 && weapon.level < mon.level / 2 {
                 self.fought(i, data.t(0xfb73_3c80).into(), format!("{name}'s weapon has no effect on the {}!", mon.name));
-                return self.defend(i);
+                return if mon.flags & 32 == 0 { self.defend(i) };
             }
             let c = &mut self.party[i];
             let mut mult = fighting * f64::from(weapon.damage_mult);
@@ -547,12 +549,12 @@ impl Game {
         }
     }
 
-    /// Gold split evenly among the living (the original's divvying up), each told its
-    /// share (MONSMOD.monGetGold).
+    /// Gold split evenly over the whole party, the dead included (MONSMOD.monGetGold),
+    /// each told its share.
     pub(crate) fn share_gold(&mut self, data: &GameData, gold: u64) {
-        let living = self.living();
-        let share = gold / living.len().max(1) as u64;
-        for &j in &living {
+        let all: Vec<usize> = (0..self.party.len()).collect();
+        let share = gold / all.len().max(1) as u64;
+        for &j in &all {
             self.party[j].gold += share;
             if share > 0 {
                 self.tell(j, CHAR_HIT, format!("{}{share}{}", data.t(0x4982_d859), data.t(0xfde9_4394)), None);

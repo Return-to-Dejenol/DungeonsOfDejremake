@@ -244,7 +244,8 @@ impl Character {
         }
         let mut levels = vec![0; data.guilds.len()];
         levels[NOMAD] = 1;
-        let hp = i32::from(stats[CON]) + 4;
+        // Every new character starts with 15 hits (sub1F1F).
+        let hp = 15;
         let seed = name.bytes().fold(0x9E37_79B9_7F4A_7C15u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01B3));
         let mut c = Self {
             version: SAVE_VERSION,
@@ -437,7 +438,9 @@ impl Character {
     /// Swings a round before the weapon's: the best guild's (MORDOR.EXE: the first
     /// comes at level ln(11 - rate) x 50, each next at ln(11 - rate) x 2 x the last).
     pub(crate) fn swings(&self, data: &GameData) -> i32 {
+        // Only guilds that teach the skill (rate above 0) count (cmdMake_Click).
         (0..self.levels.len())
+            .filter(|&g| Self::guild_ability(data, g, 3) > 0.0)
             .map(|g| {
                 let k = (11.0 - f64::from(Self::guild_ability(data, g, 3))).ln();
                 let (mut t, mut n) = ((k * 50.0).round_ties_even(), 0);
@@ -479,6 +482,9 @@ impl Character {
     /// message box (its title's text id, its text).
     pub fn make_level(&mut self, data: &GameData, t: &Tuning) -> Result<Vec<String>, (u32, String)> {
         let (need, gold) = (self.xp_needed(data, t), Tuning::level_gold(self.level(), data.guilds[self.guild].gold_factor));
+        if self.level() >= 999 {
+            return Err((MAKE_LEVEL, data.t(0x1af8_b21f).into()));
+        }
         if self.xp[self.guild] < need {
             return Err((MAKE_LEVEL, data.t(0xffee_afe6).into()));
         }
@@ -523,19 +529,21 @@ impl Character {
                 HEALER => (3, g.hp_cap),
                 _ => (g.hp_per_level, g.hp_cap),
             };
+            // MORDOR.EXE: up to the cap the guild's hits, two times in three
+            // Int(Rnd x hits / 5) + 1 more; past it exactly w2. CON above 16 adds
+            // Int(Rnd x (CON - 16)) + 1 below the cap (half from it on, the remake's).
             let past_cap = level > cap as u32;
-            let avg = if past_cap { g.hp_after } else { per };
-            // MORDOR.EXE: the guild's hits, two times in three Int(Rnd x hits / 5) + 1 more,
-            // and CON above 16 adds Int(Rnd x (CON - 16)) + 1 (half past the cap).
-            let avg = i32::from(avg.max(1));
-            let extra = if self.roll(3) < 2 { (self.rnd() * f64::from(avg) / 5.0) as i32 + 1 } else { 0 };
+            let avg = i32::from(if past_cap { g.hp_after } else { per });
+            let extra = if !past_cap && self.roll(3) < 2 { (self.rnd() * f64::from(avg) / 5.0) as i32 + 1 } else { 0 };
             let con = (i32::from(self.stats[CON]) - 16).max(0);
             let con = if con > 0 { (self.rnd() * f64::from(con)) as i32 + 1 } else { 0 };
-            let mut gain = avg + extra + if past_cap { con / 2 } else { con };
+            let mut gain = avg + extra + if level < cap as u32 { con } else { con / 2 };
             // Nomad's share: other guilds gain a hit per level Nomad has already reached.
             if self.guild != NOMAD && self.levels[NOMAD] >= level {
                 gain += 1;
             }
+            // Hits stop at 999.
+            let gain = gain.min(999 - self.max_hp).max(0);
             self.max_hp += gain;
             self.hp += gain;
         }
@@ -838,7 +846,7 @@ pub(crate) fn guild_ad(data: &GameData, g: usize, level: u32) -> [f64; 2] {
     let mut steps = (level.min(cap) / (every as i32).max(1)).max(0);
     let mut l = cap;
     loop {
-        let gap = ((f64::from(cap / 2) + f64::from(l) / 18.0) / (f64::from(every) + if g == NOMAD { 3.0 } else { 0.0 })).round_ties_even() as i32;
+        let gap = ((f64::from(cap) / 2.0 + f64::from(l) / 18.0) / (f64::from(every) + if g == NOMAD { 3.0 } else { 0.0 })).round_ties_even() as i32;
         l += gap.max(1);
         if l > level {
             break;
@@ -1304,7 +1312,7 @@ impl Game {
         let f = &data.floors[floor - 1];
         loop {
             let (x, y) = (self.party[0].roll(f.width as u32) as usize, self.party[0].roll(f.height as u32) as usize);
-            if f.square(x, y).flags & square::ROCK == 0 {
+            if f.square(x, y).flags & (square::ROCK | square::TELEPORTER) == 0 {
                 return (x, y, floor);
             }
         }
@@ -1356,7 +1364,9 @@ impl Game {
             if p.floor == 1 {
                 self.to_town(data, t);
             } else {
+                // Arriving on the floor above runs its square's effects too (sub0835).
                 self.set_pos(data, Pos { floor: p.floor - 1, ..p });
+                self.arrive(data, t, p);
             }
         } else if flags & square::STAIRS_DOWN != 0 && p.floor < data.floors.len() {
             self.set_pos(data, Pos { floor: p.floor + 1, ..p });
@@ -2142,6 +2152,10 @@ mod tests {
         assert!((0..2000).all(|_| crate::combat::swing(&mut c, 10, 1000, 10.0, 15, 1.0) == 0 || c.roll(1) == 0));
         // Nomad gains 3/3 A/D every 2 levels up to 30; a Warrior swings again at 91.
         assert_eq!(guild_ad(&d, NOMAD, 30)[0] as i32, 45);
+        // Fifteen hits to start (sub1F1F); no swings from a guild without the skill.
+        assert_eq!((c.max_hp - 6, Character::new(&d, "New", 0, false, 1, start_stats(&d, 0)).unwrap().hp), (15, 15));
+        c.levels[0] = 200;
+        assert_eq!(c.swings(&d), 0);
         c.levels[1] = 91;
         assert_eq!(c.swings(&d), 1);
         c.levels[1] = 90;

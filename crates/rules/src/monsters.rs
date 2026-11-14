@@ -94,7 +94,7 @@ pub(crate) fn turn_hostile(g: &mut Game, d: &GameData) {
         _ => 35,
     };
     let chance = base - (7.5 * f64::from(g.party[0].stats[CHA].max(1)).ln()).round_ties_even() as i32;
-    if g.party[0].d100() <= chance {
+    if g.party[0].d100() < chance {
         g.provoke();
     }
 }
@@ -151,9 +151,20 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning, group: u8, at: Option<usiz
         let ml = f64::from(mon.power_level);
         let x = (ml * (ml + 1.0).ln()).round_ties_even();
         let dmg = (f64::from(element_hit(&mut g.party[j], x, f64::from(lcur), 20.0, true)) * 0.7 / 2.0).round_ties_even() as i32;
+        // The target's companions take it first, each less half its resistance, and what
+        // is left carries on to the next and to the member (sub0E85).
+        let mut dmg = dmg;
+        for k in (0..g.party[j].companions.len()).rev() {
+            dmg = reduce(dmg, i32::from(d.monsters[g.party[j].companions[k].monster].resist[slot]));
+            let c = &mut g.party[j].companions[k];
+            c.hp -= dmg;
+            if c.hp <= 0 {
+                let m = g.party[j].companions.remove(k).monster;
+                g.say(format!("The {} dies.", d.monsters[m].name));
+            }
+        }
         let dmg = reduce(dmg, resist(&g.party[j], d, slot));
         struck(g, j, format!("{} {dmg}!", d.t(0xa542_e4fe)), format!("The {} breathes {kind}!", mon.name));
-        companion_damage(g, d, None, dmg / 2);
         let at = g.log.len();
         if hurt(g, d, j, dmg) {
             return killed(g, d, j, m, [0x5aa0_d43c, 0xa36b_ecb9], at);
@@ -308,25 +319,14 @@ pub fn plural(d: &GameData, m: usize, n: usize, see: bool) -> String {
     }
 }
 
-/// Damage to every companion of `owner` (all members' when `None`).
-fn companion_damage(g: &mut Game, d: &GameData, owner: Option<usize>, dmg: i32) {
-    for j in owner.map_or_else(|| (0..g.party.len()).collect(), |j| vec![j]) {
-        for k in (0..g.party[j].companions.len()).rev() {
-            let c = &mut g.party[j].companions[k];
-            c.hp -= dmg;
-            if c.hp <= 0 {
-                let m = g.party[j].companions.remove(k).monster;
-                g.say(format!("The {} dies.", d.monsters[m].name));
-            }
-        }
-    }
-}
 
 /// One attacker against companion `k` of member `j`; true on a hit.
 fn hit_companion(g: &mut Game, d: &GameData, m: usize, j: usize, k: usize) -> bool {
     let mon = &d.monsters[m];
     let comp = &d.monsters[g.party[j].companions[k].monster];
-    let dmg = swing(&mut g.party[j], i32::from(mon.attack), i32::from(comp.defense), f64::from(mon.power_level), i32::from(mon.stats[0]), f64::from(mon.single(46)).max(1.0));
+    // As against the member: critical and backstab, and the size gap (sub0E85).
+    let mult = f64::from(mon.single(46)).max(1.0) + knack_bonus(g, mon, comp.power_level.max(0) as u32, 2.0) - f64::from(comp.w(64) - mon.w(64)) / 10.0;
+    let dmg = swing(&mut g.party[j], i32::from(mon.attack), i32::from(comp.defense), f64::from(mon.power_level), i32::from(mon.stats[0]), mult);
     if dmg == 0 {
         return false;
     }
@@ -361,7 +361,7 @@ fn specials(g: &mut Game, d: &GameData, m: usize, j: usize) {
             if c.d100() > resist(c, d, DRAIN_RES) && c.d100() > body {
                 // The original never drains STR; here every stat can go.
                 match c.roll(7) as usize {
-                    6 => c.max_hp = (c.max_hp - 2).max(1),
+                    6 => c.max_hp = (c.max_hp - 2).max(*c.levels.iter().max().unwrap_or(&1) as i32),
                     s if c.stats[s] > d.races[c.race].stat_min[s] => c.stats[s] -= 1,
                     _ => {}
                 }
