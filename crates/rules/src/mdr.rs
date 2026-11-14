@@ -625,6 +625,9 @@ mod tests {
         assert_eq!(portal.stat_req, [14, 18, 18, 0, 0, 18]);
         // Giants (race 2) may join Nomad and Warrior; nobody is barred from Nomad.
         assert!(d.guilds[0].races == 511 && warrior.races & 4 != 0);
+        // The remake's Giants: Scavenger and Healer, not Seeker.
+        assert!(d.guilds[5].races & 4 == 0 && d.guilds[7].races & 4 != 0 && d.guilds[11].races & 4 != 0);
+        assert!([7, 11].iter().all(|&g| d.guilds[g].alignments & d.races[2].alignments != 0 && (0..6).all(|s| d.races[2].stat_max[s] >= d.guilds[g].stat_req[s])));
 
         assert_eq!(d.monsters.len(), 401);
         let troll = d.monsters.iter().find(|m| m.name == "Troll").unwrap();

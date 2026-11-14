@@ -240,8 +240,10 @@ Giants stay the best melee race, but by less. STR max stays 25.
 - At race maximums Giants rate 22.7, Morloch and Troll 20, Ogre 19. Under STR alone
   the Giant lead is 5 points; under this rating it is 2.7.
 - Giant guilds: Nomad, Warrior, Scavenger (replacing Seeker) and Healer. Giants can
-  meet both new guilds' requirements (Scavenger DEX 14; Healer INT and WIS 14, against
-  their max 17). Healer is Neutral-only, and Giants are always Neutral.
+  meet both new guilds' requirements (Scavenger DEX 14; Healer INT, WIS and DEX 14 and
+  CHA 7, against their max 17). Healer is Neutral-only, and Giants are always Neutral.
+  A new Giant can start in Scavenger; Healer needs one more stat point than creation
+  gives, so it opens once a stat rises.
 
 ### Magic guilds (2026-11-03)
 

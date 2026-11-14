@@ -41,7 +41,8 @@ Decided 2026-11-04: what the player sees should look exactly like the original.
   - Landscape: the play window, Messages and the pad on the left; the tabs on the right.
   - The touch pad is a remake window in the original's style. It has the Dungeon window's
     own arrows, Take, Open, Fight and Spell, finger-sized, plus Defend and Run (the
-    keyboard's D and R). The toolbar's and the dungeon's buttons that made a window
+    keyboard's D and R). Defend reads Join while a group offers to join (the keyboard's
+    J). The toolbar's and the dungeon's buttons that made a window
     active (Objects & Spells, the AutoMap) bring its tab to the front.
   - Dialogs and the HelpLesson open centred, as big as they fit; the HelpLesson's main
     window fills the screen. The on-screen keyboard lifts a dialog so the box typed in

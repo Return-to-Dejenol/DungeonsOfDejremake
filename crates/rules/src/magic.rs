@@ -25,6 +25,7 @@ pub enum Magic {
 }
 
 const SEEKER: usize = 5;
+const SCAVENGER: usize = 7;
 const MAGE: usize = 8;
 const SORCERER: usize = 9;
 const WIZARD: usize = 10;
@@ -37,8 +38,13 @@ pub const GREATER_POTION_OF_EXPERIENCE: i16 = 1001;
 const POTION: i16 = 23;
 const TOME: i16 = 25;
 
-/// Adds Charm of Experience and the two experience potions to the imported tables.
+/// Adds Charm of Experience and the two experience potions to the imported tables, and
+/// gives Giants Scavenger (for Seeker) and Healer (docs/balance.md, Melee uses STR and DEX).
 pub fn add_remake_entries(d: &mut GameData) {
+    const GIANT: u16 = 1 << 2;
+    d.guilds[SEEKER].races &= !GIANT;
+    d.guilds[SCAVENGER].races |= GIANT;
+    d.guilds[HEALER].races |= GIANT;
     d.spells.push(Spell {
         name: "Charm of Experience".into(),
         id: CHARM_OF_EXPERIENCE,

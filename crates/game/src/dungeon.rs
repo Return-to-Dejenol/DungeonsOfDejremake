@@ -83,18 +83,21 @@ impl App {
             v.swipe("picMaze2").swipe("picMonsters");
             (desk.window(ctx, F, v, false), open)
         };
-        // The phone shell's touch pad: the same buttons, finger-sized, and Defend and Run.
+        // The phone shell's touch pad: the same buttons, finger-sized, and Defend and Run;
+        // Defend reads Join while a group offers to join (the keyboard's J).
+        let offer = desk.shell && self.game.as_ref().and_then(|g| g.fight.as_ref()).is_some_and(|f| f.offers.iter().any(|&o| o > 0));
         if desk.shell {
             let fight = self.game.as_ref().is_some_and(|g| g.fight.is_some());
             let mut v = View::default();
             v.enable("cmdAction(3)", open).enable("cmdDefend", fight).enable("cmdRun", fight);
+            v.text("cmdDefend", if offer { "Join" } else { "Defend" });
             ev.clicked = desk.window(ctx, crate::stats::PAD, v, false).clicked.or(ev.clicked);
         }
         // Touch: a swipe across the maze steps (up), turns (left, right) or turns about (down).
         if let Some((_, dir)) = ev.swiped.take() {
             ev.clicked = Some(format!("cmdMove({})", [2, 1, 3, 0][usize::from(dir)]));
         }
-        keys[6] |= ev.click("cmdDefend");
+        keys[if offer { 11 } else { 6 }] |= ev.click("cmdDefend");
         keys[7] |= ev.click("cmdRun");
         let g = self.game.as_mut().unwrap();
         let before = (g.pos(), g.fight.is_some(), g.party.iter().map(|m| m.hp).sum::<i32>());
