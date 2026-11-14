@@ -122,7 +122,9 @@ are listed at the end. Notation:
   - Joining: free while you belong only to your current guild; otherwise A² × 5356. A sums (rate + 1) × 1.25 over the guild's abilities and max spell level / 3 over its classes: Nomad 1.7 million, Ninja 10.9 million.
   - Level gold: see "Original guild level cost" above.
 - **Morgue:**
-  - Raise: 2,912.32 × max hits / 1.5. It works clamp(35 CON / 4.5 + 10, 10, 98)% of the time.
+  - Raise: 2,912.32 × max hits / 1.5, refused without the gold, except free when the best guild level is 5 or less. It works when Int(Rnd × 100) ≤ clamp(CInt(35 CON / 4.5 + 10), 10, 98).
+  - A failed raise brings complications at age / (lifespan / 2): −5 to every stat (not below the race minimum), 15 years, max hits / 1.2, and the raise then goes through. Without them the body ages 54 days and stays dead.
+  - A raise ages 54 days and loses a point of CON (50 − 2 CON)% of the time.
   - Rescue from floor F: 372,567.52 ln(F + 1) F. The rescuers are lost 4% of the time per floor.
 - **Seer:** a party member costs 132,567.52 ln(F + 1) F; a monster's lair costs half that at its level, up to level 12.
 - **Confinement:**
@@ -266,6 +268,53 @@ changes floor, going back to town included.
 - Charm of Experience sits above Resist Magic (15), the top of the original Seeker list.
 - Its SP cost, and the potion's price and drop rates, are start values to tune.
 
+### Match the original's mechanics (audit, 2026-11-14)
+
+An audit compared the rules with MORDOR.EXE and found mechanics the remake had changed
+without saying so. The rule now: match the original, except where this document records
+a deliberate change. Each of these is to be ported; until it is, the remake's current
+behaviour is a known gap, not a choice.
+
+- **Encounters:** match the original. Up to four linked groups (followers by the
+  monster's link fields), spawn weights over the floor window, a 1% wanderer, the
+  floor-1 starter rule, half to all of the group size, lairs giving their monster 75% of
+  the time with followers. Rooms keep their monsters, wounded, until killed and refill
+  over time; monsters get a free attack on entering their room, and leaving is capped at
+  98%. The remake's 60% chance per room is dropped.
+- **Spell learning:** match the original. A guild teaches a spell up to its class cap,
+  when CInt(level x rate) <= Int(L/2 + 0.5), and spell power is Int(L/2 + 0.5).
+- **Casting in combat:** match the original. Heals, cures, raises and buffs only with no
+  hostile monsters present (Cure Paralysis and Teleport work in both); combat spells only
+  with monsters present; spells above level 7 not against peaceful monsters; no casting in
+  the city. The Party AI heals between fights.
+- **Spell damage, healing and SP cost:** the original's formulas (logarithmic damage and
+  healing, SP cost falling with level, the group loop, kill spells killing only when the
+  roll reaches the foe's hits, flag-4 monsters immune to player spells).
+  **Deliberate change:** the remake's growing max SP pool and its gradual SP regen stay,
+  instead of the original's flat 5 x (INT + WIS).
+- **Items:** match the original. Equip limits (two hands, the item class's count, the
+  guild and guild-level rules, natural stat requirements, no stat below the race minimum);
+  worn stat modifiers on a separate modified-stat array; levitate, invisible, protection
+  and see invisible from worn items; wearable spell items stay when their charges run out
+  (only item types 23-28, 30 and 31 are used up); found items with a random alignment,
+  and the store's Realign; store stock kept per alignment; the four identification
+  levels; cursed items can't be sold.
+- **Morgue (ported):** match the original. No raise or rescue without the gold (free for a
+  character whose best guild level is 5 or below); the original's raise odds,
+  complications and CON loss; a member raised in town gets the window's +10.
+- **Stand-ins replaced by the original rules:** paralysis wear-off (and paralysis ends
+  with the fight), poison and disease ticking in fights, guild quests, pits, chutes, water
+  and quicksand, companion join offers, charm and binding, death from old age.
+- **Theft and monster spells:** match the original, including theft's gold rule and
+  monster spells hitting the whole party.
+- **Real-time timers:** where the original runs a rule on a wall-clock timer (ailments,
+  water and quicksand, binding decay, old age, room refills), one tick is one combat round
+  in a fight and one step outside. **Deliberate change:** idling never advances them.
+- **Everything else the audit listed** (teleport and displacement, buffs, item cast
+  levels, bank item storage, Pool, restocking and the minor items): match the original by
+  default. Where a rule would hurt play on a phone, it comes back to the owner as its own
+  decision first.
+
 ## Taken while building (review at play-test)
 
 Where the original's rule isn't known, these are stand-ins close to its spirit. Each
@@ -313,8 +362,7 @@ can be changed in `patches/modern.toml` or here.
   lasts 30 steps x binding level x strength (the original's leaving rule isn't read
   yet); badly hurt companions may wander off.
 - **City**: the bank pays fees when the purse runs short (as the original). A guild's
-  quest asks for a monster from floor level/5 (the original's choice isn't read yet). A
-  failed raise ages the body a year, and a success loses a point of CON half the time.
+  quest asks for a monster from floor level/5 (the original's choice isn't read yet).
 - **Paralysis** lasts 3 + level/2 rounds or steps (the original's wear-off isn't read
   yet). The Teleporter trap moves the whole party, and the container is lost.
 - **Squares**: water may hurt members wearing 12+ defense of gear (a 1 in 4 chance per

@@ -636,6 +636,29 @@ pub(crate) fn guild_ad(data: &GameData, g: usize, level: u32) -> [f64; 2] {
     [f64::from(steps) * f64::from(gd.single(114)), f64::from(steps) * f64::from(gd.single(116))]
 }
 
+/// A raise's odds (fn13D7): clamp(CInt(35 x CON / 4.5 + 10 k), 10, 98), k 1 for the
+/// morgue window and Raise Dead, 2 Restore Flesh, 3 Resurrect.
+pub(crate) fn raise_odds(c: &Character, k: i32) -> i32 {
+    ((35.0 * f64::from(c.stats[CON]) / 4.5).round_ties_even() as i32 + 10 * k).clamp(10, 98)
+}
+
+/// After a failed raise (fn11A1): complications come at age / (lifespan / 2), and raise
+/// the body anyway at -5 to every stat, 15 years older and max hits / 1.2 (the text id
+/// of their words); otherwise the body ages 54 days and stays dead (None).
+pub(crate) fn complications(data: &GameData, c: &mut Character) -> Option<u32> {
+    let r = &data.races[c.race];
+    if (c.rnd() * 100.0).floor() >= f64::from(c.age_days) / 365.0 / (f64::from(r.lifespan.max(1)) / 2.0) * 100.0 {
+        c.age_days += 54;
+        return None;
+    }
+    for s in 0..6 {
+        c.stats[s] = (c.stats[s] - 5).max(r.stat_min[s]);
+    }
+    c.age_days += 5475;
+    c.max_hp = (f64::from(c.max_hp) / 1.2) as i32;
+    Some(0x0abc_27aa)
+}
+
 /// Names of the characters saved in `dir`.
 pub fn saved(dir: &Path) -> Vec<String> {
     let mut v: Vec<String> = fs::read_dir(dir)
@@ -1256,8 +1279,18 @@ impl Game {
         (2_912.32 * f64::from(self.party[i].max_hp) / 1.5).round_ties_even() as u64
     }
 
-    /// The fee comes from the dead character's purse and bank, then the party's.
-    fn charge(&mut self, i: usize, cost: u64) -> u64 {
+    /// The party's gold, purses and banks.
+    fn funds(&self) -> u64 {
+        self.party.iter().map(|m| m.gold + m.bank).sum()
+    }
+
+    /// The fee comes from the dead character's purse and bank, then the party's; false,
+    /// with the original's "Not enough gold!", when they can't cover it (fn114E).
+    fn charge(&mut self, data: &GameData, i: usize, cost: u64) -> bool {
+        if self.funds() < cost {
+            self.boxes.push((0x9fa0_af51, data.t(0xab5e_eac3).into()));
+            return false;
+        }
         let mut left = cost;
         for j in std::iter::once(i).chain(0..self.party.len()) {
             let m = &mut self.party[j];
@@ -1265,13 +1298,15 @@ impl Game {
             m.pay(take);
             left -= take;
         }
-        cost - left
+        true
     }
 
     /// FRMMORG's rescue, told in the original's words.
     pub fn rescue(&mut self, data: &GameData, i: usize) {
         let Life::Dead(p) = self.party[i].life else { return };
-        self.charge(i, self.rescue_cost(i));
+        if !self.charge(data, i, self.rescue_cost(i)) {
+            return;
+        }
         if self.party[i].rnd() * 100.0 <= 4.0 * p.floor as f64 {
             return self.say(data.t(0x6601_942a));
         }
@@ -1281,29 +1316,40 @@ impl Game {
         self.say(found);
     }
 
-    /// A raise works clamp(35 x CON / 4.5 + 10, 10, 98)% of the time (MORDOR.EXE);
-    /// a failure ages the body a year, and a success often costs a point of CON.
+    /// The morgue's raise (MAINMOD2.mdrcharIsDead): paid for, or free while the best guild
+    /// level is 5 or less and the gold falls short. It works when Int(Rnd x 100) is no
+    /// more than the odds (fn13D7, the window's +10). A failure may bring complications,
+    /// which raise anyway (fn11A1); a raise ages 54 days and costs a point of CON
+    /// (50 - 2 CON)% of the time.
     pub fn raise(&mut self, data: &GameData, i: usize) {
         if self.party[i].life != Life::InMorgue {
             return;
         }
         const INFO: u32 = 0xbe7b_2721;
-        self.charge(i, self.raise_cost(i));
-        let m = &mut self.party[i];
-        let odds = (35.0 * f64::from(m.stats[CON]) / 4.5 + 10.0).round_ties_even().clamp(10.0, 98.0) as i32;
-        if m.d100() > odds {
-            m.age_days += 365;
-            self.boxes.extend([(INFO, data.t(0x0abc_27aa).into()), (INFO, data.t(0x8327_8e1b).into())]);
+        let cost = self.raise_cost(i);
+        if self.party[i].levels.iter().max().copied().unwrap_or(0) <= 5 && self.funds() < cost {
+            self.boxes.push((0xad54_2324, data.t(0x15ee_90dd).into()));
+        } else if !self.charge(data, i, cost) {
             return;
         }
+        let m = &mut self.party[i];
+        let said = if (m.rnd() * 100.0).floor() as i32 > raise_odds(m, 1) {
+            match complications(data, m) {
+                Some(id) => vec![0x8327_8e1b, id],
+                None => return self.boxes.push((INFO, data.t(0x8327_8e1b).into())),
+            }
+        } else {
+            vec![0xf63e_9d43]
+        };
+        m.age_days += 54;
         m.life = Life::Alive;
         m.hp = m.max_hp;
         let min = data.races[m.race].stat_min[CON];
-        let con = m.chance(0.5) && m.stats[CON] > min;
+        let con = m.rnd() * 100.0 < 50.0 - 2.0 * f64::from(m.stats[CON]) && m.stats[CON] > min;
         if con {
             m.stats[CON] -= 1;
         }
-        self.boxes.push((INFO, data.t(0xf63e_9d43).into()));
+        self.boxes.extend(said.into_iter().map(|id| (INFO, data.t(id).into())));
         if con {
             let line = if self.party.len() == 1 { data.t(0x346e_365c).into() } else { format!("{}{}{}", data.t(0x2cf6_254e), self.quoted(i), data.t(0x02e1_4e6f)) };
             self.say(line);
@@ -1455,18 +1501,60 @@ mod tests {
         let at = g.pos();
         assert!(g.hurt(&d, 0, 1000));
         assert_eq!(g.party[0].life, Life::Dead(at));
-        g.party[0].gold = 100_000;
-        while g.party[0].life != Life::InMorgue {
+        // Bounded: a refused fee must never spin a test (it once filled the owner's RAM).
+        for _ in 0..1000 {
+            if g.party[0].life == Life::InMorgue {
+                break;
+            }
+            g.party[0].gold = 10_000_000;
             g.rescue(&d, 0);
         }
-        while g.party[0].life != Life::Alive {
+        assert_eq!(g.party[0].life, Life::InMorgue);
+        for _ in 0..1000 {
+            if g.party[0].life == Life::Alive {
+                break;
+            }
+            g.party[0].gold = 10_000_000;
             g.raise(&d, 0);
         }
+        assert_eq!(g.party[0].life, Life::Alive);
+        g.boxes.clear();
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ddj-save-test");
         g.party[0].save(&dir).unwrap();
         let back = Character::load(&dir.join("Raise.json")).unwrap();
         assert_eq!((back.levels, back.gold, back.stats), (g.party[0].levels.clone(), g.party[0].gold, g.party[0].stats));
         assert!(saved(&dir).contains(&"Raise".to_string()));
+    }
+
+    /// MORDOR.EXE's morgue: no rescue or raise without the gold, except a free raise up
+    /// to best level 5; the odds are fn13D7's.
+    #[test]
+    fn morgue_needs_gold() {
+        let d = data();
+        let mut g = Game::new(hero(&d, "Broke", 0, 1, 1, 9));
+        g.enter_dungeon(&d).unwrap();
+        g.hurt(&d, 0, 10_000);
+        (g.party[0].gold, g.party[0].bank) = (0, 0);
+        g.rescue(&d, 0);
+        assert!(matches!(g.party[0].life, Life::Dead(_)), "no rescue without the gold");
+        g.party[0].life = Life::InMorgue;
+        g.raise(&d, 0);
+        assert_eq!(g.party[0].life, Life::InMorgue, "level 9 pays");
+        g.party[0].levels = vec![0; d.guilds.len()];
+        g.party[0].levels[1] = 5;
+        for _ in 0..1000 {
+            if g.party[0].life == Life::Alive {
+                break;
+            }
+            g.raise(&d, 0);
+        }
+        assert_eq!(g.party[0].life, Life::Alive, "free raise at best level 5");
+        assert!(g.party[0].age_days >= 16 * 365 + 54);
+        let c = &mut g.party[0];
+        c.stats[CON] = 12;
+        assert_eq!(raise_odds(c, 1), 98);
+        c.stats[CON] = 3;
+        assert_eq!((raise_odds(c, 1), raise_odds(c, 2)), (33, 43));
     }
 
     #[test]
