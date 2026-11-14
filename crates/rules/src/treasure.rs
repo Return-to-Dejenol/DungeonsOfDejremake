@@ -325,6 +325,12 @@ pub fn random_item(r: &mut Character, d: &GameData, m: usize, chest: bool) -> Op
     None
 }
 
+/// The ID skill (fn12AF): CInt((INT + WIS) / 2 x ln((best level + 5) / 10 + 1)).
+pub fn id_skill(c: &Character, d: &GameData) -> f64 {
+    let best = f64::from(*c.levels.iter().max().unwrap_or(&1));
+    (f64::from(c.stat(d, INT) + c.stat(d, WIS)) / 2.0 * ((best + 5.0) / 10.0 + 1.0).ln()).round_ties_even()
+}
+
 /// How well the finder knows what it found (fn129A), as an identification level: the
 /// item's difficulty, 25 + (ln(mult + 1) + 0.3) x ln(w17 + 1) x level, against the ID
 /// skill (INT + WIS) / 2 x ln((best level + 5) / 10 + 1): 1 (named) within it for items
@@ -332,8 +338,7 @@ pub fn random_item(r: &mut Character, d: &GameData, m: usize, chest: bool) -> Op
 pub fn identifies(c: &Character, d: &GameData, item: usize) -> u8 {
     let it = &d.items[item];
     let hard = (25.0 + ((f64::from(it.damage_mult) + 1.0).ln() + 0.3) * (f64::from(it.w(17).max(0)) + 1.0).ln() * f64::from(it.level)).round_ties_even();
-    let best = f64::from(*c.levels.iter().max().unwrap_or(&1));
-    let skill = (f64::from(c.stat(d, INT) + c.stat(d, WIS)) / 2.0 * ((best + 5.0) / 10.0 + 1.0).ln()).round_ties_even();
+    let skill = id_skill(c, d);
     match hard - skill {
         x if x <= 0.0 && it.level <= 5 => 1,
         x if x >= 20.0 => 3,

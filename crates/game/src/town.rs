@@ -348,8 +348,19 @@ impl App {
         let in_morgue = (0..g.party.len()).find(|&i| g.party[i].life == Life::InMorgue);
         let lost = (0..g.party.len()).find(|&i| matches!(g.party[i].life, Life::Dead(_)));
         let mut v = View::default();
-        v.enable("cmdCommand(0)", in_morgue.is_some()).enable("cmdCommand(1)", false).enable("cmdCommand(3)", lost.is_some());
+        // "Raise <companion> for <fee>" for the first dead companion (sub2BDB).
+        let comp = g.companion_raise_cost(d, 0);
+        if let Some((k, cost)) = comp {
+            v.text("cmdCommand(2)", format!("{}{}{}{}", d.t(0x4c84_5f59), d.monsters[g.party[0].companions[k].monster].name, d.t(0x6bc1_25fe), commas(cost)));
+        }
+        v.enable("cmdCommand(0)", in_morgue.is_some()).enable("cmdCommand(1)", false).enable("cmdCommand(2)", comp.is_some()).enable("cmdCommand(3)", lost.is_some());
         let ev = desk.window(ctx, "frmCityMorgue", v, false);
+        if ev.click("cmdCommand(2)") && comp.is_some() {
+            match g.raise_companion(d, 0) {
+                Ok(s) => g.log.push(s),
+                Err(e) => self.boxes.push((d.t(0xa003_c859).into(), e)),
+            }
+        }
         if ev.click("cmdCommand(0)")
             && let Some(i) = in_morgue
         {
@@ -398,7 +409,10 @@ impl App {
         let sell = desk.state(F, "sell").sel.filter(|&k| k < comps.len());
         v.text("txtBind", bind.map_or(String::new(), |k| d.monsters[comps[k].monster].name.clone())).enable("cmdBind", bind.is_some()).text("lblBindCost", "");
         v.text("txtID", sell.map_or(String::new(), |k| d.monsters[comps[k].monster].name.clone())).enable("cmdSell", sell.is_some());
-        v.text("lblValue", "").text("lblIDCost", "").text("lblIDLevel", "");
+        // The companion dropped on the ID box: its value, ID cost and level (fn33FA, fn33E9).
+        v.text("lblValue", sell.map_or(String::new(), |k| commas(g.companion_sell_price(d, k))));
+        v.text("lblIDCost", sell.filter(|&k| comps[k].id > 0).map_or(String::new(), |k| commas(g.companion_id_price(d, k))));
+        v.text("lblIDLevel", sell.map_or(String::new(), |k| comps[k].id.to_string())).enable("cmdID", sell.is_some_and(|k| comps[k].id > 0));
         let ev = desk.window(ctx, F, v, false);
         if let Some(r) = ev.index("elaComp").or(ev.index("elaCompInfo")) {
             desk.state(F, "buy").sel = list.get(top + usize::from(r)).map(|x| x.0);
@@ -432,6 +446,11 @@ impl App {
                 }
                 Err(e) => self.boxes.push((d.t(0x3e5c_ab8c).into(), e)),
             }
+        }
+        if ev.click("cmdID")
+            && let Some(k) = sell
+        {
+            msg = answer(&mut self.boxes, d, g.identify_companion(d, k));
         }
         if ev.click("cmdSell")
             && let Some(k) = sell

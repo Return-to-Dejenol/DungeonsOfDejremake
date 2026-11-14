@@ -1909,7 +1909,7 @@ mod tests {
         let mut g = Game::new(hero(&d, "Tamer", 0, 1, 1, 5));
         g.enter_dungeon(&d).unwrap();
         let orc = d.monsters.iter().position(|m| m.name == "Orc").unwrap();
-        g.party[0].companions.push(crate::monsters::Companion { monster: orc, hp: 20, max_hp: 20, bind: 3 });
+        g.party[0].companions.push(crate::monsters::Companion { monster: orc, hp: 20, max_hp: 20, bind: 3, id: 0 });
         let mut ticks = 0;
         while !g.party[0].companions.is_empty() && ticks < 20_000 {
             g.ailments(&d);
@@ -1921,6 +1921,18 @@ mod tests {
         g.accept_offer(&d);
         assert_eq!(g.party[0].companions.iter().map(|c| c.bind).collect::<Vec<_>>(), vec![-10, -10]);
         assert_eq!(g.fight.as_ref().map(|f| f.alive().count()), Some(1));
+        // A dead companion keeps its slot; the morgue raises it for max hits x 1244.34 x
+        // level found (sub2BDB), and Confinement pays less for one it doesn't know.
+        g.party[0].companions[0].hp = 0;
+        let (k, cost) = g.companion_raise_cost(&d, 0).unwrap();
+        assert_eq!((k, cost), (0, (9.0 * 1244.34 * f64::from(d.monsters[orc].level)).round() as u64));
+        g.party[0].gold = 10_000_000;
+        g.raise_companion(&d, 0).unwrap();
+        assert!(g.party[0].companions.len() == 1 || g.party[0].companions[0].hp == 9);
+        g.party[0].companions[0].id = 0;
+        let known = g.companion_sell_price(&d, 0);
+        g.party[0].companions[0].id = 2;
+        assert_eq!(g.companion_sell_price(&d, 0), (known as f64 / 3.0).round() as u64);
     }
 
     /// Water takes F hits a tick from each member not levitating; a pit up to

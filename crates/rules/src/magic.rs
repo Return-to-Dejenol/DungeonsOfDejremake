@@ -482,7 +482,20 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, item: i16,
         Some(Magic::Raise) => {
             // fn13D7's odds on the body's CON (Raise Dead +10, Resurrect +30); a failure
             // may bring complications, which raise anyway (fn11A1).
-            let Some(j) = (0..g.party.len()).find(|&j| matches!(g.party[j].life, Life::Dead(_))) else { return };
+            let Some(j) = (0..g.party.len()).find(|&j| matches!(g.party[j].life, Life::Dead(_))) else {
+                // A dead companion: 85 + its CON (98 at most), else it is lost; Resurrect
+                // restores it fully, the others to 1 hit (mdrcharCastSpell).
+                let Some((o, k)) = (0..g.party.len()).find_map(|o| g.party[o].companions.iter().position(|c| c.hp <= 0).map(|k| (o, k))) else { return };
+                let con = i32::from(d.monsters[g.party[o].companions[k].monster].stats[3]);
+                let ok = (g.party[i].rnd() * 100.0).floor() as i32 <= (85 + con).min(98);
+                let c = &mut g.party[o].companions[k];
+                if ok {
+                    c.hp = if sp.effect == 22 { c.max_hp } else { 1 };
+                } else {
+                    g.party[o].companions.remove(k);
+                }
+                return g.say(d.t(if ok { 0x97b7_670b } else { 0x8327_8e1b }));
+            };
             let m = &mut g.party[j];
             let ok = (m.rnd() * 100.0).floor() as i32 <= crate::game::raise_odds(m, i32::from(sp.effect) - 19) || crate::game::complications(d, m).is_some();
             if ok {
@@ -645,7 +658,8 @@ fn offensive(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f64,
                 // fn10BA: it joins with the hits it had, bound at the spell's level.
                 g.award(d, t, i, m, hp, 1.0);
                 g.fight.as_mut().unwrap().foes[fi].hp = 0;
-                g.party[i].companions.push(crate::monsters::Companion { monster: m, hp, max_hp: hp, bind: sp.level.clamp(1, 100) });
+                let id = crate::monsters::companion_id(&g.party[i], d, m);
+                g.party[i].companions.push(crate::monsters::Companion { monster: m, hp, max_hp: hp, bind: sp.level.clamp(1, 100), id });
                 charmed += 1;
                 if g.party[i].companions.len() >= crate::monsters::MAX_COMPANIONS {
                     break;

@@ -321,11 +321,13 @@ impl Game {
         f.defending = vec![false; self.party.len()];
         (self.said[CHAR_HIT], self.said[MONSTER_HIT]) = Default::default();
         crate::monsters::turn_hostile(self, data);
+        // Each member acts, then its companions (sub155A).
         for i in 0..self.party.len() {
             if self.fight.as_ref().is_none_or(Fight::over) {
                 break;
             }
             if !self.party[i].able() {
+                self.companions_act(data, t, i);
                 continue;
             }
             let order = if i == 0 { self.fight.as_ref().unwrap().order } else { None };
@@ -338,8 +340,8 @@ impl Game {
                 f.opening = None;
             }
             self.act(data, t, i, act);
+            self.companions_act(data, t, i);
         }
-        self.companions_act(data, t);
         let Some(f) = self.fight.as_ref() else { return };
         if f.over() {
             return self.win(data, t);

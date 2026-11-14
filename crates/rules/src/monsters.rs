@@ -23,6 +23,23 @@ pub struct Companion {
     /// below 0 joined of its own will.
     #[serde(default)]
     pub bind: i16,
+    /// How unknown it is (fn121C): 0 known, 1-3 needing that many identifications.
+    #[serde(default)]
+    pub id: u8,
+}
+
+/// How well member c knows a monster it charms (fn121C): its ID skill against
+/// CInt((30 + level found) x ln((power + 5) / 10 + 1)); 0 within it, 1 short, 2 by 5,
+/// 3 by 15.
+pub fn companion_id(c: &Character, d: &GameData, m: usize) -> u8 {
+    let mon = &d.monsters[m];
+    let x = crate::treasure::id_skill(c, d) - ((30.0 + f64::from(mon.level)) * ((f64::from(mon.power_level) + 5.0) / 10.0 + 1.0).ln()).round_ties_even();
+    match x {
+        x if x >= 0.0 => 0,
+        x if x > -5.0 => 1,
+        x if x > -15.0 => 2,
+        _ => 3,
+    }
 }
 
 pub const MAX_COMPANIONS: usize = 4;
@@ -154,14 +171,9 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning, group: u8, at: Option<usiz
         // The target's companions take it first, each less half its resistance, and what
         // is left carries on to the next and to the member (sub0E85).
         let mut dmg = dmg;
-        for k in (0..g.party[j].companions.len()).rev() {
+        for k in (0..g.party[j].companions.len()).filter(|&k| g.party[j].companions[k].hp > 0).collect::<Vec<_>>() {
             dmg = reduce(dmg, i32::from(d.monsters[g.party[j].companions[k].monster].resist[slot]));
-            let c = &mut g.party[j].companions[k];
-            c.hp -= dmg;
-            if c.hp <= 0 {
-                let m = g.party[j].companions.remove(k).monster;
-                g.say(format!("The {} dies.", d.monsters[m].name));
-            }
+            companion_hurt(g, d, j, k, dmg);
         }
         let dmg = reduce(dmg, resist(&g.party[j], d, slot));
         struck(g, j, format!("{} {dmg}!", d.t(0xa542_e4fe)), format!("The {} breathes {kind}!", mon.name));
@@ -180,7 +192,7 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning, group: u8, at: Option<usiz
             return killed(g, d, j, m, [0x8820_ae91, 0x719d_9180], at);
         }
     }
-    let (mut total, mut last_hit) = (0, false);
+    let (mut total, mut last_hit, mut bruised) = (0, false, Vec::new());
     for _ in &awake {
         if g.fight.is_none() || !g.party[j].alive() {
             return;
@@ -188,10 +200,13 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning, group: u8, at: Option<usiz
         if mon.spells != 0 && monster_spell(g, d, m, j) {
             return;
         }
-        let comps = g.party[j].companions.len();
-        if comps > 0 && g.party[j].d100() >= 100 / (comps as i32 + 1) {
-            let k = g.party[j].roll(comps as u32) as usize;
+        let comps: Vec<usize> = (0..g.party[j].companions.len()).filter(|&k| g.party[j].companions[k].hp > 0).collect();
+        if !comps.is_empty() && g.party[j].d100() >= 100 / (comps.len() as i32 + 1) {
+            let k = comps[g.party[j].roll(comps.len() as u32) as usize];
             last_hit = hit_companion(g, d, m, j, k);
+            if last_hit {
+                bruised.push(k);
+            }
             continue;
         }
         let c = &g.party[j];
@@ -234,6 +249,21 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning, group: u8, at: Option<usiz
     } else {
         let you = d.t(if awake.len() > 1 { 0xe339_1a5f } else { 0x2f02_d448 }).into();
         struck(g, j, you, format!("The {} miss {name}.", mon.name));
+    }
+    // Companions that were hit can be electrocuted and stoned too (sub0E85).
+    bruised.dedup();
+    for k in bruised {
+        let Some(cm) = g.party[j].companions.get(k).filter(|c| c.hp > 0).map(|c| &d.monsters[c.monster]) else { continue };
+        if mon.specials & ELECTROCUTE != 0 && g.party[j].d100() <= odds(cm.power_level.max(0) as u32, mon.power_level, 90) {
+            let dmg = (f64::from(element_hit(&mut g.party[j], f64::from(mon.power_level) + 1.0, f64::from(cm.power_level), 10.0, false)) * 0.7).round_ties_even() as i32;
+            companion_hurt(g, d, j, k, reduce(dmg, i32::from(cm.resist[ELECTRIC])));
+        }
+        let v = f64::from(cm.stats[3].max(1));
+        let save = (v * v.ln() / 2.5f64.ln() - f64::from(mon.level)).min(95.0);
+        if mon.specials & STONE != 0 && g.party[j].d100() > i32::from(cm.resist[STONE_RES]) && f64::from(g.party[j].d100()) > save {
+            let hp = g.party[j].companions[k].hp;
+            companion_hurt(g, d, j, k, hp);
+        }
     }
     if mon.specials & ELECTROCUTE != 0 && total > 0 && g.party[j].alive() && g.party[j].d100() <= odds(lcur, mon.power_level, 90) {
         let dmg = (f64::from(element_hit(&mut g.party[j], f64::from(mon.power_level) + 1.0, f64::from(lcur), 10.0, false)) * 0.7).round_ties_even() as i32;
@@ -330,14 +360,21 @@ fn hit_companion(g: &mut Game, d: &GameData, m: usize, j: usize, k: usize) -> bo
     if dmg == 0 {
         return false;
     }
-    let c = &mut g.party[j].companions[k];
-    c.hp -= dmg;
-    let name = comp.name.clone();
-    if c.hp <= 0 {
-        g.party[j].companions.remove(k);
-        g.say(format!("The {} kills your {name}.", mon.name));
-    }
+    companion_hurt(g, d, j, k, dmg);
     true
+}
+
+/// Damage to member j's companion k; a dead one stays in its slot until raised.
+fn companion_hurt(g: &mut Game, d: &GameData, j: usize, k: usize, dmg: i32) {
+    let c = &mut g.party[j].companions[k];
+    if c.hp <= 0 || dmg <= 0 {
+        return;
+    }
+    c.hp = (c.hp - dmg).max(0);
+    if c.hp == 0 {
+        let name = &d.monsters[c.monster].name;
+        g.say(format!("The {name} dies."));
+    }
 }
 
 /// Poison, disease, paralysis, aging and draining, after a hit that hurt (MORDOR.EXE's
@@ -516,15 +553,10 @@ fn monster_spell(g: &mut Game, d: &GameData, m: usize, j: usize) -> bool {
         let cm = &d.monsters[g.party[j].companions[k].monster];
         let r = if slot < 12 { i32::from(cm.resist[slot]) } else { 0 };
         let mut hit = (crate::magic::hits(&mut g.party[j], sp, l, false) * (1.0 - res(r))).round_ties_even() as i32;
-        let comp = &mut g.party[j].companions[k];
-        if sp.effect == 100 && hit < comp.hp {
+        if sp.effect == 100 && hit < g.party[j].companions[k].hp {
             hit = 0;
         }
-        comp.hp -= hit;
-        if comp.hp <= 0 {
-            let m = g.party[j].companions.remove(k).monster;
-            g.say(format!("The {} dies.", d.monsters[m].name));
-        }
+        companion_hurt(g, d, j, k, hit);
     }
     hurt(g, d, j, dmg);
     true
@@ -554,13 +586,13 @@ impl Game {
     /// Each companion swings once at the weakest foe (MORDOR.EXE): its own attack
     /// against the foe's defense, critical +4 and backstab +1; its master earns a
     /// quarter of the XP.
-    pub(crate) fn companions_act(&mut self, d: &GameData, t: &Tuning) {
-        for (i, k) in (0..self.party.len()).flat_map(|i| (0..self.party[i].companions.len()).map(move |k| (i, k))).collect::<Vec<_>>() {
+    pub(crate) fn companions_act(&mut self, d: &GameData, t: &Tuning, i: usize) {
+        for k in 0..self.party[i].companions.len() {
             let Some(f) = self.fight.as_ref() else { return };
             if f.peaceful {
                 return;
             }
-            let Some(comp) = self.party[i].companions.get(k) else { continue };
+            let Some(comp) = self.party[i].companions.get(k).filter(|c| c.hp > 0) else { continue };
             let Some(fi) = f.pick(crate::ai::Target::Weakest) else {
                 return;
             };
@@ -641,7 +673,7 @@ impl Game {
                     break;
                 }
                 let foe = &mut f.foes[fi];
-                joined.push(Companion { monster: foe.monster, hp: foe.hp, max_hp: foe.max_hp, bind: -10 });
+                joined.push(Companion { monster: foe.monster, hp: foe.hp, max_hp: foe.max_hp, bind: -10, id: companion_id(&self.party[0], d, foe.monster) });
                 foe.hp = 0;
             }
             f.offers[g] = 0;
@@ -703,25 +735,83 @@ impl Game {
         lead.pay(price);
         let hp = i32::from(d.monsters[m].hp.max(1));
         let bind = (5 + d.monsters[m].level).clamp(1, 10);
-        lead.companions.push(Companion { monster: m, hp, max_hp: hp, bind });
+        lead.companions.push(Companion { monster: m, hp, max_hp: hp, bind, id: 0 });
         if d.monsters[m].level > 0 {
             self.store.companions[m] -= 1;
         }
         Ok(format!("{}{}{}{}.", d.t(0x582d_1544), lead.companions.len(), d.t(0xfa28_fdd2), d.monsters[m].name))
     }
 
+    /// What Confinement pays for the lead's companion k (fn33FA): 0.9 x value / (s + 1.15)
+    /// / (its identification level + 1).
+    pub fn companion_sell_price(&self, d: &GameData, k: usize) -> u64 {
+        let c = &self.party[0].companions[k];
+        let s = self.store.companions.get(c.monster).copied().unwrap_or(0);
+        crate::store::cha_sell(&self.party[0], d, (0.9 * companion_value(d, c.monster) / (f64::from(s.min(9)) + 1.15) / (f64::from(c.id) + 1.0)).round_ties_even() as u64)
+    }
+
+    /// One identification of companion k (fn33E9): 0.13 x value / ((s/2 + 1) x 0.9) /
+    /// level + 1; 0 when known.
+    pub fn companion_id_price(&self, d: &GameData, k: usize) -> u64 {
+        let c = &self.party[0].companions[k];
+        if c.id == 0 {
+            return 0;
+        }
+        let s = f64::from(self.store.companions.get(c.monster).copied().unwrap_or(0).min(9));
+        (0.13 * companion_value(d, c.monster) / ((s / 2.0 + 1.0) * 0.9) / f64::from(c.id) + 1.0).round_ties_even() as u64
+    }
+
+    pub fn identify_companion(&mut self, d: &GameData, k: usize) -> Result<String, (u32, String)> {
+        let cost = self.companion_id_price(d, k);
+        let lead = &mut self.party[0];
+        if lead.gold + lead.bank < cost {
+            return Err((0x4a17_88e0, d.t(0x22bd_be43).into()));
+        }
+        lead.pay(cost);
+        lead.companions[k].id = lead.companions[k].id.saturating_sub(1);
+        Ok(String::new())
+    }
+
+    /// Selling: only a monster found in the dungeon (level found above 0) restocks.
     pub fn sell_companion(&mut self, d: &GameData, k: usize) -> String {
+        let price = self.companion_sell_price(d, k);
         let lead = &mut self.party[0];
         let c = lead.companions.remove(k);
-        let s = self.store.companions.get(c.monster).copied().unwrap_or(0);
-        let price = crate::store::cha_sell(lead, d, (0.9 * companion_value(d, c.monster) / (f64::from(s.min(9)) + 1.15)).round_ties_even() as u64);
         lead.gold += price;
         if let Some(n) = self.store.companions.get_mut(c.monster)
             && *n < 9
+            && d.monsters[c.monster].level > 0
         {
             *n += 1;
         }
         String::new()
+    }
+
+    /// The morgue's offer for member i's first dead companion (sub2BDB): its slot and the
+    /// fee, CLng(max hits x 1244.34 x level found).
+    pub fn companion_raise_cost(&self, d: &GameData, i: usize) -> Option<(usize, u64)> {
+        let c = &self.party[i];
+        let k = c.companions.iter().position(|x| x.hp <= 0)?;
+        let x = &c.companions[k];
+        Some((k, (f64::from(x.max_hp) * 1244.34 * f64::from(d.monsters[x.monster].level)).round_ties_even() as u64))
+    }
+
+    /// Raising that companion: 75 + its CON in 100 (98 at most), back at full hits; a
+    /// failure loses it. The Messages line, or the message box's text.
+    pub fn raise_companion(&mut self, d: &GameData, i: usize) -> Result<String, String> {
+        let Some((k, cost)) = self.companion_raise_cost(d, i) else { return Ok(String::new()) };
+        let c = &mut self.party[i];
+        if c.gold + c.bank < cost {
+            return Err(d.t(0x22bd_be43).into());
+        }
+        c.pay(cost);
+        let odds = (75 + i32::from(d.monsters[c.companions[k].monster].stats[3])).min(98);
+        if (c.rnd() * 100.0).floor() as i32 > odds {
+            c.companions.remove(k);
+            return Ok(d.t(0x8327_8e1b).into());
+        }
+        c.companions[k].hp = c.companions[k].max_hp;
+        Ok(d.t(0x97b7_670b).into())
     }
 
     /// The bindsmen raise the binding level by 4 (12 at most) for
