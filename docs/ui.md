@@ -30,6 +30,38 @@ Decided 2026-11-04: what the player sees should look exactly like the original.
 - **Touch screens** (2026-11-10): two fingers pinch the whole desktop up to 3x and move
   it about; pinching back out fits it again. Buttons, check boxes and option buttons
   take taps 5 pixels past their edges.
+- **The phone shell** (Android only, 2026-11-13; the owner chose it over a touch-sized
+  desktop). The same windows, drawn the same way, but placed for a phone instead of on
+  the 800x600 desktop (`stats::shell`, `Desk.place`). Windows and the web keep the
+  desktop; `DDJ_SHELL=1` shows the shell on Windows for testing.
+  - Portrait: the main window's title and toolbar; the City or Dungeon window (or the
+    open building) and Messages, full width; a tab strip (Character, Objects, Party),
+    with the tab's windows below it as big as they fit (Party shares its tab with the
+    AutoMap in the dungeon); in the dungeon a touch pad at the bottom.
+  - Landscape: the play window, Messages and the pad on the left; the tabs on the right.
+  - The touch pad is a remake window in the original's style. It has the Dungeon window's
+    own arrows, Take, Open, Fight and Spell, finger-sized, plus Defend and Run (the
+    keyboard's D and R). The toolbar's and the dungeon's buttons that made a window
+    active (Objects & Spells, the AutoMap) bring its tab to the front.
+  - Dialogs and the HelpLesson open centred, as big as they fit; the HelpLesson's main
+    window fills the screen. The on-screen keyboard lifts a dialog so the box typed in
+    stays above it. A tap on the box brings the keyboard back after the system hides
+    it, and a tap elsewhere puts it away. Windows don't move by their title bars, and
+    there is no pinch zoom.
+  - The system's navigation bar is kept clear.
+  - Message boxes that only tell ("Not enough gold!", BUY ITEM) show while playing as a
+    yellow banner in the style of a Windows 95 tooltip, for a few seconds or until
+    tapped. Their words also go into Messages. Boxes that ask stay modal.
+- **Touch gestures** (any touch screen): a swipe across the maze or the monster box
+  steps (up), turns (left, right) or turns about (down). Dragging a list or a scrolled
+  strip moves it, with a flick that carries on: Messages, the guild and bank lists,
+  Objects & Spells' items and spells, the store's and Confinement's stock, and HelpLesson
+  topics. A drag that starts upright on an item scrolls; one that starts sideways carries
+  the item (to the store's boxes). Combo lists open with finger-tall rows, above the box
+  when there's no room below.
+- **The Symbol font's arrows** (the dungeon's movement buttons) are drawn from
+  Liberation Sans off Windows; before 2026-11-13 they showed as empty boxes on the web
+  and Android.
 
 ## Where the remake's own features went
 

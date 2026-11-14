@@ -104,6 +104,7 @@ impl App {
             }
             let item = list.get(top + r).copied();
             let (k, ki) = (format!("elaItem({r})"), format!("elaItemInfo({r})"));
+            v.scroll(&k, "vsbItems", row0[3] as f32, list.len().saturating_sub(rows)).scroll(&ki, "vsbItems", row0[3] as f32, list.len().saturating_sub(rows));
             let usable = item.is_some_and(|i| d.items[i].guilds & (1 << g.party[sel].guild) != 0);
             v.text(&k, item.map_or(String::new(), |i| d.items[i].name.clone())).fore(&k, if usable { Color32::BLACK } else { Color32::from_gray(128) });
             let n = item.map(|i| g.store.count(i, al));
@@ -431,6 +432,7 @@ impl App {
             }
             let it = list.get(top + r);
             let k = format!("elaComp({r})");
+            v.scroll(&k, "vsbComps", row0[3] as f32, list.len().saturating_sub(rows));
             v.text(&k, it.map_or(String::new(), |(m, _)| d.monsters[*m].name.clone())).text(&format!("elaCompInfo({r})"), it.map_or(String::new(), |(_, n)| n.to_string()));
             if it.is_some() && it.map(|x| x.0) == picked.map(|x| x.0) {
                 v.back(&k, SEL_BACK).fore(&k, Color32::WHITE);

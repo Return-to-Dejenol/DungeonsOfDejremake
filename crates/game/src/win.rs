@@ -59,6 +59,10 @@ pub struct View<'a> {
     bolds: std::collections::HashSet<String>,
     tab_h: HashMap<String, f32>,
     paints: Vec<(String, PaintFn<'a>)>,
+    /// Touch: controls a swipe across tells (the maze), and controls a drag scrolls, with
+    /// the scroll bar moved and its row height.
+    swipes: std::collections::HashSet<String>,
+    scrolls: HashMap<String, (String, f32, usize)>,
     /// Control-array members the original loaded at run time: (base key, new index,
     /// rect in the parent, or None to keep the base's).
     clones: Vec<(String, u16, [i32; 4])>,
@@ -115,6 +119,15 @@ impl<'a> View<'a> {
         self.tab_h.insert(k.into(), h);
         self
     }
+    pub fn swipe(&mut self, k: &str) -> &mut Self {
+        self.swipes.insert(k.into());
+        self
+    }
+    /// Touch: a drag on `k` moves scroll bar `sb` (0..=max) a row each `row` pixels.
+    pub fn scroll(&mut self, k: &str, sb: &str, row: f32, max: usize) -> &mut Self {
+        self.scrolls.insert(k.into(), (sb.into(), row, max));
+        self
+    }
     pub fn drag(&mut self, k: &str, d: Drag) -> &mut Self {
         self.drags.insert(k.into(), d);
         self
@@ -142,6 +155,8 @@ pub struct Ev {
     pub dropped: Option<(String, Drag)>,
     /// The window's close box.
     pub closed: bool,
+    /// Touch: a swipe across a control: 0 up, 1 right, 2 down, 3 left.
+    pub swiped: Option<(String, u8)>,
 }
 
 impl Ev {
@@ -164,6 +179,11 @@ pub struct St {
     pub text: String,
     pub on: bool,
     pub tab: usize,
+    /// Touch: the drag not yet turned into rows (or a swipe so far), the flick's speed
+    /// after it, and whether a drag on a draggable item scrolls instead.
+    pub drag: Vec2,
+    pub fling: f32,
+    pub scrolling: bool,
 }
 
 /// A bitmap font size from a Windows .FON file.
@@ -262,6 +282,8 @@ fn bundled_font(family: &str, bold: usize) -> Option<&'static [u8]> {
         ("ms" | "arial", _) => Some(include_bytes!("../../../assets/fonts/LiberationSans-BoldItalic.ttf")),
         ("times", 0) => Some(include_bytes!("../../../assets/fonts/LiberationSerif-Regular.ttf")),
         ("times", _) => Some(include_bytes!("../../../assets/fonts/LiberationSerif-Bold.ttf")),
+        // Liberation Sans has the Symbol font's arrows (the dungeon's movement buttons).
+        ("symbol", _) => Some(include_bytes!("../../../assets/fonts/LiberationSans-Regular.ttf")),
         _ => None,
     }
 }
@@ -301,8 +323,16 @@ pub struct Desk {
     /// The on-screen keyboard's height (points), and the bottom of the text box typed in.
     pub keyboard: f32,
     typing_at: Option<f32>,
+    /// The navigation bar's insets (left, right, bottom) the phone shell keeps clear.
+    pub insets: [f32; 3],
     /// The window last clicked, drawn with an active title bar.
     pub active: Option<String>,
+    /// The phone shell (Android, `stats::shell`): windows placed in screen points, each at
+    /// its own scale, or hidden (None); others are centred as big as they fit. `lift`
+    /// raises them over the on-screen keyboard.
+    pub shell: bool,
+    pub place: HashMap<String, Option<(Pos2, f32)>>,
+    lift: f32,
     ctx: egui::Context,
 }
 
@@ -329,9 +359,13 @@ impl Desk {
             layout: None,
             arranged: None,
             keyboard: 0.0,
+            insets: [0.0; 3],
             typing_at: None,
             touch: cfg!(target_os = "android") || std::env::var_os("DDJ_MOBILE").is_some(),
             active: None,
+            shell: cfg!(target_os = "android") || std::env::var_os("DDJ_SHELL").is_some(),
+            place: HashMap::new(),
+            lift: 0.0,
             ctx: ctx.clone(),
         })
     }
@@ -340,7 +374,8 @@ impl Desk {
     /// sizes of the play windows' layouts (phones, the web), the desktop fills the screen
     /// in the one that shows it biggest, or the original's when none beats it.
     pub fn begin(&mut self, screen: Rect, layouts: &[Vec2]) -> Painter {
-        let a = screen.width() / screen.height().max(1.0);
+        // A canvas not laid out yet can have no width: keep the shape finite.
+        let a = screen.width().max(1.0) / screen.height().max(1.0);
         let fit = |n: Vec2| (screen.width() / n.x).min(screen.height() / n.y);
         let fill = |n: Vec2| vec2(n.x.max(n.y * a), n.y.max(n.x / a));
         self.layout = (0..layouts.len()).filter(|&i| fit(layouts[i]) > fit(SCREEN)).max_by(|&i, &j| fit(layouts[i]).total_cmp(&fit(layouts[j])));
@@ -350,6 +385,19 @@ impl Desk {
             None => SCREEN,
         };
         self.touch |= self.ctx.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Touch { .. })));
+        let p = self.ctx.layer_painter(egui::LayerId::background());
+        p.rect_filled(screen, 0.0, Color32::BLACK);
+        if self.shell {
+            // The main window across the screen (clear of the navigation bar) at a width
+            // that fits its toolbar, or the landscape's height; the shell places the windows.
+            self.lift = self.typing_at.filter(|_| self.keyboard > 0.0).map_or(0.0, |y| (y - (screen.bottom() - self.keyboard)).max(0.0));
+            let [l, r, b] = self.insets;
+            let screen = Rect::from_min_max(screen.min + vec2(l, 0.0), screen.max - vec2(r, b));
+            self.s = (screen.width() / 520.0).min(screen.height() / 420.0).max(0.01);
+            self.screen = screen.size() / self.s;
+            self.org = screen.min;
+            return p;
+        }
         // A window not laid out yet has no size; keep a usable scale until it has.
         let s0 = fit(self.screen).max(0.1);
         let fitted = |s: f32| screen.center() - self.screen * s / 2.0;
@@ -371,9 +419,12 @@ impl Desk {
         if let Some(y) = self.typing_at.filter(|_| self.keyboard > 0.0) {
             self.org.y -= (self.org.y + y * self.s - (screen.bottom() - self.keyboard)).max(0.0);
         }
-        let p = self.ctx.layer_painter(egui::LayerId::background());
-        p.rect_filled(screen, 0.0, Color32::BLACK);
         p
+    }
+
+    /// Sets the scale text is drawn at, returning the one before.
+    pub fn scale(&mut self, s: f32) -> f32 {
+        std::mem::replace(&mut self.s, s)
     }
 
     /// Virtual pixels to screen points.
@@ -492,8 +543,14 @@ impl Desk {
         let at = pos2(at.x.clamp(bounds.left(), (bounds.right() - outer.x).max(bounds.left())), at.y.clamp(bounds.top(), (bounds.bottom() - outer.y).max(bounds.top())));
         let mut ev = Ev::default();
         let order = if dialog { egui::Order::Foreground } else { egui::Order::Middle };
-        let clip = self.to_screen(bounds);
-        let screen_at = self.to_screen(Rect::from_min_size(at, outer));
+        let (mut clip, mut screen_at) = (self.to_screen(bounds), self.to_screen(Rect::from_min_size(at, outer)));
+        let base = self.s;
+        if self.shell {
+            let area = if dialog { Rect::from_min_size(self.org, self.screen * base) } else { self.to_screen(self.client) };
+            let fit = (area.width() / outer.x).min(area.height() / outer.y).min(2.0);
+            let Some((p, k)) = self.place.get(form).copied().unwrap_or(Some((area.center() - outer * fit / 2.0, fit))) else { return ev };
+            (clip, screen_at, self.s) = (self.ctx.content_rect(), Rect::from_min_size(p - vec2(0.0, self.lift), outer * k), k);
+        }
         let resp = egui::Area::new(egui::Id::unique(("win", form))).order(order).fixed_pos(screen_at.min).constrain(false).show(ctx, |ui| {
             ui.set_clip_rect(clip);
             let (r, bg) = ui.allocate_exact_size(screen_at.size(), Sense::click());
@@ -544,8 +601,9 @@ impl Desk {
             v.caption = None;
             self.draw_in(ui, &cv, &f, origin, self.size(form), &mut v, &mut inner);
             ev = Ev { closed: ev.closed, ..inner };
-            (bg.clicked() || bg.drag_started() || ui.rect_contains_pointer(r) && ui.input(|i| i.pointer.any_pressed()), title_drag)
+            (bg.clicked() || bg.drag_started() || ui.rect_contains_pointer(r) && ui.input(|i| i.pointer.any_pressed()), title_drag.filter(|_| !self.shell))
         });
+        self.s = base;
         let (pressed, moved) = resp.inner;
         if pressed || ev.clicked.is_some() {
             self.active = Some(form.to_string());
@@ -614,13 +672,37 @@ impl Desk {
         let align = num(pr, "Alignment").unwrap_or(0) as u8;
         let id = ui.scope_id().with((form, k));
         let back_of = |dflt: Color32| v.back.get(k).copied().unwrap_or_else(|| num(pr, "BackColor").map_or(dflt, vb));
-        let sense = if v.drags.contains_key(k) { Sense::click_and_drag() } else { Sense::click() };
+        let scroll = v.scrolls.get(k).cloned().filter(|_| self.touch);
+        let swipe = self.touch && v.swipes.contains(k);
+        let dragged = v.drags.contains_key(k) || scroll.is_some() || swipe || self.touch && c.kind == "ListBox";
+        let sense = if dragged { Sense::click_and_drag() } else { Sense::click() };
         // On a touch screen buttons take taps a few pixels past their edges.
         let button = matches!(c.kind.as_str(), "CommandButton" | "sscommand" | "CheckBox" | "OptionButton" | "sscheck" | "ssoption");
         let hit = if self.touch && button { cv.r(r).expand(5.0 * cv.s) } else { cv.r(r) };
         let resp = ui.interact(hit, id, sense);
-        if let Some(d) = v.drags.get(k) {
+        // Touch: a drag that starts upright on a draggable item scrolls its list instead.
+        if scroll.is_some() && resp.drag_started() {
+            let d = ui.input(|i| i.pointer.press_origin().zip(i.pointer.latest_pos()).map(|(a, b)| b - a)).unwrap_or_default();
+            self.state(form, k).scrolling = d.y.abs() > d.x.abs();
+        }
+        let scrolling = scroll.is_some() && self.state(form, k).scrolling;
+        if let Some(d) = v.drags.get(k).filter(|_| !scrolling) {
             resp.dnd_set_drag_payload(*d);
+        }
+        if let Some((sb, ..)) = scroll.as_ref().filter(|_| scrolling || !v.drags.contains_key(k)) {
+            self.pull(ui, &resp, &format!("{form}.{sb}"));
+        }
+        if swipe {
+            let st = self.state(form, k);
+            if resp.dragged() {
+                st.drag += resp.drag_delta();
+            }
+            if resp.drag_stopped() {
+                let d = std::mem::take(&mut st.drag);
+                if d.length() > 24.0 {
+                    ev.swiped = Some((k.to_string(), if d.y.abs() > d.x.abs() { if d.y < 0.0 { 0 } else { 2 } } else if d.x > 0.0 { 1 } else { 3 }));
+                }
+            }
         }
         if let Some(d) = resp.dnd_release_payload::<Drag>() {
             ev.dropped = Some((k.to_string(), *d));
@@ -792,6 +874,9 @@ impl Desk {
                 let focused = self.focus.as_deref() == Some(&format!("{form}.{k}"));
                 if clicked {
                     self.focus = Some(format!("{form}.{k}"));
+                } else if focused && self.touch && ui.input(|i| i.pointer.any_click()) {
+                    // Touch: a tap elsewhere puts the keyboard away.
+                    self.focus = None;
                 }
                 let st = self.state(form, k);
                 if v.text.contains_key(k) {
@@ -813,11 +898,15 @@ impl Desk {
                 let shown = st.text.clone() + if focused && (ui.input(|i| i.time) * 2.0) as i64 % 2 == 0 { "|" } else { "" };
                 self.label_text(cv, Rect::from_min_size(pos2(x + 4.0, y), vec2(w - 6.0, h)), &ft, &shown, ink, 0, true, false);
                 if focused {
-                    self.typing_at = Some((cv.r(r).bottom() - self.org.y) / self.s + 4.0);
+                    self.typing_at = Some(if self.shell { cv.r(r).bottom() + self.lift + 4.0 } else { (cv.r(r).bottom() - self.org.y) / self.s + 4.0 });
                     // Text input wanted here: a phone's on-screen keyboard, an IME's window.
                     let rect = cv.r(Rect::from_min_size(pos2(x, y), vec2(w, h)));
                     let cursor_rect = Rect::from_min_size(rect.right_top(), vec2(1.0, rect.height()));
-                    ui.ctx().output_mut(|o| o.ime = Some(egui::output::IMEOutput { purpose: Default::default(), rect, cursor_rect, should_interrupt_composition: false }));
+                    // Touch: a tap on the box asks for the keyboard again (the system may have
+                    // put it away), by wanting none for a frame.
+                    if !(self.touch && clicked) {
+                        ui.ctx().output_mut(|o| o.ime = Some(egui::output::IMEOutput { purpose: Default::default(), rect, cursor_rect, should_interrupt_composition: false }));
+                    }
                     ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
                 }
                 None
@@ -854,6 +943,11 @@ impl Desk {
                 if scroll {
                     top = self.scrollbar(ui, cv, id, Rect::from_min_size(pos2(x + w - 18.0, y + 2.0), vec2(16.0, h - 4.0)), top, items.len() - rows, rows);
                 }
+                if self.touch {
+                    self.pull(ui, &resp, &format!("{form}.{k}"));
+                    let d = self.rows(ui, &format!("{form}.{k}"), lh);
+                    top = (top as i64 + d).clamp(0, items.len().saturating_sub(rows) as i64) as usize;
+                }
                 if resp.hovered() {
                     let wheel = ui.input(|i| i.smooth_scroll_delta.y);
                     if wheel != 0.0 {
@@ -881,8 +975,12 @@ impl Desk {
                     self.combo = if self.combo.as_deref() == Some(&me) { None } else { Some(me.clone()) };
                 }
                 if self.combo.as_deref() == Some(&me) {
-                    let lh = self.line_height(&ft);
-                    let list = Rect::from_min_size(pos2(x, y + h), vec2(w, lh * items.len().min(8) as f32 + 2.0));
+                    // Touch: rows a finger tall, and above the box when they'd run off the screen.
+                    let lh = if self.touch { self.line_height(&ft).max(36.0 / self.s) } else { self.line_height(&ft) };
+                    let mut list = Rect::from_min_size(pos2(x, y + h), vec2(w, lh * items.len().min(8) as f32 + 2.0));
+                    if self.touch && cv.r(list).bottom() > ui.ctx().content_rect().bottom() {
+                        list = list.translate(vec2(0.0, -list.height() - h));
+                    }
                     let screen = cv.r(list);
                     let s = self.s;
                     let mut picked = None;
@@ -950,7 +1048,10 @@ impl Desk {
             "VScrollBar" | "HScrollBar" => {
                 let st = self.state(form, k).clone();
                 let max = num(pr, "Max").unwrap_or(32767).max(1) as usize;
-                let top = self.scrollbar(ui, cv, id, r, st.top, max, num(pr, "LargeChange").unwrap_or(1).max(1) as usize);
+                let mut top = self.scrollbar(ui, cv, id, r, st.top, max, num(pr, "LargeChange").unwrap_or(1).max(1) as usize);
+                if let Some(&(_, row, most)) = v.scrolls.values().find(|x| x.0 == k).filter(|_| self.touch) {
+                    top = (top.min(most) as i64 + self.rows(ui, &format!("{form}.{k}"), row)).clamp(0, most.min(max) as i64) as usize;
+                }
                 if top != st.top {
                     self.state(form, k).top = top;
                     ev.changed = Some(k.to_string());
@@ -984,6 +1085,35 @@ impl Desk {
                 Some(r)
             }
         }
+    }
+
+    /// Touch: a drag moves a list (by the key of its state), and a flick keeps it going.
+    fn pull(&mut self, ui: &egui::Ui, resp: &egui::Response, key: &str) {
+        let s = self.s;
+        let st = self.st.entry(key.to_string()).or_default();
+        if resp.dragged() {
+            st.drag.y += resp.drag_delta().y / s;
+            st.fling = 0.0;
+        }
+        if resp.drag_stopped() {
+            st.fling = ui.input(|i| i.pointer.velocity().y) / s;
+        }
+    }
+
+    /// The rows of `row` pixels a list moves this frame by drags and flicks.
+    fn rows(&mut self, ui: &egui::Ui, key: &str, row: f32) -> i64 {
+        let dt = ui.input(|i| i.stable_dt).min(0.1);
+        let st = self.st.entry(key.to_string()).or_default();
+        if st.fling.abs() > 20.0 {
+            st.drag.y += st.fling * dt;
+            st.fling *= 1.0 - (4.0 * dt).min(1.0);
+            ui.ctx().request_repaint();
+        } else {
+            st.fling = 0.0;
+        }
+        let n = (st.drag.y / row).trunc();
+        st.drag.y -= n * row;
+        -(n as i64)
     }
 
     /// A Windows 95 scroll bar; returns the new position (0..=max) after clicks.
@@ -1102,6 +1232,34 @@ impl Desk {
                 _ => [mid + 48, h + 18, 84, 22],
             };
         }
+    }
+
+    /// The phone shell's banners for message boxes that only tell (title, text, until),
+    /// drawn as Windows 95 tooltips stacked up from the lower third; returns the one tapped.
+    pub fn toasts(&mut self, ctx: &egui::Context, list: &[(String, String, f64)]) -> Option<usize> {
+        let screen = ctx.content_rect();
+        let base = std::mem::replace(&mut self.s, (screen.width() / 300.0).min(1.6));
+        let (s, ft) = (self.s, Ft { name: "MS Sans Serif".into(), size: 8.25, bold: false, italic: false });
+        let (w, lh) = ((screen.width() * 0.92 / s).min(300.0), self.line_height(&ft));
+        let (mut bottom, mut hit) = (screen.bottom() - screen.height() * 0.3, None);
+        for (n, (title, text, _)) in list.iter().enumerate().rev() {
+            let h = (self.wrap(&ft, text, w - 8.0).len() + 1) as f32 * lh + 6.0;
+            let at = pos2(screen.center().x - w * s / 2.0, bottom - h * s);
+            egui::Area::new(egui::Id::unique(("toast", n))).order(egui::Order::Tooltip).fixed_pos(at).show(ctx, |ui| {
+                let (r, resp) = ui.allocate_exact_size(vec2(w, h) * s, Sense::click());
+                let cv = Cv { p: ui.painter().clone(), o: r.min, s };
+                cv.fill(0.0, 0.0, w, h, Color32::from_rgb(255, 255, 225));
+                cv.frame(0.0, 0.0, w, h, Color32::BLACK);
+                self.label_text(&cv, Rect::from_min_size(pos2(4.0, 3.0), vec2(w - 8.0, lh)), &Ft { bold: true, ..ft.clone() }, title, Color32::BLACK, 0, false, false);
+                self.label_text(&cv, Rect::from_min_size(pos2(4.0, 3.0 + lh), vec2(w - 8.0, h - lh)), &ft, text, Color32::BLACK, 0, false, false);
+                if resp.clicked() {
+                    hit = Some(n);
+                }
+            });
+            bottom = at.y - 4.0;
+        }
+        self.s = base;
+        hit
     }
 
     /// Draws a caption in `r`: aligned left (0), right (1) or centred (2), top or
@@ -1332,6 +1490,32 @@ impl Cv {
             } else {
                 self.fill(a.x, a.y, 1.0, b.y - a.y, Color32::BLACK);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A screen with no width or height (a web canvas not laid out yet) places windows at
+    /// finite points: egui panics on a NaN rect.
+    #[test]
+    fn empty_screen_stays_finite() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ddj-win-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(ddj_extract::forms::FILE), "{}").unwrap();
+        let ctx = egui::Context::default();
+        ctx.run_ui(egui::RawInput { max_texture_side: Some(8192), ..Default::default() }, |_| {}).textures_delta.clear();
+        let mut desk = Desk::new(&ctx, &dir).unwrap();
+        for screen in [Rect::from_min_size(Pos2::ZERO, vec2(0.0, 600.0)), Rect::from_min_size(Pos2::ZERO, vec2(400.0, 0.0)), Rect::ZERO] {
+            ctx.run_ui(egui::RawInput::default(), |_| {
+                desk.begin(screen, &[vec2(540.0, 900.0), vec2(900.0, 500.0)]);
+            })
+            .textures_delta
+            .clear();
+            let r = desk.to_screen(Rect::from_min_size(desk.client.center(), vec2(10.0, 10.0)));
+            assert!(r.min.x.is_finite() && r.min.y.is_finite() && r.max.x.is_finite() && r.max.y.is_finite(), "{screen:?} -> {r:?}");
         }
     }
 }

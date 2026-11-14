@@ -109,6 +109,8 @@ struct App {
     dialog: Option<Dialog>,
     /// Message boxes waiting their turn: title, text.
     boxes: Vec<(String, String)>,
+    /// The phone shell's banners for boxes that only tell: title, text, until.
+    toasts: Vec<(String, String, f64)>,
     /// The character the menu would run ("Run "Name""), once loaded.
     loaded: Option<String>,
     /// The city building whose window is open.
@@ -220,6 +222,7 @@ impl App {
             screen: Screen::Menu,
             dialog: None,
             boxes: Vec::new(),
+            toasts: Vec::new(),
             loaded: None,
             building: None,
             draft: Draft { race: 0, female: false, alignment: 1, stats: [0; 6] },
@@ -544,6 +547,27 @@ impl App {
         if let Some(g) = self.game.as_mut() {
             self.boxes.extend(g.boxes.drain(..).map(|(t, s)| (d.t(t).into(), s)));
         }
+        // The phone shell while playing: a box that only tells shows as a banner for a
+        // while (a tap puts it away), its words kept in Messages.
+        let now = ctx.input(|i| i.time);
+        if desk.shell
+            && let Some(g) = self.game.as_mut()
+        {
+            if let Some(Some(Dialog::Msg(t, s))) = matches!(self.dialog, Some(Dialog::Msg(..))).then(|| self.dialog.take()) {
+                self.boxes.insert(0, (t, s));
+            }
+            for (t, s) in self.boxes.drain(..) {
+                g.log.push(s.clone());
+                self.toasts.push((t, s.clone(), now + 2.5 + s.len() as f64 * 0.04));
+            }
+        }
+        self.toasts.retain(|t| t.2 > now);
+        if let Some(n) = desk.toasts(ctx, &self.toasts) {
+            self.toasts.remove(n);
+        }
+        if let Some(t) = self.toasts.iter().map(|t| t.2).reduce(f64::min) {
+            ctx.request_repaint_after_secs((t - now) as f32);
+        }
         if self.dialog.is_none() && !self.boxes.is_empty() {
             let (title, text) = self.boxes.remove(0);
             self.dialog = Some(Dialog::Msg(title, text));
@@ -839,11 +863,20 @@ impl App {
     /// The playing screens: the character, objects, messages and party windows, with
     /// the city (and an open building) or the dungeon.
     fn play(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData, t: &Tuning) {
-        stats::arrange(desk);
+        // The phone shell lays out again once the city has opened a building.
+        let shell = |app: &Self, desk: &mut Desk| stats::shell(desk, app.building.unwrap_or(if app.screen == Screen::Town { "frmCityMain" } else { "frmDungeonMain" }), app.screen == Screen::Dungeon);
+        if desk.shell {
+            shell(self, desk);
+        } else {
+            stats::arrange(desk);
+        }
         if self.screen == Screen::Town {
             self.town(desk, ctx, d, t);
         } else {
             self.dungeon(desk, ctx, d, t);
+        }
+        if desk.shell {
+            shell(self, desk);
         }
         // The city is where the original checks most records (experience, levels, bank).
         if self.screen == Screen::Town && self.game.as_mut().is_some_and(|g| g.records(d)) {
@@ -861,6 +894,14 @@ impl App {
         }
         if let Some(b) = self.building {
             self.building(desk, ctx, d, t, b);
+        }
+        if desk.shell {
+            let mut v = View::default();
+            v.tab_height("tabShell", 26.0);
+            if desk.window(ctx, stats::STRIP, v, false).changed.is_some() {
+                desk.active = Some(stats::TABS[desk.state(stats::STRIP, "tabShell").tab][0].into());
+                ctx.request_repaint();
+            }
         }
     }
 }
@@ -925,6 +966,7 @@ fn add_windows(desk: &mut Desk) {
         ],
     );
     party::add_windows(desk);
+    stats::add_shell(desk);
 }
 
 impl eframe::App for App {
@@ -982,6 +1024,7 @@ impl eframe::App for App {
             #[cfg(target_os = "android")]
             {
                 desk.keyboard = android::keyboard() / ctx.pixels_per_point();
+                desk.insets = android::insets().map(|p| p / ctx.pixels_per_point());
             }
             desk.begin(ui.max_rect(), &layouts);
             self.main_window(&mut desk, ui, &data, &tuning);
