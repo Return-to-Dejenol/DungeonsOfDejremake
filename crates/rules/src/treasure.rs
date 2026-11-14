@@ -183,7 +183,7 @@ pub fn open(g: &mut Game, d: &GameData, t: &Tuning, i: usize) {
             g.party[who].add_xp(d, t, xp);
         } else {
             g.tell(who, CHAR_HIT, c.trap.name(d).into(), None);
-            if spring(g, d, who, &c) {
+            if spring(g, d, t, who, &c) {
                 return;
             }
         }
@@ -193,7 +193,7 @@ pub fn open(g: &mut Game, d: &GameData, t: &Tuning, i: usize) {
 
 /// A trap's effect (MORDOR.EXE), mostly scaled by the floor. True if the party was
 /// moved away from the container.
-fn spring(g: &mut Game, d: &GameData, who: usize, c: &Chest) -> bool {
+fn spring(g: &mut Game, d: &GameData, t: &Tuning, who: usize, c: &Chest) -> bool {
     let l = g.pos().floor.max(1) as f64;
     match c.trap {
         Trap::PoisonGas | Trap::DiseaseSpores => {
@@ -228,9 +228,11 @@ fn spring(g: &mut Game, d: &GameData, who: usize, c: &Chest) -> bool {
             }
         }
         Trap::Fate => {
+            // Hits and SP re-rolled from 1 to their max (sub0F29).
+            let max_sp = g.party[who].max_sp(d, t);
             let m = &mut g.party[who];
             m.hp = (m.rnd() * f64::from(m.max_hp)).floor() as i32 + 1;
-            m.sp = (m.rnd() * f64::from(5 * (m.stats[INT] + m.stats[WIS]))).floor() as i32 + 1;
+            m.sp = (m.rnd() * f64::from(max_sp)).floor() as i32 + 1;
         }
         Trap::Teleporter => {
             // The original sends only the opener; the remake keeps the party together.

@@ -110,6 +110,17 @@ are listed at the end. Notation:
   - Each item comes from one of the monster's ten classes (w51-60), at a level from half its item level (w65) to all of it, weighted by rarity (w6).
   - The finder knows it when the item's difficulty, 25 + (ln(mult + 1) + 0.3) ln(w17 + 1) × level, is within (INT + WIS)/2 × ln((best level + 5)/10 + 1), and only for items up to level 5.
 
+**Magic** (`magic.rs`; mdrcharCheckCast, mdrcharCastSpell, monGetSpellHits):
+- **Learning:** a guild teaches a spell when its rate for the class is above 0, the spell's level is no higher than the guild's max for the class (w71 + 2c), and CInt(level × rate) ≤ Int(L/2 + 0.5), the caster's spell level. Paladins learn Minor Heal (level 2, rate 3) at guild level 11.
+- **Caster level:** the best spell level among the joined guilds that teach it (items: their w41, −1 the user's current spell level).
+- **SP cost:** Int(CInt(level × rate) / spell level × SP × rate × 1.9) from the cheapest joined guild, no less than the smallest CInt(level × rate). It falls as the caster levels: Paladin Minor Heal costs 74 SP when new.
+- **When:** heal-class spells and spells without hits are for peace, Cure Paralysis and Teleport for both, the rest for combat. A peace spell is refused while hostile monsters are about, a combat spell with none, a spell above level 7 against peaceful monsters, and any spell in the city. Items go through the same gates, so no healing potions mid-fight.
+- **Hits:** D = base × (1 + ln(l + 1)/ln 5) + Int(l/10 × per level), less 1 to D/2, × (1 − resistance/100). Healing uses log10 l in place of ln(l + 1)/ln 5, at the healer's current spell level; Cure also clears poison and disease.
+- **Groups:** up to w7 groups from the targeted one, up to w6 monsters of each, one after another; the first that survives ends that group. Kill spells (effect 100) and charms work only when the hits reach the monster's own. Flag 4 monsters resist all spells, flag 8 charms; typed spells (effects 75-99) touch only their monster family.
+- **Charms** join with the hits the monster had, bound at the spell's level. Control, Restrain and Domination raise a companion's binding to the spell's level + ln((10 + spell level)/5); Life Domination binds for life.
+- **Buffs:** Protection holds Int(spell level / 2) + 1, worth CInt(3 ln(P)²) defense. Sight Veil hides its target: monsters that don't see invisible take 0.5 off their multiplier against it. Resistance spells give 95% (items 90%). Levitation, Sight Veil and See Invisible take one member unless mass. All last until the city or death.
+- **Raise Dead and Resurrect:** fn13D7's odds with +10 and +30; a failure may bring complications (as the morgue). Restore Flesh unstones with +20. Fate re-rolls the caster's hits and SP from 1 to their max.
+
 **City** (`store.rs`, `game.rs`, `monsters.rs`):
 - **Stock:**
   - The store's and Confinement's stock is shared by every character (saves/store.json). Store-only (level 0) items never run out.
@@ -283,13 +294,13 @@ behaviour is a known gap, not a choice.
   the time with followers. Rooms keep their monsters, wounded, until killed and refill
   over time; monsters get a free attack on entering their room, and leaving is capped at
   98%. The remake's 60% chance per room is dropped.
-- **Spell learning:** match the original. A guild teaches a spell up to its class cap,
+- **Spell learning (ported):** match the original. A guild teaches a spell up to its class cap,
   when CInt(level x rate) <= Int(L/2 + 0.5), and spell power is Int(L/2 + 0.5).
-- **Casting in combat:** match the original. Heals, cures, raises and buffs only with no
+- **Casting in combat (ported):** match the original. Heals, cures, raises and buffs only with no
   hostile monsters present (Cure Paralysis and Teleport work in both); combat spells only
   with monsters present; spells above level 7 not against peaceful monsters; no casting in
   the city. The Party AI heals between fights.
-- **Spell damage, healing and SP cost:** the original's formulas (logarithmic damage and
+- **Spell damage, healing and SP cost (ported):** the original's formulas (logarithmic damage and
   healing, SP cost falling with level, the group loop, kill spells killing only when the
   roll reaches the foe's hits, flag-4 monsters immune to player spells).
   **Deliberate change:** the remake's growing max SP pool and its gradual SP regen stay,
@@ -337,15 +348,13 @@ can be changed in `patches/modern.toml` or here.
   heal, cure, drink a potion when low, group spells on groups, a spell on a foe that
   would take three or more sword rounds, defend when nearly dead, else gang up on the
   weakest foe.
-- **Spells**: the guild rates from MDATA1, narrowed to the four caster schools (location
-  and Charm of Opening kept for all). Spell power is the best guild's level / rate.
-  Damage is base + 0 to per-level x power (INT +2%/point above 15); healing likewise
-  (WIS +2%). Kill spells slay 25% + 4% per power over the monster's level, less its
-  magic resistance; mind spells put a foe out for 2-4 rounds. Banish and dispel work on
-  their monster type only, 60% + 5% per power over its level. Raise Dead brings a member
-  back with 1 hit (Resurrect: full) 75% + 2%/power of the time. Sorcerers ignore half a
-  monster's resistance with elemental spells; Wizards regain a tenth of their SP for a
-  kill with a Wizard spell.
+- **Spells**: the original's rules ("Magic" above), with the guild rates narrowed to the
+  four caster schools (location and Charm of Opening kept for all). Attack spells do 2%
+  more per INT point above 15, heals 2% per WIS point. Sorcerers ignore half a monster's
+  resistance with elemental spells; Wizards regain a tenth of their SP for a kill with a
+  Wizard spell. Raise Dead brings a member back with 1 hit, Resurrect with full. The Party
+  AI heals, cures and raises between fights (its macros, then a default tree topping up
+  below 75%).
 - **Spell points**: (INT + WIS) x (5 + 2.5 x (best guild level - 1)) (the original's
   level 1 gives 5 x (INT + WIS)); 0.5% of max back per step; full in the city.
 - **Healer passive**: with a living Healer in the party, everyone regains 1% of max HP
@@ -359,10 +368,9 @@ can be changed in `patches/modern.toml` or here.
   Experience potions cost 7,500 (Greater: drop only, 30,000 value); a found item is an
   experience potion 4% of the time (Greater 30% of those, floor 5+).
 - **Charm of Experience**: 60 SP, needs INT and WIS 14.
-- **Companions**: up to four. Charms take 35% + 5% per power over the monster's level,
-  times the binding strength (Mage members 1.5x; +4% per CHA point above 10). A bind
-  lasts 30 steps x binding level x strength (the original's leaving rule isn't read
-  yet); badly hurt companions may wander off.
+- **Companions**: up to four. A bind lasts 30 steps x binding level x strength (Mage
+  members 1.5x; +4% per CHA point above 10; the original's leaving rule is to be ported);
+  badly hurt companions may wander off.
 - **City**: the bank pays fees when the purse runs short (as the original). A guild's
   quest asks for a monster from floor level/5 (the original's choice isn't read yet).
 - The Teleporter trap moves the whole party, and the container is lost.

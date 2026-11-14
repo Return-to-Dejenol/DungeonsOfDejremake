@@ -19,7 +19,7 @@ use crate::{
     treasure::Chest,
 };
 
-pub const SAVE_VERSION: u32 = 2;
+pub const SAVE_VERSION: u32 = 3;
 /// Item 0, "Hands": every character's first slot, the weapon when no other is wielded
 /// (two swings at half damage). It can't be sold, dropped, stolen or destroyed.
 pub const HANDS: usize = 0;
@@ -104,9 +104,11 @@ pub struct Status {
     pub stoned: bool,
 }
 
-/// Effects that last until the party changes floor.
+/// Spell effects, lasting until the city or death (the experience boost until the party
+/// changes floor).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Buffs {
+    /// Protection's strength P, worth CInt(3 ln(P)²) defense (fn13A8).
     pub protection: i32,
     /// Bit n: resistance slot n raised by a spell.
     pub resist: u16,
@@ -114,6 +116,9 @@ pub struct Buffs {
     pub xp_mult: f32,
     pub levitate: bool,
     pub see_invisible: bool,
+    /// Sight Veil: unseen by monsters that don't see invisible.
+    #[serde(default)]
+    pub invisible: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -361,7 +366,8 @@ impl Character {
         let bonus = if still { 0 } else { 4 * ((r - 12).max(0) - (8 - r).max(0)) };
         let strong = if still { 0 } else { (i32::from(self.stats[STR]) - 15).max(0) };
         let ad = |k: usize| self.guild_best(|g, l| guild_ad(data, g, l)[k]) as i32;
-        let (mut a, mut d) = (10 + bonus + ad(0), 10 + bonus + ad(1) + strong + self.buffs.protection);
+        let p = f64::from(self.buffs.protection.max(1));
+        let (mut a, mut d) = (10 + bonus + ad(0), 10 + bonus + ad(1) + strong + (3.0 * p.ln().powi(2)).round_ties_even() as i32);
         for h in self.items.iter().filter(|h| h.equipped) {
             a += i32::from(data.items[h.item].attack);
             d += i32::from(data.items[h.item].defense);
@@ -428,7 +434,9 @@ impl Character {
         let highest = self.levels.iter().all(|&l| l <= self.level());
         // Unedited preset macros take up the spells the new level brings.
         let preset = |c: &Self| ai::preset(ai::Role::of(c.guild), |k| crate::magic::best_known(c, data, k));
-        let unedited = self.macros == preset(self);
+        // Spell rules aside, as old saves (versions 1-2) keep them.
+        let bare = |v: &[Rule]| v.iter().filter(|r| !matches!(r.then, ai::Act::Cast(..))).cloned().collect::<Vec<_>>();
+        let unedited = bare(&self.macros) == bare(&preset(self));
         self.levels[self.guild] += 1;
         if unedited {
             self.macros = preset(self);
@@ -610,6 +618,11 @@ impl Character {
         if c.version < 2 {
             c.macros = ai::preset(ai::Role::of(c.guild), |_| None);
             c.age_days = c.age_days.max(16 * 365);
+        }
+        // Version 3 learns spells as MORDOR.EXE (about twice the guild level): macros
+        // naming a spell no longer known are dropped.
+        if c.version < 3 {
+            c.macros.retain(|r| !matches!(r.then, ai::Act::Cast(..)));
         }
         // Saves from before Hands was carried get it back in the first slot.
         if !c.items.iter().any(|h| h.item == HANDS) {
@@ -861,7 +874,7 @@ impl Game {
             if m.alive() {
                 m.see(data);
                 if floor_changed {
-                    m.buffs = Buffs::default();
+                    m.buffs.xp_mult = 0.0;
                 }
             }
         }
@@ -1100,6 +1113,7 @@ impl Game {
         }
         m.hp = 0;
         m.life = Life::Dead(m.pos);
+        m.buffs = Buffs::default();
         let name = format!("\"{}\"", m.name);
         self.say(format!("{name}{}", data.t(0x7acb_4bd0)));
         if self.living().is_empty() {
@@ -1382,7 +1396,7 @@ impl Game {
 mod tests {
     use super::*;
     use crate::{
-        ai::{Act, Target},
+        ai::Act,
         magic::{self, Magic},
     };
 
@@ -1461,17 +1475,31 @@ mod tests {
     #[test]
     fn spells_follow_guild_rates_and_schools() {
         let d = data();
-        let paladin = hero(&d, "Pal", 0, 0, 2, 6);
+        // MORDOR.EXE: CInt(level x rate) <= Int(L / 2 + 0.5), so Paladins learn Minor Heal
+        // (level 2, rate 3) at guild level 11; it was 6 before the audit's port.
+        let paladin = hero(&d, "Pal", 0, 0, 2, 11);
         let minor = d.spells.iter().position(|s| s.name == "Minor Heal").unwrap();
         assert!(magic::known(&paladin, &d).contains(&minor));
-        let early = hero(&d, "Pal5", 0, 0, 2, 5);
+        assert_eq!(magic::power(&paladin, &d, minor), 6.0);
+        let early = hero(&d, "Pal10", 0, 0, 2, 10);
         assert!(!magic::known(&early, &d).contains(&minor));
+        // fn142F: Int(6 / 6 x 13 SP x 3 x 1.9) = 74 when new.
+        assert_eq!(magic::sp_cost(&paladin, &d, minor), 74);
+        // The class cap (w71 + 2c): Paladins never learn Resurrect, nobody but casters
+        // learns Depth Perception.
+        let res = d.spells.iter().position(|s| s.name == "Resurrect").unwrap();
+        assert!(magic::taught_at(&d, 2, res).is_none());
         // Wizards give up the mind spells (docs/balance.md).
         let sleep = d.spells.iter().position(|s| s.name == "Sleep").unwrap();
         assert!(magic::taught_at(&d, 10, sleep).is_none() && magic::taught_at(&d, 8, sleep).is_some());
-        // Charm of Experience: Seekers at 16.
+        // Charm of Experience: Seekers at spell level 16, guild level 31.
         let charm = d.spells.iter().position(|s| s.id == magic::CHARM_OF_EXPERIENCE).unwrap();
-        assert_eq!((magic::taught_at(&d, 5, charm), magic::taught_at(&d, 8, charm)), (Some(16), None));
+        assert_eq!((magic::taught_at(&d, 5, charm), magic::taught_at(&d, 8, charm)), (Some(31), None));
+        // fn0E5F: Firebolt (10/0) at spell level 1 does 6-13.
+        let bolt = &d.spells[d.spells.iter().position(|s| s.name == "Firebolt").unwrap()];
+        let mut c = hero(&d, "Roll", 0, 0, 8, 1);
+        let rolls: Vec<f64> = (0..2000).map(|_| magic::hits(&mut c, bolt, 1.0, false)).collect();
+        assert!(rolls.iter().all(|&r| (6.0..=13.0).contains(&r)), "{:?}", rolls.iter().fold((99.0f64, 0.0f64), |a, &r| (a.0.min(r), a.1.max(r))));
     }
 
     #[test]
@@ -1503,11 +1531,16 @@ mod tests {
         g.party[1].sp = 500;
         g.enter_dungeon(&d).unwrap();
         let kobold = d.monsters.iter().position(|m| m.name == "Kobold").unwrap();
-        let foes = vec![crate::combat::Foe { monster: kobold, hp: 50, max_hp: 50, asleep: 0 }];
+        let foes = vec![crate::combat::Foe { monster: kobold, hp: 50, max_hp: 50, group: 0 }];
         g.fight = Some(crate::combat::Fight { foes, round: 0, order: Some(Act::Defend), back: g.pos(), lair: false, peaceful: false, chest: None, defending: vec![false; 2], gold: 0, opening: None });
         g.party[0].hp = 3;
+        // MORDOR.EXE: no heals while hostile monsters are about (fn1448).
         let act = crate::ai::decide(&g, &d, &t, 1);
-        assert!(matches!(act, Act::Cast(s, Target::LowestAlly) if magic::kind(&d.spells[s]) == Some(Magic::Heal)), "{act:?}");
+        assert!(!matches!(act, Act::Cast(s, _) if magic::kind(&d.spells[s]) == Some(Magic::Heal)), "{act:?}");
+        // Between fights the Healer mends the Tank.
+        g.fight = None;
+        crate::ai::tend(&mut g, &d, &t);
+        assert!(g.party[0].hp > 3, "{}", g.party[0].hp);
     }
 
     #[test]

@@ -14,8 +14,8 @@ pub struct Foe {
     pub monster: usize,
     pub hp: i32,
     pub max_hp: i32,
-    /// Rounds left asleep or dazzled; it doesn't act.
-    pub asleep: u16,
+    /// Its group in the encounter; the original fights a group one monster at a time.
+    pub group: u8,
 }
 
 pub struct Fight {
@@ -54,6 +54,21 @@ impl Fight {
             Target::Weakest | Target::LowestAlly | Target::Myself => alive.min_by_key(|&i| self.foes[i].hp),
             Target::First => alive.into_iter().next(),
         }
+    }
+
+    /// A group's front monster, the first still alive.
+    pub fn front(&self, group: u8) -> Option<usize> {
+        self.alive().find(|&i| self.foes[i].group == group)
+    }
+
+    /// The living groups, starting from `first` and wrapping around.
+    pub fn groups_from(&self, first: u8) -> Vec<u8> {
+        let mut v: Vec<u8> = self.alive().map(|i| self.foes[i].group).collect();
+        v.sort_unstable();
+        v.dedup();
+        let k = v.iter().position(|&g| g == first).unwrap_or(0);
+        v.rotate_left(k);
+        v
     }
 }
 
@@ -122,7 +137,7 @@ impl Game {
         // Bigger parties meet bigger groups.
         let extra = self.party.len() as u32 / 2;
         let n = if lair { 1 } else { 1 + self.party[0].roll(mon.group.max(1) as u32 + extra) };
-        let foes = (0..n).map(|_| Foe { monster: m, hp: new_hp(&mut self.party[0], i32::from(mon.hp)), max_hp: 0, asleep: 0 }).map(|f| Foe { max_hp: f.hp, ..f }).collect();
+        let foes = (0..n).map(|_| Foe { monster: m, hp: new_hp(&mut self.party[0], i32::from(mon.hp)), max_hp: 0, group: 0 }).map(|f| Foe { max_hp: f.hp, ..f }).collect();
         let peaceful = crate::monsters::peaceful(self, data, m);
         let chest = crate::treasure::chest_for(self, data, m, lair);
         let gold = crate::treasure::gold(&mut self.party[0], mon, n, chest.as_ref().is_some_and(|c| c.magic_lock));
@@ -169,11 +184,6 @@ impl Game {
         if !f.peaceful {
             crate::monsters::attack(self, data, t);
         }
-        if let Some(f) = self.fight.as_mut() {
-            for foe in &mut f.foes {
-                foe.asleep = foe.asleep.saturating_sub(1);
-            }
-        }
         // A round is a tick of the ailment timer (docs/balance.md).
         self.ailments(data);
     }
@@ -219,6 +229,7 @@ impl Game {
         if self.fight.take().is_some() {
             self.ailments(data);
             self.set_pos(data, back);
+            crate::ai::tend(self, data, t);
         }
     }
 
@@ -403,6 +414,7 @@ impl Game {
             }
             None => self.share_gold(_data, f.gold),
         }
+        crate::ai::tend(self, _data, _t);
     }
 
     /// Gives an item to the first living member with room; what they know of it follows

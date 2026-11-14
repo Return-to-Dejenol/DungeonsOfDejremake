@@ -139,8 +139,8 @@ pub struct Guild {
     /// Thieving, backstab, critical hit, multiple swings, fighting and perception, as
     /// the refcard shows them /10 (Warrior fighting 1.2, Nomad 0.7).
     pub abilities: [f32; 6],
-    /// Per spell class (see [`Spell::class`]): guild levels per spell level, 0 = not
-    /// taught. A spell is learned at guild level `spell.level x rate`.
+    /// Per spell class (see [`Spell::class`]): 0 = not taught. A spell is known when
+    /// CInt(`spell.level x rate`) is at most the caster's spell level, Int(L / 2 + 0.5).
     pub spell_rates: [f32; 18],
     /// Bit n set: race n (in `GameData::races` order) may join.
     pub races: u16,
@@ -230,7 +230,7 @@ pub struct Spell {
     /// 6 kill, 7 charm, 8 bind, 9 heal, 10 movement, 11 banish, 12 dispel, 13 resistant,
     /// 14 visual, 15 magical, 16 location, 17 protection.
     pub class: i16,
-    /// Spell level; a guild teaches it at `level x` the guild's rate for the class.
+    /// Spell level; a guild teaches it at caster spell level `level x` its rate.
     pub level: i16,
     pub sp: i16,
     /// Monsters affected, and groups affected.
@@ -371,7 +371,10 @@ pub struct GameData {
     pub item_types: Vec<String>,
     pub item_classes: Vec<String>,
     pub monster_types: Vec<String>,
-    /// A 15-entry variant of `monster_types`; purpose unknown.
+    /// Each monster type's family (its w0), an index into `monster_families`: what typed
+    /// spells (effects 75-99) match.
+    pub monster_type_family: Vec<i16>,
+    /// The monster families' names.
     pub monster_families: Vec<String>,
     pub items: Vec<Item>,
     pub monsters: Vec<Monster>,
@@ -440,8 +443,14 @@ impl GameData {
             Guild { name, hp_per_level, hp_cap, hp_after, xp_factor, stat_req, alignments, abilities, spell_rates, races, gold_factor, rest: c.rest(start) }
         }).collect();
         let mut names = |n: usize| section(n).map(|i| t.rec(i).str()).collect::<Vec<_>>();
-        let (item_types, item_classes, monster_types, monster_families) =
-            (names(counts[2]), names(counts[3]), names(counts[4]), names(counts[5]));
+        let (item_types, item_classes) = (names(counts[2]), names(counts[3]));
+        let first = 7 + counts[0] + counts[1] + counts[2] + counts[3];
+        let monster_type_family = (first..first + counts[4]).map(|i| {
+            let mut c = t.rec(i);
+            c.str();
+            c.i16()
+        }).collect();
+        let (monster_types, monster_families) = (names(counts[4]), names(counts[5]));
 
         // Other files: record 0 version, then counts; data from `first`.
         let rows = |m: &Mdr<'_>, count_rec: usize, first: usize| (first..first + m.count(count_rec)).collect::<Vec<_>>();
@@ -524,7 +533,7 @@ impl GameData {
         let du = Mdr { b: m11, size: 20 };
         let floors = (1..=du.count(0)).map(|i| Floor::parse(&du, du.count(i).saturating_sub(1))).collect();
 
-        let mut d = Self { races, guilds, item_types, item_classes, monster_types, monster_families, items, monsters, spells, floors, text: Default::default() };
+        let mut d = Self { races, guilds, item_types, item_classes, monster_types, monster_type_family, monster_families, items, monsters, spells, floors, text: Default::default() };
         crate::magic::add_remake_entries(&mut d);
         Ok(d)
     }
@@ -604,7 +613,7 @@ mod tests {
         assert_eq!((dagger.attack, dagger.defense, dagger.level, dagger.power, dagger.damage_mult), (3, 0, 0, 1, 1.0));
         let warrior = &d.guilds[1];
         assert_eq!((warrior.hp_per_level, warrior.hp_cap, warrior.hp_after, warrior.abilities[4]), (6, 28, 2, 1.2));
-        // Paladins learn Minor Heal (heal class, spell level 2) at guild level 6.
+        // Paladins need spell level 6 for Minor Heal (heal class, level 2): guild level 11.
         let (paladin, minor) = (&d.guilds[2], d.spells.iter().find(|s| s.name == "Minor Heal").unwrap());
         assert_eq!((minor.class, minor.level, minor.base, minor.per_level), (9, 2, 5, 2));
         assert_eq!(f32::from(minor.level) * paladin.spell_rates[minor.class as usize], 6.0);

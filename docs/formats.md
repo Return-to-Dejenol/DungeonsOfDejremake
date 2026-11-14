@@ -40,8 +40,10 @@ MS-DOS `COMPRESS.EXE` (SZDD); the importer expands it. MDATA11 has no version re
   alignment mask; w15-26 six f32 ability rates as the refcard shows them (thieving,
   backstab, critical hit, multiple swings, fighting, perception; Warrior fighting 1.2);
   w32 quest chance %; w33-68 eighteen f32 spell rates, one per spell class: a spell is
-  taught at guild level `spell level x rate` (Paladin heal rate 3: Minor Heal at 6, Heal
-  at 12, as the help's lists); w71+2c f32 the max spell level of class c; w109 race mask
+  known when CInt(spell level x rate) <= Int(guild level / 2 + 0.5), the caster's spell
+  level, the number the help's lists show (Paladin heal rate 3: Minor Heal at spell level
+  6, guild level 11); w71+2c f32 the max spell level of class c, above which the guild
+  never teaches it; w109 race mask
   (bit n = race n); w111 gold factor (tenths added to the level fee); w114 and w116 f32
   attack and defense gained per A/D step; w118 the last level that gains A/D; w119 f32
   levels between A/D steps.

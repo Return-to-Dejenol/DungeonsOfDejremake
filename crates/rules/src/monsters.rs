@@ -54,13 +54,14 @@ const PARALYSIS_RES: usize = 8;
 const DRAIN_RES: usize = 9;
 const ACID_RES: usize = 10;
 
-/// Resistance in percent for slot `r`: the race's, or 90 from an item or spell that
-/// grants it (the original lets an item's 90 replace a higher race value; the higher
-/// counts here).
+/// Resistance in percent for slot `r` (sub0894): the race's, 90 from an item and 95 from
+/// a spell that grants it, the highest counting (the original lets an item's 90 replace
+/// a higher race value).
 pub fn resist(c: &Character, d: &GameData, slot: usize) -> i32 {
     let race = i32::from(d.races[c.race].resist.get(slot).copied().unwrap_or(0));
     let item = c.items.iter().any(|h| h.equipped && d.items[h.item].long(24) >> slot & 1 != 0);
-    if item || c.buffs.resist & (1 << slot) != 0 { race.max(90) } else { race }
+    let spell = c.buffs.resist & (1 << slot) != 0;
+    race.max(if item { 90 } else { 0 }).max(if spell { 95 } else { 0 })
 }
 
 /// Whether a new group is peaceful: a good group meeting a good leader, or a neutral
@@ -139,7 +140,7 @@ fn target(g: &mut Game) -> Option<usize> {
 /// character (or its companions), then the special attacks of those that hit.
 pub fn attack(g: &mut Game, d: &GameData, t: &Tuning) {
     let Some(f) = g.fight.as_ref() else { return };
-    let awake: Vec<usize> = f.alive().filter(|&fi| f.foes[fi].asleep == 0).take(5).collect();
+    let awake: Vec<usize> = f.alive().take(5).collect();
     let Some(&first) = awake.first() else { return };
     let m = f.foes[first].monster;
     let mon = &d.monsters[m];
@@ -198,6 +199,10 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning) {
         }
         mult += knack_bonus(g, mon, lcur, 2.0);
         mult -= size_term(d, &g.party[j], m);
+        // An unseen target: -0.5 unless the monster sees invisible (sub0E85).
+        if g.party[j].buffs.invisible && mon.flags & SEES_INVISIBLE == 0 {
+            mult -= 0.5;
+        }
         let dmg = swing(&mut g.party[j], i32::from(mon.attack), def, f64::from(mon.power_level), i32::from(mon.stats[0]), mult);
         last_hit = dmg > 0;
         total += dmg;
@@ -488,9 +493,7 @@ fn monster_spell(g: &mut Game, d: &GameData, m: usize, j: usize) -> bool {
         return false;
     };
     let sp = &d.spells[s];
-    let l = (f64::from(mon.power_level) / 4.0).floor().clamp(1.0, 255.0);
-    let base = f64::from(sp.base) * (1.0 + (l + 1.0).ln() / 5f64.ln()) + (l / 10.0 * f64::from(sp.per_level)).floor();
-    let raw = (base - ((c.rnd() * (base - (l - 1.0) / (l * l)) / 2.0).floor() + 1.0)).floor();
+    let raw = crate::magic::hits(c, sp, (f64::from(mon.power_level) / 4.0).floor(), false);
     g.say(format!("The {} casts {}!", mon.name, sp.name));
     let n = usize::try_from(sp.targets.max(1)).unwrap_or(1);
     let hit: Vec<usize> = std::iter::once(j).chain(g.living().into_iter().filter(|&k| k != j)).take(n).collect();
@@ -515,36 +518,8 @@ fn bind_strength(c: &Character) -> f32 {
 }
 
 /// Steps a binding level holds (a stand-in: the original's leaving rule is not read).
-fn bind_steps(c: &Character, bind: u8) -> u32 {
+pub(crate) fn bind_steps(c: &Character, bind: u8) -> u32 {
     (30.0 * f32::from(bind) * bind_strength(c)) as u32
-}
-
-/// Charm and bind spells: the targeted kind of monster may join as a companion.
-pub fn charm(g: &mut Game, d: &GameData, i: usize, s: usize, p: f32) {
-    g.provoke();
-    let sp = &d.spells[s];
-    let kind = (75..=86).contains(&sp.effect).then(|| sp.effect - 75).filter(|&k| k != 5);
-    let Some(f) = g.fight.as_ref() else { return };
-    let Some(fi) = f.alive().find(|&fi| kind.is_none_or(|k| d.monsters[f.foes[fi].monster].kind == k)) else {
-        return g.say("No monster here answers that charm.");
-    };
-    if g.party[0].companions.len() >= MAX_COMPANIONS {
-        return g.say(format!("\"{}\"{}", sp.name, d.t(0x92fb_ac7a)));
-    }
-    let (m, hp, max_hp) = (f.foes[fi].monster, f.foes[fi].hp, f.foes[fi].max_hp);
-    if d.monsters[m].flags & 8 != 0 {
-        return g.fought(i, format!("{}!", d.t(0x5579_c3d4)), format!("The {} can't be charmed.", d.monsters[m].name));
-    }
-    let strength = bind_strength(&g.party[i]);
-    let p_ok = (0.35 + 0.05 * (p - f32::from(d.monsters[m].level))) * strength;
-    if !g.party[i].chance(f64::from(p_ok.clamp(0.05, 0.9))) {
-        return g.fought(i, format!("{}{}\"{}\"!", d.t(0x35d0_2f14), d.t(0x5d5d_7642), sp.name), format!("The {} resists.", d.monsters[m].name));
-    }
-    g.fight.as_mut().unwrap().foes[fi].hp = 0;
-    let bind = (p as u8).clamp(1, 10);
-    let bound = bind_steps(&g.party[i], bind);
-    g.party[0].companions.push(Companion { monster: m, hp, max_hp, bound, bind });
-    g.fought(i, format!("{}{}!", d.t(0xee68_3ce2), d.t(0x1cb1_b18f)), format!("The {} joins you as a companion!", d.monsters[m].name));
 }
 
 impl Game {

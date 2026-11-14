@@ -167,24 +167,48 @@ fn holds(g: &Game, d: &GameData, t: &Tuning, i: usize, c: &Cond) -> bool {
     }
 }
 
-/// Turns an action into one that can be done now, or `None`.
+/// Turns an action into one that can be done now, or `None`. Out of a fight only spells
+/// and items are; the original's combat gates apply to both (`magic::refusal`).
 pub(crate) fn resolve(g: &Game, d: &GameData, t: &Tuning, i: usize, act: Act) -> Option<Act> {
     let me = &g.party[i];
-    let f = g.fight.as_ref()?;
+    let f = g.fight.as_ref();
     let anti = g.floor(d).is_some_and(|fl| fl.square(g.pos().x, g.pos().y).flags & crate::mdr::square::ANTI_MAGIC != 0);
     if anti && matches!(act, Act::Cast(..) | Act::CastBest(..)) {
         return None;
     }
+    let gated = |item: usize| magic::item_spell(d, item).is_none_or(|s| magic::refusal(g, &d.spells[s]).is_none());
     match act {
         // Melee needs a weapon (MORDOR.EXE); without one a member defends.
-        Act::Fight(_) => (!f.over() && me.weapon(d).is_some()).then_some(act),
+        Act::Fight(_) => f.filter(|f| !f.over() && me.weapon(d).is_some()).map(|_| act),
         Act::CastBest(kind, target) => magic::best(g, d, t, i, kind).map(|s| Act::Cast(s, target)),
-        Act::Cast(s, _) => magic::castable(me, d, t, s).then_some(act),
-        Act::Use(item) => me.items.iter().any(|h| h.item == item && !h.equipped).then_some(act),
-        Act::Quaff => magic::healing_potion(me, d).map(|slot| Act::Use(me.items[slot].item)),
-        Act::Open => f.chest.is_some().then_some(act),
-        Act::Run => (i == 0).then_some(act),
-        Act::Defend | Act::Wait => Some(act),
+        Act::Cast(s, _) => (magic::castable(me, d, t, s) && magic::refusal(g, &d.spells[s]).is_none()).then_some(act),
+        Act::Use(item) => (me.items.iter().any(|h| h.item == item && !h.equipped) && gated(item)).then_some(act),
+        Act::Quaff => magic::healing_potion(me, d).map(|slot| me.items[slot].item).filter(|&it| gated(it)).map(Act::Use),
+        Act::Open => f.filter(|f| f.chest.is_some()).map(|_| act),
+        Act::Run => (i == 0 && f.is_some()).then_some(act),
+        Act::Defend | Act::Wait => f.map(|_| act),
+    }
+}
+
+/// Between fights the party tends its wounds (docs/balance.md): each able member's macros
+/// and default tree, out of combat, for heals, cures and raises only, a few at most.
+pub fn tend(g: &mut Game, d: &GameData, t: &Tuning) {
+    let mends = |g: &Game, act: Act| {
+        let s = match act {
+            Act::Cast(s, _) => Some(s),
+            Act::Use(item) => magic::item_spell(d, item),
+            _ => None,
+        };
+        s.and_then(|s| magic::kind(&d.spells[s])).is_some_and(|k| matches!(k, Magic::Heal | Magic::MassHeal | Magic::Cure | Magic::Raise)) && g.fight.is_none()
+    };
+    for i in 0..g.party.len() {
+        for _ in 0..6 {
+            let act = decide(g, d, t, i);
+            if !g.party[i].able() || !mends(g, act) {
+                break;
+            }
+            g.act(d, t, i, act);
+        }
     }
 }
 
@@ -203,9 +227,18 @@ pub fn decide(g: &Game, d: &GameData, t: &Tuning, i: usize) -> Act {
 /// The default tree, used when no macro applies.
 fn fallback(g: &Game, d: &GameData, t: &Tuning, i: usize) -> Act {
     use Cond::*;
-    let Some(f) = g.fight.as_ref() else { return Act::Wait };
-    let me = &g.party[i];
     let try_ = |act: Act| resolve(g, d, t, i, act);
+    let Some(f) = g.fight.as_ref() else {
+        // Between fights: raise, then mend.
+        let calm: [(Vec<Cond>, Act); 4] = [
+            (vec![AllyDead], Act::CastBest(Magic::Raise, Target::LowestAlly)),
+            (vec![PartyHpBelow(70)], Act::CastBest(Magic::MassHeal, Target::LowestAlly)),
+            (vec![AllyHpBelow(75)], Act::CastBest(Magic::Heal, Target::LowestAlly)),
+            (vec![AllyAiling], Act::CastBest(Magic::Cure, Target::LowestAlly)),
+        ];
+        return calm.into_iter().find_map(|(when, act)| when.iter().all(|c| holds(g, d, t, i, c)).then(|| try_(act)).flatten()).unwrap_or(Act::Wait);
+    };
+    let me = &g.party[i];
     let tree: [(Vec<Cond>, Act); 9] = [
         // Peaceful monsters are left alone unless the controlled character starts it.
         (vec![Peaceful], Act::Wait),

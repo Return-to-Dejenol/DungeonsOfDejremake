@@ -347,7 +347,7 @@ impl App {
             }
             let sp = row.map(|s| &d.spells[s]);
             v.text(&format!("lblName({r})"), sp.map_or(String::new(), |s| s.name.clone()));
-            v.text(&format!("lblGuild({r})"), "").text(&format!("lblLevel({r})"), sp.map_or(String::new(), |s| s.level.to_string())).text(&format!("lblPoints({r})"), sp.map_or(String::new(), |s| s.sp.to_string()));
+            v.text(&format!("lblGuild({r})"), "").text(&format!("lblLevel({r})"), sp.map_or(String::new(), |s| s.level.to_string())).text(&format!("lblPoints({r})"), row.map_or(String::new(), |s| magic::sp_cost(c, d, s).to_string()));
             if row.is_some() && row == spick {
                 v.back(&format!("lblName({r})"), SEL_BACK).fore(&format!("lblName({r})"), Color32::WHITE);
             }
