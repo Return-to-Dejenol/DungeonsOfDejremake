@@ -1175,7 +1175,10 @@ impl Game {
     pub(crate) fn ailments(&mut self, data: &GameData) {
         self.ticks += 1;
         let foes = self.fight.as_ref().is_some_and(|f| !f.over());
-        let mut hurt = Vec::new();
+        let Pos { x, y, floor, .. } = self.pos();
+        let sq = self.floor(data).map_or(0, |f| f.square(x, y).flags);
+        let (sinking, quicksand) = (sq & (square::WATER | square::QUICKSAND) != 0, sq & square::QUICKSAND != 0);
+        let (mut hurt, mut lost) = (Vec::new(), Vec::new());
         for (i, m) in self.party.iter_mut().enumerate().filter(|(_, m)| m.alive()) {
             let con = 2 * i32::from(m.stat(data, CON) - 10);
             for (k, cure, dmg) in [(0, 185, 2), (1, 195, 1)] {
@@ -1191,12 +1194,31 @@ impl Game {
             if m.status.paralysis > 0 && (!foes || f64::from(m.d100()) > paralysis_stay(data, m)) {
                 m.status.paralysis = 0;
             }
+            // Water and quicksand take the floor's number in hits from each member not
+            // levitating, every tick; quicksand swallows an item from a random slot
+            // F/25 of the time (timAilment_Timer).
+            if sinking && !m.levitates(data) {
+                hurt.push((i, floor as i32));
+                let s = 1 + m.roll(39) as usize;
+                if quicksand && m.rnd() * 25.0 < floor as f64 && s < m.items.len() && m.items[s].item != HANDS && !(500..512).contains(&data.items[m.items[s].item].w(10)) {
+                    let h = m.items.remove(s);
+                    lost.push((i, h.item));
+                }
+            }
             // Past 98% of the race's lifespan, death of natural causes at
             // Int(Rnd x 100) < 5 + ln(age% - 98).
             let pct = f64::from(m.age_days) / 365.0 / f64::from(data.races[m.race].lifespan.max(1)) * 100.0;
             if pct > 98.0 && (m.rnd() * 100.0).floor() < 5.0 + (pct - 98.0).ln() {
                 hurt.push((i, -1));
             }
+        }
+        for (i, item) in lost {
+            let (it, gone) = (&data.items[item].name, data.t(0xc7c7_7f7d));
+            let (you, named) = (format!("{}{it}{gone}", data.t(0xd1a8_7aa4)), format!("{}{}{it}{gone}", self.quoted(i), data.t(0x07b6_f246)));
+            self.tell(i, SQUARE, you, Some(named));
+        }
+        if sinking && self.party.iter().any(|m| m.alive() && !m.levitates(data)) {
+            self.say(data.t(if quicksand { 0xd5ed_9dca } else { 0xba4a_abcb }));
         }
         for (i, dmg) in hurt {
             if dmg < 0 {
@@ -1223,40 +1245,19 @@ impl Game {
             let dir = self.party[0].roll(4) as u8;
             self.turn_to(dir);
         }
-        let levitating = self.party.iter().filter(|m| m.alive()).all(|m| m.levitates(data));
-        if flags & square::PIT != 0 && !levitating {
+        // The size term of a fall: ln(race size + 2).
+        let size = |c: &Character| (f64::from(data.races[c.race].w(28)) + 2.0).ln();
+        if flags & square::PIT != 0 {
+            // Each member's own levitation holds, but fails (5 + F/4)% of the time
+            // (sub0835); a fall costs Int(Rnd x (F + 1) / 2 x 15.5) x ln(size + 2) + 1.
             for i in self.living() {
-                let dmg = 1 + self.party[i].roll(4 * floor as u32) as i32;
+                let m = &mut self.party[i];
+                if m.levitates(data) && m.rnd() * 100.0 > 5.0 + floor as f64 / 4.0 {
+                    continue;
+                }
+                let dmg = ((m.rnd() * (floor as f64 + 1.0) / 2.0 * 15.5).floor() * size(m) + 1.0).round_ties_even() as i32;
                 let (you, named) = (format!("{} {dmg}{}", data.t(0xc950_49a3), data.t(0x3563_88c5)), format!("{}{} {dmg}{}", self.quoted(i), data.t(0x8a5e_51a8), data.t(0x3563_88c5)));
                 self.tell(i, SQUARE, you, Some(named));
-                self.hurt(data, i, dmg);
-            }
-        }
-        if flags & square::WATER != 0 && !levitating {
-            for i in self.living() {
-                // Heavy armour drags you under (defense 9+ items, the original's "heavy items").
-                let heavy = self.party[i].items.iter().filter(|h| h.equipped).map(|h| i32::from(data.items[h.item].defense)).sum::<i32>() >= 12;
-                if heavy && self.party[i].chance(0.25) {
-                    let dmg = 2 + self.party[i].roll(3 * floor as u32) as i32;
-                    self.tell(i, SQUARE, data.t(0xba4a_abcb).into(), None);
-                    self.hurt(data, i, dmg);
-                }
-            }
-        }
-        if flags & square::QUICKSAND != 0 && !levitating {
-            for i in self.living() {
-                let dmg = 1 + self.party[i].roll(2 * floor as u32) as i32;
-                self.tell(i, SQUARE, data.t(0xd5ed_9dca).into(), None);
-                if self.party[i].chance(0.1) && !self.party[i].items.is_empty() {
-                    let n = self.party[i].items.len() as u32;
-                    let s = self.party[i].roll(n) as usize;
-                    if !self.party[i].items[s].equipped && self.party[i].items[s].item != HANDS {
-                        let h = self.party[i].items.remove(s);
-                        let (it, gone) = (&data.items[h.item].name, data.t(0xc7c7_7f7d));
-                        let (you, named) = (format!("{}{it}{gone}", data.t(0xd1a8_7aa4)), format!("{}{}{it}{gone}", self.quoted(i), data.t(0x07b6_f246)));
-                        self.tell(i, SQUARE, you, Some(named));
-                    }
-                }
                 self.hurt(data, i, dmg);
             }
         }
@@ -1268,12 +1269,17 @@ impl Game {
         if self.living().is_empty() {
             return;
         }
-        if flags & square::CHUTE != 0 && !levitating {
-            let drop = f.chutes.iter().find(|c| c.at == (x, y)).map_or(1, |c| c.drop.max(1) as usize);
+        // A chute drops the party by its table's floors when the leader falls (the remake
+        // keeps the party together); a levitating member is unhurt, the others take
+        // Int(Rnd x new floor x 10.5) x ln(size + 2) + 5 (sub08F5).
+        let drop = f.chutes.iter().find(|c| c.at == (x, y)).map_or(0, |c| c.drop.max(0) as usize);
+        if flags & square::CHUTE != 0 && drop > 0 && !self.party[0].levitates(data) {
             let to = (floor + drop).min(data.floors.len());
             self.set_pos(data, Pos { floor: to, ..self.pos() });
-            for i in self.living() {
-                let dmg = 1 + self.party[i].roll(6 * drop as u32) as i32;
+            let fall: Vec<usize> = self.living().into_iter().filter(|&i| !self.party[i].levitates(data)).collect();
+            for i in fall {
+                let m = &mut self.party[i];
+                let dmg = ((m.rnd() * to as f64 * 10.5).floor() * size(m) + 5.0).round_ties_even() as i32;
                 self.hurt(data, i, dmg);
             }
             return;
@@ -1355,8 +1361,10 @@ impl Game {
         } else if flags & square::STAIRS_DOWN != 0 && p.floor < data.floors.len() {
             self.set_pos(data, Pos { floor: p.floor + 1, ..p });
             self.arrive(data, t, p);
-        } else if flags & square::CHUTE != 0 && self.party.iter().filter(|m| m.alive()).all(|m| m.levitates(data)) {
-            self.set_pos(data, Pos { floor: (p.floor + 1).min(data.floors.len()), ..p });
+        } else if flags & square::CHUTE != 0 && f.chutes.iter().any(|c| c.at == (p.x, p.y) && c.drop > 0) {
+            // Taking a chute drops by its table's floors (fn14CB, key T).
+            let drop = f.chutes.iter().find(|c| c.at == (p.x, p.y)).map_or(1, |c| c.drop.max(1) as usize);
+            self.set_pos(data, Pos { floor: (p.floor + drop).min(data.floors.len()), ..p });
         } else {
             self.say("There are no stairs here.");
         }
@@ -1881,6 +1889,31 @@ mod tests {
         g.shelve(&d);
         g.enter_room(&d, &t, area as i16, false, g.pos());
         assert_eq!(g.fight.as_ref().map(|f| f.foes[0].hp), Some(1), "the wounded monster is still there");
+    }
+
+    /// Water takes F hits a tick from each member not levitating; a pit up to
+    /// (F + 1) / 2 x 15.5 x ln(size + 2) + 1 (timAilment_Timer, sub0835).
+    #[test]
+    fn squares_as_the_original() {
+        let d = data();
+        let mut g = Game::new(hero(&d, "Wader", 0, 1, 1, 9));
+        g.enter_dungeon(&d).unwrap();
+        for (bit, test) in [(square::WATER, 0), (square::PIT, 1)] {
+            let Some((fl, i)) = d.floors.iter().enumerate().find_map(|(k, f)| f.squares.iter().position(|s| s.flags & bit != 0).map(|i| (k, i))) else { continue };
+            let f = &d.floors[fl];
+            g.party[0].hp = 10_000;
+            g.party[0].max_hp = 10_000;
+            g.set_pos(&d, Pos { x: i % f.width, y: i / f.width, floor: fl + 1, facing: 0 });
+            if test == 0 {
+                g.ailments(&d);
+                assert_eq!(g.party[0].hp, 10_000 - (fl as i32 + 1), "water takes the floor's number");
+            } else {
+                let back = g.pos();
+                g.arrive(&d, &Tuning::load(&[]).unwrap(), back);
+                let max = ((fl as f64 + 2.0) / 2.0 * 15.5 * (f64::from(d.races[0].w(28)) + 2.0).ln() + 1.0) as i32 + 1;
+                assert!((1..=max).contains(&(10_000 - g.party[0].hp)), "{}", 10_000 - g.party[0].hp);
+            }
+        }
     }
 
     /// cmdMake_Click's quests (CInt(L / 25) as the level found, forfeit when pinned) and

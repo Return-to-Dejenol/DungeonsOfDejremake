@@ -83,6 +83,10 @@ are listed at the end. Notation:
   - Paralysis has the monster's power level p as its strength. Each tick it holds at clamp(ln(0.6 p) / ln 1.02 − (((ln L + L/10) / ln 1.05) / 10 + 1.5 CON + paralysis resistance), 5, 90)%, L the current guild level, and it ends at once when no monsters are left. Meanwhile the stat bonus to attack and defense is lost.
 - **Level-up HP:** the guild's hits; two times in three, d(hits / 5) more; and d(CON − 16) for CON above 16.
 - **Quests:** from level 5, at the guild's quest chance (w32). 5% of the time the Questmaster lets you off. Above level 15 a quarter are "return one item" (level 1 to Int(Q / 1.5) + 1, worth 100 or more, not cursed); the rest "defeat one monster" of a random type up to level found Q = CInt(L / 25), 1-10 (from the type's first 40% of the time, else from level Q; spawn weights below 10 rarely). A pinned character with a quest open may file for forfeit (not with a cursed item worn): the guild loses Int(ln(L + 1)) levels and the hits they brought.
+- **Squares** (sub0835, sub08F5, timAilment_Timer), F the floor:
+  - A pit drops each member for Int(Rnd × (F + 1)/2 × 15.5) × ln(race size + 2) + 1; a member's own levitation saves it but fails (5 + F/4)% of the time.
+  - A chute drops by its table's floors (Take too), Int(Rnd × new floor × 10.5) × ln(size + 2) + 5 to each member not levitating.
+  - Water and quicksand take F hits a tick from each member not levitating; quicksand also swallows an item from a random slot F/25 of the time.
 - **Old age:** past 98% of the race's lifespan, each tick kills at Int(Rnd × 100) < 5 + ln(age% − 98).
 
 **Treasure** (`treasure.rs`):
@@ -327,7 +331,7 @@ behaviour is a known gap, not a choice.
   complications and CON loss; a member raised in town gets the window's +10.
 - **Stand-ins replaced by the original rules:** paralysis wear-off (ported, and paralysis ends
   with the fight), poison and disease ticking in fights (ported), guild quests (ported), pits,
-  chutes, water and quicksand, companion join offers, charm (ported) and binding, death from
+  chutes, water and quicksand (ported), companion join offers, charm (ported) and binding, death from
   old age (ported).
 - **Theft and monster spells (ported):** match the original, including theft's gold rule
   and monster spells hitting the target and its own companions only.
@@ -384,7 +388,7 @@ can be changed in `patches/modern.toml` or here.
   badly hurt companions may wander off.
 - **City**: the bank pays fees when the purse runs short (as the original).
 - The Teleporter trap moves the whole party, and the container is lost.
-- **Squares**: water may hurt members wearing 12+ defense of gear (a 1 in 4 chance per
-  step); quicksand hurts and may swallow a loose item; extinguish squares strip spell
-  effects; anti-magic blocks casting; fog hides the view. Random teleporters keep the
-  party together.
+- **Squares**: the original's pits, chutes, water and quicksand ("Squares" in Original
+  rules). A chute takes the whole party when the leader falls (the original asks the
+  others whether to follow). Extinguish squares strip spell effects; anti-magic blocks
+  casting; fog hides the view. Random teleporters keep the party together.
