@@ -1380,63 +1380,102 @@ impl Game {
         }
     }
 
-    /// The Seer (MORDOR.EXE's fees): where a party member lies, for
-    /// 132,567.52 x ln(F + 1) x F on floor F; or where a monster keeps its lair, for
-    /// half of that at the monster's level, give or take an eighth (up to level 12).
-    pub fn seer_cost(&mut self, data: &GameData, name: &str) -> Option<u64> {
-        let fee = |f: f64| 132_567.52 * (f + 1.0).ln() * f;
-        let name = name.trim().to_lowercase();
-        if let Some(m) = self.party.iter().find(|m| m.name.to_lowercase() == name) {
-            return Some(match m.life {
-                Life::Dead(p) => fee(p.floor as f64).round_ties_even() as u64,
-                _ => 0,
-            });
-        }
-        let m = data.monsters.iter().find(|m| m.name.to_lowercase() == name)?;
-        (m.level <= 12).then(|| {
-            let c = fee(f64::from(m.level.max(1)));
-            ((c + self.party[0].rnd() * c / 4.0) / 2.0).round_ties_even() as u64
-        })
-    }
-
-    /// The Seer's answer, a message box in the original's words (FRMSEEK): its title's
-    /// text id and its text.
-    pub fn seer(&mut self, data: &GameData, name: &str) -> (u32, String) {
+    /// The Seer (FRMSEEK), by its button: 0 a party member, 2 a monster, 3 an item, the
+    /// last two by a unique beginning of their name and up to level 12. The fee is
+    /// 132,567.52 x ln(F + 1) x F for floor F (monsters and items: half of it at their
+    /// level, give or take an eighth), paid first; a search fails when d100 < 3 F
+    /// (members) or 5 x level, and finds a monster on its own floor: its lair 75% of the
+    /// time, else a room its kind may be in. The answer: a message box's title id and text.
+    pub fn seer(&mut self, data: &GameData, button: u16, name: &str) -> (u32, String) {
         const SORRY: u32 = 0x6255_8b51;
-        const SEER: u32 = 0xde72_1ed6;
-        let at = |x: usize, y: usize, f: i64| format!("{},{},{f}.", x + 1, y + 1);
+        let fee = |f: f64| 132_567.52 * (f + 1.0).ln() * f;
         let key = name.trim().to_lowercase();
-        let member = self.party.iter().any(|m| m.name.to_lowercase() == key);
-        let monster = data.monsters.iter().position(|m| m.name.to_lowercase() == key);
-        let Some(cost) = self.seer_cost(data, name) else {
-            return match monster {
-                Some(_) => (SORRY, data.t(0x243e_9ebd).into()),
-                None => (SORRY, format!("{}{}{}", data.t(0xf8d3_b5cc), name.trim(), data.t(0x81be_ab38))),
-            };
+        let unique = |names: Vec<(usize, &str)>| {
+            let hits: Vec<usize> = names.iter().filter(|(_, n)| n.to_lowercase().starts_with(&key)).map(|x| x.0).collect();
+            names.iter().find(|(_, n)| n.to_lowercase() == key).map(|x| Ok(x.0)).unwrap_or(match hits.len() { 1 => Ok(hits[0]), 0 => Err(0), _ => Err(2) })
         };
+        let (title, level, what) = match button {
+            0 => {
+                let Some(j) = self.party.iter().position(|m| m.name.to_lowercase() == key) else {
+                    return (SORRY, format!("{}{}{}", data.t(0xf8d3_b5cc), name.trim(), data.t(0x81be_ab38)));
+                };
+                let p = match self.party[j].life { Life::Dead(p) => p, _ => self.party[j].pos };
+                if p.floor == 0 {
+                    return (0xde72_1ed6, format!("{}\n{}", data.t(0xb448_8b9d), data.t(0x67ae_99cd)));
+                }
+                (0xf803_76b8, p.floor as i16, Some(j))
+            }
+            2 => match unique(data.monsters.iter().enumerate().skip(1).map(|(i, m)| (i, m.name.as_str())).collect()) {
+                Err(0) => return (SORRY, format!("{}{}{}", data.t(0xf8d3_b5cc), name.trim(), data.t(0x81be_ab38))),
+                Err(_) => return (SORRY, data.t(0x8882_45d2).into()),
+                Ok(m) if data.monsters[m].level > 12 => return (SORRY, data.t(0x243e_9ebd).into()),
+                Ok(m) => (0xeabe_3cb9, data.monsters[m].level, Some(m)),
+            },
+            _ => match unique(data.items.iter().enumerate().map(|(i, it)| (i, it.name.as_str())).collect()) {
+                Err(0) => return (SORRY, format!("{}{}'.", data.t(0x789e_199d), name.trim())),
+                Err(_) => return (SORRY, data.t(0x15aa_b008).into()),
+                Ok(it) if data.items[it].level > 12 => return (SORRY, data.t(0x17ed_f9ac).into()),
+                Ok(it) => (0x3bd0_9e0e, data.items[it].level, Some(it)),
+            },
+        };
+        let what = what.unwrap();
+        let l = f64::from(level.max(1));
         let lead = &mut self.party[0];
+        let cost = if button == 0 { fee(l) } else { (fee(l) + lead.rnd() * fee(l) / 4.0) / 2.0 }.round_ties_even() as u64;
         if lead.gold + lead.bank < cost {
-            return (if member { 0xf803_76b8 } else { 0xeabe_3cb9 }, data.t(0x22bd_be43).into());
+            return (title, data.t(0x22bd_be43).into());
         }
         lead.pay(cost);
-        if let Some(m) = self.party.iter().find(|m| m.name.to_lowercase() == key) {
-            let found = |p: Pos| format!("{}\"{}\"{}{}", data.t(0x68c0_5808), m.name, data.t(0x349a_42d0), at(p.x, p.y, p.floor as i64));
-            return match m.life {
-                Life::Dead(p) => (SEER, format!("{}\n{}", found(p), data.t(0xf406_90d9))),
-                _ if m.pos.floor == 0 => (SEER, format!("{}\n{}", data.t(0xb448_8b9d), data.t(0x67ae_99cd))),
-                _ => (SEER, found(m.pos)),
-            };
+        let need = i32::from(level) * if button == 0 { 3 } else { 5 };
+        let roll = lead.d100();
+        if roll < need {
+            return (title, match button {
+                0 if roll + 10 >= need => format!("{}{level}{}", data.t(0x79bf_378f), data.t(0xb77d_959f)),
+                0 => format!("{}\"{}\"{}", data.t(0x110f_5b41), self.party[what].name, data.t(0xc444_d688)),
+                _ if lead.rnd() * 100.0 >= l * 5.0 => format!("{}{level}{}\n{}", data.t(0x11bb_b661), data.t(0x9198_fbe6), data.t(0x2ab1_633e)),
+                _ => data.t(0x2118_db80).into(),
+            });
         }
-        let m = monster.expect("a monster when not a member");
-        let id = data.monsters[m].id;
-        let lair = data.floors.iter().find_map(|f| {
-            let a = f.areas.iter().position(|a| a.lair == id)?;
-            let i = f.squares.iter().position(|sq| sq.area as usize == a)?;
-            Some(at(i % f.width, i / f.width, i64::from(f.level)))
-        });
-        match lair {
-            Some(at) => (0xeabe_3cb9, format!("{}{}{}{at}", data.t(0x0129_16e9), data.monsters[m].name, data.t(0x9b15_be84))),
-            None => (0xeabe_3cb9, format!("{}{}{}\n{}", data.t(0x11bb_b661), data.monsters[m].level, data.t(0x9198_fbe6), data.t(0x2ab1_633e))),
+        let at = |x: usize, y: usize, f: i64| format!("{},{},{f}.", x + 1, y + 1);
+        match button {
+            0 => {
+                let m = &self.party[what];
+                let p = match m.life { Life::Dead(p) => p, _ => m.pos };
+                let found = format!("{}\"{}\"{}{}", data.t(0x68c0_5808), m.name, data.t(0x349a_42d0), at(p.x, p.y, p.floor as i64));
+                (title, if matches!(m.life, Life::Dead(_)) { format!("{found}\n{}", data.t(0xf406_90d9)) } else { found })
+            }
+            2 => {
+                let mon = &data.monsters[what];
+                let Some(f) = data.floors.get(level as usize - 1) else { return (title, data.t(0xf5d9_37c2).into()) };
+                let lair = f.areas.iter().position(|a| a.lair == mon.id).filter(|_| self.party[0].rnd() * 100.0 < 75.0);
+                let rooms: Vec<usize> = (1..f.areas.len()).filter(|&a| f.areas[a].monster_types >> mon.kind & 1 != 0).collect();
+                let area = lair.or_else(|| rooms.get(self.party[0].roll(rooms.len().max(1) as u32) as usize).copied());
+                let Some(i) = area.and_then(|a| f.squares.iter().position(|sq| sq.area as usize == a)) else { return (title, data.t(0xf5d9_37c2).into()) };
+                let types = f.areas[area.unwrap()].monster_types.count_ones();
+                let how = match () {
+                    _ if lair.is_some() => 0x7c10_43c3,
+                    _ if types <= 2 => 0xf09e_1bb2,
+                    _ if types <= 4 => 0x5c7e_f205,
+                    _ if types <= 7 => 0x0125_2963,
+                    _ if types <= 11 => 0x9292_7add,
+                    _ => 0x799e_8e43,
+                };
+                (title, format!("{}{}{}{}\n{}{}{}", data.t(0x0129_16e9), mon.name, data.t(0x9b15_be84), at(i % f.width, i / f.width, i64::from(level)), data.t(0xb877_2c6d), data.t(how), data.t(0x6878_660d)))
+            }
+            _ => {
+                // Up to three monsters that carry the item's type at about its level, or
+                // the item itself.
+                let it = &data.items[what];
+                let over = self.party[0].roll(3) as i16;
+                let carriers: Vec<usize> = (1..data.monsters.len())
+                    .filter(|&m| data.monsters[m].item_classes.iter().any(|&c| c == it.kind && (it.level..=it.level + over).contains(&data.monsters[m].item_level) || c < -1 && -c - 2 == it.id))
+                    .collect();
+                if carriers.is_empty() {
+                    return (title, data.t(0xd893_6d32).into());
+                }
+                let names: Vec<&str> = (0..carriers.len().min(3)).map(|_| data.monsters[carriers[self.party[0].roll(carriers.len() as u32) as usize]].name.as_str()).collect();
+                (title, format!("{}{}{}", data.t(0x713f_3be0), names.join(data.t(0x31e9_ae78)), data.t(0x1dcc_2be8)))
+            }
         }
     }
 
@@ -1945,6 +1984,18 @@ mod tests {
         let known = g.companion_sell_price(&d, 0);
         g.party[0].companions[0].id = 2;
         assert_eq!(g.companion_sell_price(&d, 0), (known as f64 / 3.0).round() as u64);
+    }
+
+    /// FRMSEEK: names by a unique beginning; the fee is paid before the search.
+    #[test]
+    fn seer_as_the_original() {
+        let d = data();
+        let mut g = Game::new(hero(&d, "Asker", 0, 1, 1, 5));
+        assert_eq!(g.seer(&d, 2, "Giant").1, d.t(0x8882_45d2), "more than one Giant");
+        g.party[0].gold = 10_000_000;
+        let (title, _) = g.seer(&d, 3, "Iron Sword");
+        assert_eq!(title, 0x3bd0_9e0e);
+        assert!(g.party[0].gold < 10_000_000);
     }
 
     /// Water takes F hits a tick from each member not levitating; a pit up to

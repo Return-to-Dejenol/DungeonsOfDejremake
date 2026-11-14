@@ -155,7 +155,7 @@ are listed at the end. Notation:
   - A failed raise brings complications at age / (lifespan / 2): −5 to every stat (not below the race minimum), 15 years, max hits / 1.2, and the raise then goes through. Without them the body ages 54 days and stays dead.
   - A raise ages 54 days and loses a point of CON (50 − 2 CON)% of the time.
   - Rescue from floor F: 372,567.52 ln(F + 1) F. The rescuers are lost 4% of the time per floor.
-- **Seer:** a party member costs 132,567.52 ln(F + 1) F; a monster's lair costs half that at its level, up to level 12.
+- **Seer** (FRMSEEK): a party member costs 132,567.52 ln(F + 1) F for floor F, anywhere below the city; a monster or an item (a unique beginning of its name, up to level 12) costs half that at its level, give or take an eighth. The fee is paid first. A search fails when d100 < 3 F (members) or 5 × level (sometimes with the floor). A monster is found on its own floor: its lair 75% of the time, else a room its kind may be in, with how common such creatures are there. An item search names up to three monsters that carry its type at about its level, or the item itself.
 - **Confinement:**
   - A companion's value is (500 att + 500 def + 250 hits) × ln(STR + DEX) × ln(level + 1), plus its specials, spells and resistances.
   - It sells for 1.5 × value / (ln s + 1.15) and is bought back at 0.9 × value / (s + 1.15).
@@ -350,8 +350,7 @@ behaviour is a known gap, not a choice.
   levels, bank item storage, Pool, restocking and the minor items): match the original by
   default. Where a rule would hurt play on a phone, it comes back to the owner as its own
   decision first.
-- **Still to port** (2026-11-14): Confinement's Realign; the Seer's failure rolls,
-  item search and own-floor lair rule; Wait for Rescue; bank item storage and Pool moving
+- **Still to port** (2026-11-14): Confinement's Realign; Wait for Rescue; bank item storage and Pool moving
   bank balances; Combine. Teleport and Displacement wait on the owner (they take typed
   offsets).
 

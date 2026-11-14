@@ -264,7 +264,7 @@ impl App {
         if ev.click("cmdOK") || ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
             let q = std::mem::take(&mut desk.state("frmInteract", "txtQuestion").text);
             if let Some(g) = self.game.as_mut() {
-                let (title, text) = g.seer(d, q.trim());
+                let (title, text) = g.seer(d, button, q.trim());
                 self.boxes.push((d.t(title).into(), text));
                 self.persist();
             }
