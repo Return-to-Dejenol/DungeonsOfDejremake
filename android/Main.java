@@ -36,6 +36,16 @@ public class Main extends NativeActivity {
         return Math.max(0, root.getHeight() - r.bottom);
     }
 
+    /** The system bars' inset on a side (0 left, 1 right, 2 bottom) in pixels, which the
+     *  game keeps clear: the app draws behind the navigation bar. */
+    public int inset(int side) {
+        WindowInsets w = getWindow().getDecorView().getRootWindowInsets();
+        if (w == null) return 0;
+        if (Build.VERSION.SDK_INT < 30) return side == 0 ? w.getStableInsetLeft() : side == 1 ? w.getStableInsetRight() : w.getStableInsetBottom();
+        android.graphics.Insets i = w.getInsets(WindowInsets.Type.navigationBars());
+        return side == 0 ? i.left : side == 1 ? i.right : i.bottom;
+    }
+
     /** Installs a downloaded update: a PackageInstaller session the system confirms with the
      *  player, then replaces the app (same signing key), keeping its files. */
     public void install(final String apk) {

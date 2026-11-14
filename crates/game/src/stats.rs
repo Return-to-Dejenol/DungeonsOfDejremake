@@ -9,6 +9,9 @@ use ddj_rules::{
     magic,
     mdr::{GameData, Words, square},
 };
+use std::collections::HashMap;
+
+use ddj_extract::forms::Val;
 use eframe::egui::{self, Color32, Painter, Rect, Stroke, pos2, vec2};
 
 use crate::{App, Deed, Dialog, Screen, win::{Desk, Drag, View}};
@@ -66,6 +69,83 @@ pub const LAYOUTS: [&[&[&[&str]]]; 2] = [
     &[&[&["frmCharStat1"], &["frmDungeonMain", "frmParty", "frmCharStat4"], &["frmAutoMap", "frmCharStat3"]]],
     &[&[&["frmDungeonMain"]], &[&["frmCharStat4"]], &[&["frmCharStat1"], &["frmAutoMap", "frmParty"]], &[&["frmCharStat3"]]],
 ];
+
+/// The phone shell's own windows (`add_shell`), and the windows each of its tabs shows.
+pub const STRIP: &str = "phnTabs";
+pub const PAD: &str = "phnPad";
+pub const TABS: [&[&str]; 3] = [&["frmCharStat1"], &["frmCharStat3"], &["frmParty", "frmAutoMap"]];
+
+/// The phone shell (Android) in place of the desktop: the City or Dungeon window (or the
+/// open building) over Messages, as wide as the screen; then the tab strip and the windows
+/// of the tab in front, as big as they fit; in the dungeon the touch pad at the bottom.
+/// Landscape puts the strip and its windows on the right. The tab in front follows the
+/// window last made active (the toolbar's buttons, the dungeon's Spell and Map).
+pub fn shell(desk: &mut Desk, play: &str, dungeon: bool) {
+    let c = desk.to_screen(desk.client);
+    let tab = TABS.iter().position(|t| desk.active.as_deref().is_some_and(|a| t.contains(&a))).unwrap_or(desk.state(STRIP, "tabShell").tab);
+    desk.state(STRIP, "tabShell").tab = tab;
+    desk.place = ["frmCityMain", "frmDungeonMain", "frmCharStat1", "frmCharStat3", "frmParty", "frmAutoMap"].iter().map(|f| (f.to_string(), None)).collect();
+    let o: HashMap<&str, egui::Vec2> = [play, "frmCharStat4", PAD, STRIP, "frmCharStat1", "frmCharStat3", "frmParty", "frmAutoMap"].into_iter().map(|f| (f, desk.outer(f))).collect();
+    let left: Vec<&str> = [play, "frmCharStat4"].into_iter().chain(dungeon.then_some(PAD)).collect();
+    let w = if c.height() > c.width() { c.width() } else { (c.height() / left.iter().map(|f| o[f].y / o[f].x).sum::<f32>()).min(c.width() * 0.6) };
+    let pad = if dungeon { o[PAD].y * w / o[PAD].x } else { 0.0 };
+    let mut y = c.top();
+    for f in left {
+        let at = if f == PAD { pos2(c.left(), c.bottom() - pad) } else { pos2(c.left(), y) };
+        desk.place.insert(f.into(), Some((at, w / o[f].x)));
+        y += o[f].y * w / o[f].x;
+    }
+    let area = if w < c.width() * 0.99 { Rect::from_min_max(pos2(c.left() + w, c.top()), c.max) } else { Rect::from_min_max(pos2(c.left(), y - pad), pos2(c.right(), c.bottom() - pad)) };
+    // The strip as wide as its column, at one and a half times.
+    let sw = (area.width() / 1.5) as i32;
+    if let Some(f) = desk.forms.get_mut(STRIP) {
+        f.rect[2] = sw;
+        f.controls[0].rect[2] = sw;
+    }
+    desk.place.insert(STRIP.into(), Some((area.min, 1.5)));
+    let rest = area.with_min_y(area.top() + o[STRIP].y * 1.5);
+    let wins: Vec<&str> = TABS[tab].iter().copied().filter(|&f| dungeon || f != "frmAutoMap").collect();
+    let (mw, sh) = wins.iter().fold((0.0f32, 0.0f32), |(a, b), f| (a.max(o[f].x), b + o[f].y));
+    let k = (rest.width() / mw).min(rest.height() / sh).clamp(0.2, 2.0);
+    let mut y = rest.top();
+    for f in wins {
+        desk.place.insert(f.into(), Some((pos2(rest.center().x - o[f].x * k / 2.0, y), k)));
+        y += o[f].y * k;
+    }
+}
+
+/// The shell's windows in the original's style: the tab strip, and the dungeon's touch pad
+/// with the Dungeon window's own movement and action buttons (and the remake's Defend and
+/// Run, the keyboard's D and R).
+pub fn add_shell(desk: &mut Desk) {
+    desk.synth(STRIP, "", 200, 28, &[("videosoftindextab", "tabShell", None, [0, 0, 200, 28], "Character|Objects|Party")]);
+    #[rustfmt::skip]
+    desk.synth(PAD, "", 240, 52, &[
+        ("CommandButton", "cmdMove", Some(0), [2, 2, 36, 23], ""), ("CommandButton", "cmdMove", Some(2), [39, 2, 36, 23], ""),
+        ("CommandButton", "cmdMove", Some(1), [76, 2, 36, 23], ""), ("CommandButton", "cmdMove", Some(3), [113, 2, 36, 23], ""),
+        ("CommandButton", "cmdAction", Some(2), [152, 2, 42, 23], ""), ("CommandButton", "cmdAction", Some(3), [195, 2, 43, 23], ""),
+        ("CommandButton", "cmdAction", Some(0), [2, 27, 58, 23], ""), ("CommandButton", "cmdDefend", None, [61, 27, 58, 23], "Defend"),
+        ("CommandButton", "cmdRun", None, [120, 27, 58, 23], "Run"), ("CommandButton", "cmdAction", Some(1), [179, 27, 59, 23], ""),
+    ]);
+    let dun = desk.forms.get("frmDungeonMain").map(|f| f.controls.clone()).unwrap_or_default();
+    for f in desk.forms.iter_mut().filter(|(k, _)| [STRIP, PAD].contains(&k.as_str())).map(|(_, f)| f) {
+        f.props.insert("BorderStyle".into(), Val::N(0));
+        for c in &mut f.controls {
+            // Defend and Run take Fight's font.
+            let same = dun.iter().find(|o| o.name == c.name && o.index == c.index);
+            if let Some(o) = same.or(dun.iter().find(|o| o.name == "cmdAction" && o.index == Some(0) && c.name != "tabShell")) {
+                let caption = c.props.get("Caption").cloned().filter(|_| same.is_none());
+                c.props = o.props.clone();
+                if let Some(cap) = caption {
+                    c.props.insert("Caption".into(), cap);
+                }
+                if c.name == "cmdMove" {
+                    c.props.insert("FontSize".into(), Val::F(12.0));
+                }
+            }
+        }
+    }
+}
 
 fn row_size(desk: &Desk, row: &[&[&str]]) -> egui::Vec2 {
     let col = |c: &[&str]| c.iter().map(|f| desk.outer(f)).fold(vec2(0.0, 0.0), |a, b| vec2(a.x.max(b.x + 1.0), a.y + b.y + 1.0));
@@ -327,6 +407,7 @@ impl App {
             if h.is_some() {
                 v.drag(&k, Drag(1, sel, i));
             }
+            v.scroll(&k, "vsbItems", item[3] as f32, SLOTS - rows);
             if picked == Some(i) {
                 v.back(&k, SEL_BACK).fore(&k, Color32::WHITE);
             }
@@ -344,6 +425,7 @@ impl App {
                 if r > 0 {
                     v.clone_rect(&format!("{base}(0)"), r as u16, [b[0], b[1] + n0[3] * r as i32, b[2], b[3]]);
                 }
+                v.scroll(&format!("{base}({r})"), "vsbSpells", n0[3] as f32, known.len().saturating_sub(5));
             }
             let sp = row.map(|s| &d.spells[s]);
             v.text(&format!("lblName({r})"), sp.map_or(String::new(), |s| s.name.clone()));

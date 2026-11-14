@@ -20,8 +20,8 @@ impl App {
     pub(crate) fn dungeon(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData, t: &Tuning) {
         const F: &str = "frmDungeonMain";
         let typing = ctx.egui_wants_keyboard_input() || self.dialog.is_some();
-        let keys = ctx.input(|i| [Key::ArrowUp, Key::ArrowLeft, Key::ArrowRight, Key::ArrowDown, Key::T, Key::F, Key::D, Key::R, Key::Space, Key::A, Key::O].map(|k| i.key_pressed(k) && !typing));
-        let ev = {
+        let mut keys = ctx.input(|i| [Key::ArrowUp, Key::ArrowLeft, Key::ArrowRight, Key::ArrowDown, Key::T, Key::F, Key::D, Key::R, Key::Space, Key::A, Key::O].map(|k| i.key_pressed(k) && !typing));
+        let (mut ev, open) = {
             let g = self.game.as_ref().unwrap();
             let p = g.pos();
             let flags = if p.floor > 0 { d.floors[p.floor - 1].square(p.x, p.y).flags } else { 0 };
@@ -47,7 +47,8 @@ impl App {
                 let odds = if pr > 0.5 { "+" } else if pr > 0.35 { "*" } else { "-" };
                 v.text("lblTrap", if c.magic_lock { d.t(0xcd46_ca10) } else { c.guess.name(d) }).text("lblDisarm", format!("{odds} {}", "*".repeat(c.sure as usize)));
             }
-            v.enable("cmdAction(3)", chest.is_some() && g.fight.as_ref().is_none_or(|f| f.chest.is_none()));
+            let open = chest.is_some() && g.fight.as_ref().is_none_or(|f| f.chest.is_none());
+            v.enable("cmdAction(3)", open);
             // The monster groups: up to four lines, "1. 2 Zombies".
             if let Some(f) = &g.fight {
                 let mut groups: Vec<(usize, usize)> = Vec::new();
@@ -79,8 +80,22 @@ impl App {
                 }
             });
             v.paint("picMonsters", move |p, r, s| art::monsters(p, r, s, art_ref, d, g));
-            desk.window(ctx, F, v, false)
+            v.swipe("picMaze2").swipe("picMonsters");
+            (desk.window(ctx, F, v, false), open)
         };
+        // The phone shell's touch pad: the same buttons, finger-sized, and Defend and Run.
+        if desk.shell {
+            let fight = self.game.as_ref().is_some_and(|g| g.fight.is_some());
+            let mut v = View::default();
+            v.enable("cmdAction(3)", open).enable("cmdDefend", fight).enable("cmdRun", fight);
+            ev.clicked = desk.window(ctx, crate::stats::PAD, v, false).clicked.or(ev.clicked);
+        }
+        // Touch: a swipe across the maze steps (up), turns (left, right) or turns about (down).
+        if let Some((_, dir)) = ev.swiped.take() {
+            ev.clicked = Some(format!("cmdMove({})", [2, 1, 3, 0][usize::from(dir)]));
+        }
+        keys[6] |= ev.click("cmdDefend");
+        keys[7] |= ev.click("cmdRun");
         let g = self.game.as_mut().unwrap();
         let before = (g.pos(), g.fight.is_some(), g.party.iter().map(|m| m.hp).sum::<i32>());
         match ev.index("cmdMove") {

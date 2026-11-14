@@ -42,12 +42,21 @@ pub fn choose() {
 
 /// The on-screen keyboard's height in pixels; 0 while it's hidden.
 pub fn keyboard() -> f32 {
+    call(|env, a| env.call_method(a, jni_str!("keyboard"), jni_sig!(() -> jint), &[])?.i())
+}
+
+/// The navigation bar's inset on the left, right and bottom, in pixels (Main.inset).
+pub fn insets() -> [f32; 3] {
+    [0, 1, 2].map(|side| call(|env, a| env.call_method(a, jni_str!("inset"), jni_sig!((jint) -> jint), &[side.into()])?.i()))
+}
+
+fn call(f: impl FnOnce(&mut jni::Env, &JObject) -> jni::errors::Result<i32>) -> f32 {
     let Some(app) = APP.get() else { return 0.0 };
     // SAFETY: as in `choose`.
     let vm = unsafe { jni::JavaVM::from_raw(app.vm_as_ptr().cast()) };
     vm.attach_current_thread(|env| -> jni::errors::Result<i32> {
         let activity = unsafe { JObject::from_raw(env, app.activity_as_ptr().cast()) };
-        env.call_method(&activity, jni_str!("keyboard"), jni_sig!(() -> jint), &[])?.i()
+        f(env, &activity)
     })
     .map_or(0.0, |h| h as f32)
 }
