@@ -252,6 +252,8 @@ impl App {
                     g.log.extend(lines);
                     self.boxes.extend(g.guildmaster(d, sel).into_iter().map(|(title, s)| (d.t(title).into(), s)));
                 }
+                // Pinned with a quest open: the original offers a forfeit.
+                Err((_, s)) if g.party[sel].may_forfeit(d, t) => self.dialog = Some(Dialog::Confirm(s, Deed::Forfeit(sel))),
                 Err((title, s)) => self.boxes.push((d.t(title).into(), s)),
             }
         }
@@ -278,6 +280,9 @@ impl App {
             s += &format!("{}{}{}\n{have}{}{}\n", d.t(0xd55d_cc25), commas(gold), d.t(0x1aa5_7089), commas(c.gold + c.bank), d.t(0x1aa5_7089));
             if let Some(m) = c.quest {
                 s += &format!("\n{}\n{}{}.\n", d.t(0x0e54_b26c), d.t(0x6cc2_654d), d.monsters[m].name);
+            }
+            if let Some(it) = c.quest_item {
+                s += &format!("\n{}\n{}{}.\n", d.t(0x0e54_b26c), d.t(0x4bc8_33ad), d.items[it].name);
             }
             self.boxes.push((d.t(0xc0e1_04e4).into(), s));
         }

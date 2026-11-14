@@ -181,6 +181,9 @@ pub struct Character {
     /// A guild quest: kill this monster before the next level.
     #[serde(default)]
     pub quest: Option<usize>,
+    /// Or bring back this item (index into `GameData::items`).
+    #[serde(default)]
+    pub quest_item: Option<usize>,
     rng: u64,
 }
 
@@ -271,6 +274,7 @@ impl Character {
             sanctuary: None,
             age_days: 16 * 365,
             quest: None,
+            quest_item: None,
             rng: seed | 1,
         };
         c.sp = c.max_sp(data, &Tuning::load(&[]).expect("built-in tuning"));
@@ -478,11 +482,25 @@ impl Character {
         if self.xp[self.guild] < need {
             return Err((MAKE_LEVEL, data.t(0xffee_afe6).into()));
         }
-        if let Some(m) = self.quest {
-            return Err((0xe241_4a85, format!("{}\n{}{}.", data.t(0xf445_728a), data.t(0xa2c3_5d33), data.monsters[m].name)));
+        // An open quest (cmdMake_Click); a pinned character may file for forfeit.
+        let owed = self.quest_item.filter(|&it| !self.items.iter().any(|h| h.item == it && !h.equipped));
+        let quest = match (self.quest, owed) {
+            (Some(m), _) => Some((0xa2c3_5d33, &data.monsters[m].name)),
+            (_, Some(it)) => Some((0x4bc8_33ad, &data.items[it].name)),
+            _ => None,
+        };
+        if let Some((what, name)) = quest {
+            let pinned = if self.pinned(data, t) { format!("\n\n{}{}", data.t(0x5bee_3f22), data.t(0x0833_9ca1)) } else { String::new() };
+            return Err((0xe241_4a85, format!("{}\n{}{name}.{pinned}", data.t(0xf445_728a), data.t(what))));
         }
         if self.gold + self.bank < gold {
             return Err((MAKE_LEVEL, data.t(0x778e_55d4).into()));
+        }
+        // The quest item is handed in.
+        if let Some(it) = self.quest_item.take()
+            && let Some(slot) = self.items.iter().position(|h| h.item == it && !h.equipped)
+        {
+            self.items.remove(slot);
         }
         self.pay(gold);
         let g = &data.guilds[self.guild];
@@ -521,17 +539,101 @@ impl Character {
             self.max_hp += gain;
             self.hp += gain;
         }
-        // From level 5 a guild may set a quest at its quest chance (w32, MORDOR.EXE).
+        // From level 5 a guild may set a quest at its quest chance (w32; cmdMake_Click):
+        // 5% of the time the Questmaster lets you off; above level 15 a quarter are items.
         if level >= 5 && (self.rnd() * 100.0).round_ties_even() <= f64::from(g.w(32)) {
-            let floor = (level / 5).clamp(1, 15) as i16;
-            let fits: Vec<usize> = (0..data.monsters.len()).filter(|&m| data.monsters[m].level == floor).collect();
-            if !fits.is_empty() {
-                let m = fits[self.roll(fits.len() as u32) as usize];
+            said.push(data.t(0x9325_18b2).into());
+            let q = (f64::from(level) / 25.0).round_ties_even().clamp(1.0, 10.0) as i16;
+            if (self.rnd() * 100.0).round_ties_even() <= 5.0 {
+                said.push(data.t(0xc74b_e239).into());
+            } else if (self.rnd() * 100.0).round_ties_even() < 25.0 && level > 15 {
+                if let Some(it) = self.quest_pick_item(data, (f64::from(q) / 1.5) as i16 + 1) {
+                    self.quest_item = Some(it);
+                    said.push(format!("{}{}.", data.t(0x9a6b_91c7), data.items[it].name));
+                }
+            } else if let Some(m) = self.quest_pick_monster(data, q) {
                 self.quest = Some(m);
-                said = vec![data.t(0x9325_18b2).into(), format!("{}{}.", data.t(0x6119_fc50), data.monsters[m].name)];
+                said.push(format!("{}{}.", data.t(0x6119_fc50), data.monsters[m].name));
             }
         }
         Ok(said)
+    }
+
+    /// XP at its cap: one short of the level after next.
+    fn pinned(&self, data: &GameData, t: &Tuning) -> bool {
+        self.xp[self.guild] + 1 >= t.xp_needed(self.level() + 1, data.races[self.race].xp_factor, data.guilds[self.guild].xp_factor)
+    }
+
+    /// Whether a forfeit is on offer: a quest open while pinned.
+    pub fn may_forfeit(&self, data: &GameData, t: &Tuning) -> bool {
+        (self.quest.is_some() || self.quest_item.is_some()) && self.pinned(data, t)
+    }
+
+    /// Filing for forfeit (sub29BD): never with a cursed item worn; the guild loses
+    /// Int(ln(L + 1)) levels and the hits they brought, 15 at least.
+    pub fn forfeit(&mut self, data: &GameData, t: &Tuning) -> Result<(), String> {
+        if self.items.iter().any(|h| h.equipped && crate::magic::cursed(data, h, self.alignment)) {
+            return Err(data.t(0xf7a9_0469).into());
+        }
+        let (g, l) = (self.guild, self.level());
+        let gd = &data.guilds[g];
+        let (per, cap) = match g {
+            NOMAD => (3, 20),
+            HEALER => (3, gd.hp_cap),
+            _ => (gd.hp_per_level, gd.hp_cap),
+        };
+        let n = (f64::from(l) + 1.0).ln() as u32;
+        for k in (l.saturating_sub(n) + 1..=l).rev() {
+            if (0..self.levels.len()).any(|o| o != g && self.levels[o] >= k) {
+                continue;
+            }
+            self.max_hp -= if k > cap as u32 {
+                i32::from(gd.hp_after)
+            } else {
+                let extra = if self.roll(3) < 2 { (self.rnd() * f64::from(per) / 5.0) as i32 - 1 } else { 0 };
+                i32::from(per) + extra
+            };
+        }
+        self.max_hp = self.max_hp.max(15);
+        self.hp = self.max_hp;
+        self.levels[g] = l.saturating_sub(n).max(1);
+        (self.quest, self.quest_item) = (None, None);
+        self.xp[g] = self.xp_needed(data, t);
+        Ok(())
+    }
+
+    /// A quest monster (cmdMake_Click): of a random type, up to level found q, from the
+    /// type's first 40% of the time and else from level q; rarely one of spawn weight
+    /// below 10.
+    fn quest_pick_monster(&mut self, data: &GameData, q: i16) -> Option<usize> {
+        for _ in 0..1000 {
+            let k = self.roll(data.monster_types.len() as u32) as i16;
+            let mut of: Vec<usize> = (0..data.monsters.len()).filter(|&m| data.monsters[m].kind == k).collect();
+            of.sort_by_key(|&m| data.monsters[m].level);
+            let Some(end) = of.iter().rposition(|&m| data.monsters[m].level <= q) else { continue };
+            let start = if self.rnd() * 100.0 < 40.0 { 0 } else { of.iter().position(|&m| data.monsters[m].level >= q).unwrap_or(0).min(end) };
+            let m = of[start + (self.rnd() * (end - start) as f64).round_ties_even() as usize];
+            if data.monsters[m].weight < 10 && self.rnd() * 100.0 > 25.0 {
+                continue;
+            }
+            return Some(m);
+        }
+        None
+    }
+
+    /// A quest item: of a random type, level 1 to q, worth 100 or more, not cursed;
+    /// rarely a rare one (w6 below 5).
+    fn quest_pick_item(&mut self, data: &GameData, q: i16) -> Option<usize> {
+        for _ in 0..1000 {
+            let k = self.roll(data.item_types.len() as u32) as i16;
+            let of: Vec<usize> = (0..data.items.len()).filter(|&i| data.items[i].kind == k && (1..=q).contains(&data.items[i].level) && data.items[i].price >= 100 && data.items[i].w(40) == 0).collect();
+            let Some(&it) = of.get(self.roll(of.len().max(1) as u32) as usize) else { continue };
+            if data.items[it].w(6) < 5 && self.rnd() * 100.0 > 25.0 {
+                continue;
+            }
+            return Some(it);
+        }
+        None
     }
 
     /// Spends gold, taking from the bank when the purse runs short (as the original).
@@ -1089,8 +1191,19 @@ impl Game {
             if m.status.paralysis > 0 && (!foes || f64::from(m.d100()) > paralysis_stay(data, m)) {
                 m.status.paralysis = 0;
             }
+            // Past 98% of the race's lifespan, death of natural causes at
+            // Int(Rnd x 100) < 5 + ln(age% - 98).
+            let pct = f64::from(m.age_days) / 365.0 / f64::from(data.races[m.race].lifespan.max(1)) * 100.0;
+            if pct > 98.0 && (m.rnd() * 100.0).floor() < 5.0 + (pct - 98.0).ln() {
+                hurt.push((i, -1));
+            }
         }
         for (i, dmg) in hurt {
+            if dmg < 0 {
+                let line = if self.party.len() == 1 { data.t(0x13a8_39ee).into() } else { format!("{}{}", self.quoted(i), data.t(0x92c4_4e25)) };
+                self.say(line);
+            }
+            let dmg = if dmg < 0 { self.party[i].hp } else { dmg };
             self.hurt(data, i, dmg);
         }
     }
@@ -1768,6 +1881,33 @@ mod tests {
         g.shelve(&d);
         g.enter_room(&d, &t, area as i16, false, g.pos());
         assert_eq!(g.fight.as_ref().map(|f| f.foes[0].hp), Some(1), "the wounded monster is still there");
+    }
+
+    /// cmdMake_Click's quests (CInt(L / 25) as the level found, forfeit when pinned) and
+    /// natural death past 98% of the lifespan (timAilment_Timer).
+    #[test]
+    fn quests_and_old_age() {
+        let (d, t) = (data(), Tuning::load(&[]).unwrap());
+        let mut c = hero(&d, "Quester", 0, 1, 1, 50);
+        for _ in 0..50 {
+            let m = c.quest_pick_monster(&d, 2).unwrap();
+            assert!(d.monsters[m].level <= 2, "{}", d.monsters[m].name);
+        }
+        c.quest = Some(0);
+        c.xp[1] = t.xp_needed(51, d.races[0].xp_factor, d.guilds[1].xp_factor) - 1;
+        assert!(c.may_forfeit(&d, &t) && c.make_level(&d, &t).is_err());
+        c.forfeit(&d, &t).unwrap();
+        assert_eq!((c.levels[1], c.quest), (47, None), "ln 51 = 3.9 levels lost");
+        let mut g = Game::new(c);
+        g.enter_dungeon(&d).unwrap();
+        g.party[0].age_days = 365 * 100;
+        for _ in 0..2000 {
+            if !g.party[0].alive() {
+                break;
+            }
+            g.ailments(&d);
+        }
+        assert!(!g.party[0].alive(), "a Human of 100 dies of old age");
     }
 
     /// sub0F74 and fn110D: two hands, one item per class, worn stat modifiers; wearable

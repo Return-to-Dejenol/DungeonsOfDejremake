@@ -82,6 +82,8 @@ enum Deed {
     Bind(usize),
     /// Party member, item slot.
     Drop(usize, usize),
+    /// File for forfeit of a party member's quest.
+    Forfeit(usize),
     /// Download and install a newer release.
     #[cfg(any(windows, target_os = "android"))]
     Update,
@@ -536,7 +538,7 @@ impl App {
     }
 
     /// The window over everything else, if any.
-    fn dialog(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData) {
+    fn dialog(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData, t: &Tuning) {
         if let Some(g) = self.game.as_mut() {
             self.boxes.extend(g.boxes.drain(..).map(|(t, s)| (d.t(t).into(), s)));
         }
@@ -580,6 +582,7 @@ impl App {
                     Deed::Rescue(_) => Some(0x76da_125a),
                     Deed::Bind(_) => Some(0x3e5c_ab8c),
                     Deed::Drop(..) => Some(0x7a33_21db),
+                    Deed::Forfeit(_) => Some(0x6a45_dbf2),
                     #[cfg(any(windows, target_os = "android"))]
                     Deed::Update => None,
                 };
@@ -593,6 +596,11 @@ impl App {
                         Deed::Rescue(i) => g.rescue(d, i),
                         Deed::Drop(i, slot) => {
                             g.party[i].items.remove(slot);
+                        }
+                        Deed::Forfeit(i) => {
+                            if let Err(e) = g.party[i].forfeit(d, t) {
+                                self.boxes.push((d.t(0x6a45_dbf2).into(), e));
+                            }
                         }
                         Deed::Bind(k) => {
                             if let Err(e) = g.rebind(d, k) {
@@ -984,7 +992,7 @@ impl eframe::App for App {
                 Screen::Town | Screen::Dungeon => self.play(&mut desk, &ctx, &data, &tuning),
             }
             self.sync_frame(&mut desk, &ctx, &data);
-            self.dialog(&mut desk, &ctx, &data);
+            self.dialog(&mut desk, &ctx, &data, &tuning);
             // F1: the help for the window in front (its HelpContextID), as the original's.
             if self.help.is_none() && ctx.input(|i| i.key_pressed(egui::Key::F1)) {
                 let main = match self.screen {

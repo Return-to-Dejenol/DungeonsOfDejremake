@@ -65,12 +65,12 @@ are listed at the end. Notation:
   - Each group attacks one member a round, chosen 100/50/25/12/6 by party position, with up to five of its monsters. Each attacker hits the member, or one of its companions.
   - Monster swings use its attack (w0), level (w37), STR (w38) and multiplier (w46). Critical adds 2 and backstab 1.
   - Breath, acid and electrocution are N-based, with N ≈ (ln X + X/15) / ln 1.08 − target level / 20, and resistance takes half off. They come 50% of the time, or 80% (acid and shocks 90%) against targets above 1.25 × the monster's level, and 20% (10%) below 0.75 ×.
-  - Monster spells come from its classes (w24), at a level near its own. Damage = base × (1 + ln(l + 1) / ln 5) + l / 10 × per level, at caster level w37 / 4.
+  - Monster spells come from its classes (w24-25), at a level near its own; a pick without hits isn't cast. Damage = base × (1 + ln(l + 1) / ln 5) + l / 10 × per level, at caster level w37 / 4, against the target and then its own companions (up to w6, 4 at most), each rolled apart; a kill spell (effect 100) does nothing unless it kills.
 - **Specials after a hit that hurt:**
   - Poison, disease and paralysis go past d100 against resistance; paralysis adds CON.
   - Aging and draining go past d100 against CON × 2.5 − 2 × level.
   - Stoning: CON × ln CON / ln 2.5 − level saves.
-  - Item destruction and theft need no hit. DEX protects items; thieving and wounds protect purses.
+  - Item destruction and theft need no hit. DEX protects items; thieving and wounds protect purses. Each picks a random pack slot (destruction 2-40, theft 3-41) and misses when it is empty (theft: or worn). A thief that runs (after gold, 70%, or always after an item) takes its loot; one that stays gives the gold back when the fight is won.
 - **XP** comes per point of damage dealt, to the dealer:
   - d (0.9 − ln(d + 1)/10)(5 + level/10)(2 − ln d/10) / (1 + 3 L/999).
   - Less 4% per other party member.
@@ -82,7 +82,8 @@ are listed at the end. Notation:
   - Poison and disease wear off when d200 + 2 (CON − 10) − 2 × strength beats 185 (195 for disease). Until then poison costs 2 hits a tick and disease 1. An ailment already there isn't renewed.
   - Paralysis has the monster's power level p as its strength. Each tick it holds at clamp(ln(0.6 p) / ln 1.02 − (((ln L + L/10) / ln 1.05) / 10 + 1.5 CON + paralysis resistance), 5, 90)%, L the current guild level, and it ends at once when no monsters are left. Meanwhile the stat bonus to attack and defense is lost.
 - **Level-up HP:** the guild's hits; two times in three, d(hits / 5) more; and d(CON − 16) for CON above 16.
-- **Quests:** from level 5, at the guild's quest chance (w32).
+- **Quests:** from level 5, at the guild's quest chance (w32). 5% of the time the Questmaster lets you off. Above level 15 a quarter are "return one item" (level 1 to Int(Q / 1.5) + 1, worth 100 or more, not cursed); the rest "defeat one monster" of a random type up to level found Q = CInt(L / 25), 1-10 (from the type's first 40% of the time, else from level Q; spawn weights below 10 rarely). A pinned character with a quest open may file for forfeit (not with a cursed item worn): the guild loses Int(ln(L + 1)) levels and the hits they brought.
+- **Old age:** past 98% of the race's lifespan, each tick kills at Int(Rnd × 100) < 5 + ln(age% − 98).
 
 **Treasure** (`treasure.rs`):
 - **Containers:**
@@ -325,10 +326,11 @@ behaviour is a known gap, not a choice.
   character whose best guild level is 5 or below); the original's raise odds,
   complications and CON loss; a member raised in town gets the window's +10.
 - **Stand-ins replaced by the original rules:** paralysis wear-off (ported, and paralysis ends
-  with the fight), poison and disease ticking in fights, guild quests, pits, chutes, water
-  and quicksand, companion join offers, charm and binding, death from old age.
-- **Theft and monster spells:** match the original, including theft's gold rule and
-  monster spells hitting the whole party.
+  with the fight), poison and disease ticking in fights (ported), guild quests (ported), pits,
+  chutes, water and quicksand, companion join offers, charm (ported) and binding, death from
+  old age (ported).
+- **Theft and monster spells (ported):** match the original, including theft's gold rule
+  and monster spells hitting the target and its own companions only.
 - **Real-time timers:** where the original runs a rule on a wall-clock timer (ailments,
   water and quicksand, binding decay, old age, room refills), one tick is one combat round
   in a fight and one step outside. **Deliberate change:** idling never advances them.
@@ -380,8 +382,7 @@ can be changed in `patches/modern.toml` or here.
 - **Companions**: up to four. A bind lasts 30 steps x binding level x strength (Mage
   members 1.5x; +4% per CHA point above 10; the original's leaving rule is to be ported);
   badly hurt companions may wander off.
-- **City**: the bank pays fees when the purse runs short (as the original). A guild's
-  quest asks for a monster from floor level/5 (the original's choice isn't read yet).
+- **City**: the bank pays fees when the purse runs short (as the original).
 - The Teleporter trap moves the whole party, and the container is lost.
 - **Squares**: water may hurt members wearing 12+ defense of gear (a 1 in 4 chance per
   step); quicksand hurts and may swallow a loose item; extinguish squares strip spell

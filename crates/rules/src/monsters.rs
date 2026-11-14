@@ -65,11 +65,8 @@ pub fn resist(c: &Character, d: &GameData, slot: usize) -> i32 {
 }
 
 /// Whether a new group is peaceful: a good group meeting a good leader, or a neutral
-/// group 40% of the time (MORDOR.EXE). Quest monsters always fight.
+/// group 40% of the time (MORDOR.EXE).
 pub fn peaceful(g: &mut Game, d: &GameData, m: usize) -> bool {
-    if g.party.iter().any(|c| c.quest == Some(m)) {
-        return false;
-    }
     match d.monsters[m].w(31) {
         0 => g.party[0].alignment == 0,
         1 => g.party[0].chance(0.4),
@@ -419,9 +416,10 @@ fn thieves(g: &mut Game, d: &GameData, m: usize, j: usize, dmg: i32) {
     let name = g.party[j].name.clone();
     let floor = g.pos().floor as f64;
     let c = &mut g.party[j];
-    if mon.specials & DESTROY != 0 && !c.items.is_empty() {
+    // A random pack slot, 2-40, empty as often as not (sub0E85).
+    let s = 1 + c.roll(39) as usize;
+    if mon.specials & DESTROY != 0 && s < c.items.len() {
         let protect = (45 - i32::from(mon.level) + 2 * i32::from(c.stats[DEX]) - 2 * i32::from(mon.stats[5])).clamp(25, 90);
-        let s = c.roll(c.items.len() as u32) as usize;
         let it = &d.items[c.items[s].item];
         if c.d100() > protect && it.level - 2 <= mon.level && !(500..512).contains(&it.w(10)) && c.items[s].item != crate::game::HANDS {
             let h = c.items.remove(s);
@@ -451,10 +449,10 @@ fn thieves(g: &mut Game, d: &GameData, m: usize, j: usize, dmg: i32) {
     if took > 0 {
         said.push(format!("{took}{}", d.t(0x68ce_5a87)));
     }
-    let loose: Vec<usize> = (0..c.items.len()).filter(|&s| !c.items[s].equipped && c.items[s].item != crate::game::HANDS).collect();
-    let item = x <= 10.0 && !loose.is_empty();
+    // An item from slot 3-41, if that slot holds one not worn.
+    let s = 2 + c.roll(39) as usize;
+    let item = x <= 10.0 && s < c.items.len() && !c.items[s].equipped && c.items[s].item != crate::game::HANDS;
     if item {
-        let s = loose[c.roll(loose.len() as u32) as usize];
         let h = c.items.remove(s);
         g.say(format!("{}{}\"{}{}{}{name}!\"", mon.name, d.t(0x8e06_2137), d.t(0x6702_d10c), d.items[h.item].name, d.t(0x89d0_00f1)));
     }
@@ -463,9 +461,14 @@ fn thieves(g: &mut Game, d: &GameData, m: usize, j: usize, dmg: i32) {
         let named = format!("\"{name}\"{}{you}", d.t(0x3b35_7578));
         g.tell(j, MONSTER_HIT, you, Some(named));
     }
-    if runs && let Some(f) = g.fight.as_mut() {
-        f.foes.iter_mut().filter(|f| f.monster == m && f.hp > 0).take(1).for_each(|f| f.hp = 0);
-        f.gold += took;
+    // A thief that runs takes its loot along; one that stays gives the gold back when
+    // the fight is won.
+    if let Some(f) = g.fight.as_mut() {
+        if runs {
+            f.foes.iter_mut().filter(|f| f.monster == m && f.hp > 0).take(1).for_each(|f| f.hp = 0);
+        } else {
+            f.gold += took;
+        }
     }
 }
 
@@ -479,35 +482,50 @@ fn monster_spell(g: &mut Game, d: &GameData, m: usize, j: usize) -> bool {
         return false;
     }
     let c = &mut g.party[j];
-    let classes: Vec<i16> = (0..16).filter(|b| mon.spells >> b & 1 != 0).collect();
+    let classes: Vec<i32> = (0..18).filter(|b| mon.long(24) >> b & 1 != 0).collect();
     if classes.is_empty() || c.chance(0.1) || !d.monster_types.get(mon.kind as usize).is_some_and(|t| t.contains("Mage")) && c.chance(0.5) {
         return false;
     }
     let class = classes[c.roll(classes.len() as u32) as usize];
     let lv = i32::from(mon.level);
     let lo = (f64::from(lv) - f64::from(lv) / 3.0).round_ties_even().max(1.0) as i32;
-    let fits: Vec<usize> = (0..d.spells.len())
-        .filter(|&s| d.spells[s].class == class && (lo..=lv + 1).contains(&i32::from(d.spells[s].level)) && d.spells[s].base > 0 && d.spells[s].per_level > 0)
-        .collect();
-    let Some(&s) = fits.get(c.roll(fits.len().max(1) as u32) as usize) else {
+    let fits: Vec<usize> = (0..d.spells.len()).filter(|&s| i32::from(d.spells[s].class) == class && (lo..=lv + 1).contains(&i32::from(d.spells[s].level))).collect();
+    // A spell without hits isn't cast; the monster attacks instead.
+    let Some(&s) = fits.get(c.roll(fits.len().max(1) as u32) as usize).filter(|&&s| d.spells[s].base > 0 && d.spells[s].per_level > 0) else {
         return false;
     };
     let sp = &d.spells[s];
-    let raw = crate::magic::hits(c, sp, (f64::from(mon.power_level) / 4.0).floor(), false);
+    let l = (f64::from(mon.power_level) / 4.0).floor();
     g.say(format!("The {} casts {}!", mon.name, sp.name));
-    let n = usize::try_from(sp.targets.max(1)).unwrap_or(1);
-    let hit: Vec<usize> = std::iter::once(j).chain(g.living().into_iter().filter(|&k| k != j)).take(n).collect();
-    for k in hit {
-        let c = &g.party[k];
-        let slot = usize::try_from(sp.resist).unwrap_or(99);
-        let res = if slot < 12 { resist(c, d, slot) } else { 0 } + 2 * i32::from((c.stats[WIS] - 15).max(0));
-        let dmg = (raw * (1.0 - f64::from(res.min(100)) / 100.0)).round_ties_even() as i32;
-        if dmg > 0 {
-            let name = c.name.clone();
-            struck(g, k, format!("{}\"{}\"{} {dmg}{}", d.t(0xcd84_4714), sp.name, d.t(0x48d1_78ea), d.t(0x6434_a9bd)), format!("{name} takes {dmg}."));
-            hurt(g, d, k, dmg);
+    // The target, then its own companions, up to w6 (4 at most) of them, each with its
+    // own roll (fn0FF5); a kill spell (effect 100) counts only if it kills.
+    let slot = usize::try_from(sp.resist).unwrap_or(99);
+    let res = |r: i32| f64::from(r.min(100)) / 100.0;
+    let c = &g.party[j];
+    let wis = 2 * i32::from((c.stat(d, WIS) - 15).max(0));
+    let mut dmg = (crate::magic::hits(&mut g.party[j], sp, l, false) * (1.0 - res(if slot < 12 { resist(&g.party[j], d, slot) } else { 0 } + wis))).round_ties_even() as i32;
+    if sp.effect == 100 && dmg < g.party[j].hp {
+        dmg = 0;
+    }
+    let name = g.party[j].name.clone();
+    if dmg > 0 {
+        struck(g, j, format!("{}\"{}\"{} {dmg}{}", d.t(0xcd84_4714), sp.name, d.t(0x48d1_78ea), d.t(0x6434_a9bd)), format!("{name} takes {dmg}."));
+    }
+    for k in (0..g.party[j].companions.len().min(usize::try_from(sp.targets.clamp(0, 4)).unwrap_or(0))).rev() {
+        let cm = &d.monsters[g.party[j].companions[k].monster];
+        let r = if slot < 12 { i32::from(cm.resist[slot]) } else { 0 };
+        let mut hit = (crate::magic::hits(&mut g.party[j], sp, l, false) * (1.0 - res(r))).round_ties_even() as i32;
+        let comp = &mut g.party[j].companions[k];
+        if sp.effect == 100 && hit < comp.hp {
+            hit = 0;
+        }
+        comp.hp -= hit;
+        if comp.hp <= 0 {
+            let m = g.party[j].companions.remove(k).monster;
+            g.say(format!("The {} dies.", d.monsters[m].name));
         }
     }
+    hurt(g, d, j, dmg);
     true
 }
 
