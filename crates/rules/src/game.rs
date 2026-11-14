@@ -1929,6 +1929,18 @@ mod tests {
         g.party[0].gold = 10_000_000;
         g.raise_companion(&d, 0).unwrap();
         assert!(g.party[0].companions.len() == 1 || g.party[0].companions[0].hp == 9);
+        // A breathing companion burns the monsters (monCompanionAttack).
+        let drake = (0..d.monsters.len()).find(|&m| d.monsters[m].specials & 8 != 0 && d.monsters[m].power_level > 20).unwrap();
+        let mut h = Game::new(hero(&d, "Keeper", 0, 1, 1, 5));
+        h.enter_dungeon(&d).unwrap();
+        h.party[0].companions.push(crate::monsters::Companion { monster: drake, hp: 500, max_hp: 500, bind: 100, id: 0 });
+        let foes = (0..4).map(|_| crate::combat::Foe { monster: orc, hp: 1000, max_hp: 1000, group: 0 }).collect();
+        h.fight = Some(crate::combat::Fight { foes, round: 0, order: None, back: h.pos(), lair: false, peaceful: false, chest: None, defending: vec![false], gold: 0, opening: None, offers: vec![0] });
+        let t = Tuning::load(&[]).unwrap();
+        for _ in 0..20 {
+            h.companions_act(&d, &t, 0);
+        }
+        assert!(h.fight.as_ref().unwrap().foes.iter().any(|f| f.hp < 1000));
         g.party[0].companions[0].id = 0;
         let known = g.companion_sell_price(&d, 0);
         g.party[0].companions[0].id = 2;

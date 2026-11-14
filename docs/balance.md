@@ -164,6 +164,7 @@ are listed at the end. Notation:
 - **Companions** (sub0C00, fn0D78, fn0B6C): each member keeps up to four. Each tick a bound companion breaks a level of binding at max(1, 2 × power / ln 3 − best level / ln 12 × |binding / 2|) in 200; one that joined of its own will (binding −10) drifts toward 0 at max(0.5, 15 × hurt) in 200. It leaves at ((24 ln(power + 1) − 2 CInt(4.5 |binding|) − 4 ln(best level / 10 + 1) − CHA / 2) / 2 + 15 × hurt) / 2 in 200 (0-90), or when its binding reaches 0; bound for life (100) it never leaves. A bound one that leaves turns on the party two alignments apart, 75% if evil, 15% if neutral, joining the monsters (unless they are two alignments from it) or starting a fight. A peaceful group's offer to join is taken with J; while it stands the group doesn't turn. The Fear trap scares off all but companions bound for life.
   - Each member acts, then its companions. Companions that were hit can be electrocuted and stoned too. A dead companion keeps its slot: a raise spell brings it back at 85 + its CON in 100 (98 at most; Resurrect full, the others 1 hit), else it is lost; the morgue raises it for CLng(max hits × 1244.34 × level found) at 75 + CON in 100, back at full hits, else lost.
   - A charmed or joining companion is known by its master's ID skill against CInt((30 + level found) × ln((power + 5)/10 + 1)): level 0 within it, 1 short, 2 by 5, 3 by 15. Confinement pays 0.9 × value / (s + 1.15) / (level + 1), identifies one level for 0.13 × value / ((s/2 + 1) × 0.9) / level + 1, and restocks only monsters found in the dungeon.
+  - A companion breathes (50%, 80% against stronger and 20% against weaker monsters) on every group, each front monster in turn until one survives (4 kills at most); acid, shocks and spells (caster level power / 6) hit the targeted group. Each may instead strike another member and its companions, at 999 / power × (members and living companions) / 20 × 2 for breath (2-40%), × 1.5 for spells (1-40%), × 1 for acid and shocks (0.5-20%). Breath, acid and shocks do (Int((Rnd × N + 1)/2) + N/4 or N/2) × 0.7, N from the companion's power and the victim's level / 10, less half the victim's resistance.
 
 **Original bugs the remake fixes:**
 1. The player's hit roll passes defense 0 (players hit 97%); the monster's defense is used.
@@ -349,8 +350,7 @@ behaviour is a known gap, not a choice.
   levels, bank item storage, Pool, restocking and the minor items): match the original by
   default. Where a rule would hurt play on a phone, it comes back to the owner as its own
   decision first.
-- **Still to port** (2026-11-14): companions' breath, acid, shocks and spells, with their
-  friendly fire (monCompanionAttack); Confinement's Realign; the Seer's failure rolls,
+- **Still to port** (2026-11-14): Confinement's Realign; the Seer's failure rolls,
   item search and own-floor lair rule; Wait for Rescue; bank item storage and Pool moving
   bank balances; Combine. Teleport and Displacement wait on the owner (they take typed
   offsets).

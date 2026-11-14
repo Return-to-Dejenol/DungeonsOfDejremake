@@ -593,10 +593,13 @@ impl Game {
                 return;
             }
             let Some(comp) = self.party[i].companions.get(k).filter(|c| c.hp > 0) else { continue };
+            let cm = comp.monster;
+            self.companion_specials(d, t, i, cm);
+            let Some(f) = self.fight.as_ref() else { return };
             let Some(fi) = f.pick(crate::ai::Target::Weakest) else {
                 return;
             };
-            let c = &d.monsters[comp.monster];
+            let c = &d.monsters[cm];
             let foe = &d.monsters[f.foes[fi].monster];
             let mut mult = f64::from(c.single(46)).max(1.0) + knack_bonus(self, c, foe.power_level.max(0) as u32, 4.0);
             if foe.flags & 2 != 0 && c.flags & SEES_INVISIBLE == 0 {
@@ -606,6 +609,107 @@ impl Game {
             if dmg > 0 {
                 let verb = format!("'s {} hits", c.name);
                 self.damage_foe(d, t, i, fi, dmg, &verb, None, 0.25);
+            }
+        }
+    }
+
+    /// A companion's breath, acid, shocks and spells (monCompanionAttack). Breath (50%,
+    /// 80% against stronger, 20% against weaker monsters) hits every group, each front
+    /// monster after another until one survives (4 kills at most); acid, shocks and
+    /// spells hit the targeted group. Each may instead strike another party member and its
+    /// companions (fn0D64): 999 / power x (members and companions) / 20 x 2 (breath,
+    /// 2-40%), x 1.5 (spells, 1-40%), x 1 (acid and shocks, 0.5-20%).
+    fn companion_specials(&mut self, d: &GameData, t: &Tuning, i: usize, cm: usize) {
+        let mon = &d.monsters[cm];
+        let ml = f64::from(mon.power_level.max(1));
+        let crowd = (0..self.party.len()).map(|j| 1 + self.party[j].companions.iter().filter(|c| c.hp > 0).count()).sum::<usize>() as f64;
+        let stray = |g: &mut Game, x: f64, lo: f64, hi: f64| -> Option<usize> {
+            let r = &mut g.party[i];
+            if r.rnd() * 100.0 >= (999.0 / ml * crowd / 20.0 * x).clamp(lo, hi) {
+                return None;
+            }
+            let j = (r.rnd() * (g.party.len() - 1) as f64).round_ties_even() as usize;
+            (j != i && j < g.party.len()).then_some(j)
+        };
+        // fn0E4A: N from the companion's power and the victim's level / 10.
+        let hits = |r: &mut Character, quarter: bool, victim: f64, res: i16| {
+            let dmg = (f64::from(element_hit(r, ml + 1.0, victim, 10.0, quarter)) * 0.7).round_ties_even();
+            (dmg - dmg * f64::from(res.max(0)) / 2.0 * 0.01).round_ties_even() as i32
+        };
+        let strike_member = |g: &mut Game, j: usize, quarter: bool, slot: usize| {
+            let top = f64::from(*g.party[j].levels.iter().max().unwrap_or(&1));
+            let res = resist(&g.party[j], d, slot) as i16;
+            let dmg = hits(&mut g.party[i], quarter, top, res);
+            g.say(format!("The {} strikes {} for {dmg}!", mon.name, g.quoted(j)));
+            for k in 0..g.party[j].companions.len() {
+                let c = &d.monsters[g.party[j].companions[k].monster];
+                let dmg = hits(&mut g.party[i], quarter, f64::from(c.power_level), c.resist[slot]);
+                companion_hurt(g, d, j, k, dmg);
+            }
+            hurt(g, d, j, dmg);
+        };
+        let Some(front) = self.fight.as_ref().and_then(|f| f.alive().next()) else { return };
+        let them = f64::from(d.monsters[self.fight.as_ref().unwrap().foes[front].monster].power_level);
+        if mon.specials & (FIRE_BREATH | COLD_BREATH) != 0 {
+            let odds = if them > ml * 1.25 { 80 } else if them < ml * 0.75 { 20 } else { 50 };
+            let slot = if mon.specials & FIRE_BREATH != 0 { FIRE } else { COLD };
+            if self.party[i].roll(100) < odds {
+                if let Some(j) = stray(self, 2.0, 2.0, 40.0) {
+                    strike_member(self, j, true, slot);
+                } else {
+                    let groups = self.fight.as_ref().map(|f| f.groups_from(0)).unwrap_or_default();
+                    for gr in groups {
+                        for _ in 0..5 {
+                            let Some((fi, m)) = self.fight.as_ref().and_then(|f| f.front(gr).map(|fi| (fi, f.foes[fi].monster))) else { break };
+                            let dmg = hits(&mut self.party[i], true, f64::from(d.monsters[m].power_level), d.monsters[m].resist[slot]);
+                            if dmg <= 0 || !self.damage_foe(d, t, i, fi, dmg, &format!("'s {} breathes on", mon.name), None, 0.25) {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Acid and shocks, then a spell, at the targeted group's front monster.
+        for (bit, slot) in [(ACID, ACID_RES), (ELECTROCUTE, ELECTRIC)] {
+            if mon.specials & bit == 0 {
+                continue;
+            }
+            if let Some(j) = stray(self, 1.0, 0.5, 20.0) {
+                strike_member(self, j, false, slot);
+            } else if let Some((fi, m)) = self.fight.as_ref().and_then(|f| f.alive().next().map(|fi| (fi, f.foes[fi].monster))) {
+                let dmg = hits(&mut self.party[i], false, f64::from(d.monsters[m].power_level), d.monsters[m].resist[slot]);
+                if dmg > 0 {
+                    self.damage_foe(d, t, i, fi, dmg, &format!("'s {} burns", mon.name), None, 0.25);
+                }
+            }
+        }
+        let classes: Vec<i32> = (0..18).filter(|b| mon.long(24) >> b & 1 != 0).collect();
+        let r = &mut self.party[i];
+        if classes.is_empty() || r.chance(0.1) || !d.monster_types.get(mon.kind as usize).is_some_and(|ty| ty.contains("Mage")) && r.chance(0.5) {
+            return;
+        }
+        let class = classes[r.roll(classes.len() as u32) as usize];
+        let lv = i32::from(mon.level);
+        let lo = (f64::from(lv) - f64::from(lv) / 3.0).round_ties_even().max(1.0) as i32;
+        let fits: Vec<usize> = (0..d.spells.len()).filter(|&s| i32::from(d.spells[s].class) == class && (lo..=lv + 1).contains(&i32::from(d.spells[s].level))).collect();
+        let Some(&s) = fits.get(r.roll(fits.len().max(1) as u32) as usize).filter(|&&s| d.spells[s].base > 0 && d.spells[s].per_level > 0) else { return };
+        let sp = &d.spells[s];
+        let l = (ml / 6.0).floor();
+        if let Some(j) = stray(self, 1.5, 1.0, 40.0) {
+            let dmg = crate::magic::hits(&mut self.party[i], sp, l, false) as i32;
+            self.say(format!("The {} casts {} on {}!", mon.name, sp.name, self.quoted(j)));
+            hurt(self, d, j, dmg);
+            return;
+        }
+        let Some(gr) = self.fight.as_ref().and_then(|f| f.alive().next().map(|fi| f.foes[fi].group)) else { return };
+        for _ in 0..sp.targets.max(1) {
+            let Some((fi, m, hp)) = self.fight.as_ref().and_then(|f| f.front(gr).map(|fi| (fi, f.foes[fi].monster, f.foes[fi].hp))) else { break };
+            let target = &d.monsters[m];
+            let res = if sp.resist >= 0 { f64::from(target.resist[sp.resist as usize].clamp(0, 100)) } else { 0.0 };
+            let dmg = (crate::magic::hits(&mut self.party[i], sp, l, false) * (1.0 - res / 100.0)).round_ties_even() as i32;
+            if dmg <= 0 || target.flags & 4 != 0 || sp.effect == 100 && dmg < hp || !self.damage_foe(d, t, i, fi, dmg, &format!("'s {} casts {} at", mon.name, sp.name), None, 0.25) {
+                break;
             }
         }
     }
