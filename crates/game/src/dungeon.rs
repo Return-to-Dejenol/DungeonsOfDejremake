@@ -50,15 +50,15 @@ impl App {
             v.enable("cmdAction(3)", chest.is_some() && g.fight.as_ref().is_none_or(|f| f.chest.is_none()));
             // The monster groups: up to four lines, "1. 2 Zombies".
             if let Some(f) = &g.fight {
-                let mut groups: Vec<(usize, usize)> = Vec::new();
+                let mut groups: Vec<(u8, usize, usize)> = Vec::new();
                 for foe in f.foes.iter().filter(|f| f.hp > 0) {
-                    match groups.iter_mut().find(|x| x.0 == foe.monster) {
-                        Some(x) => x.1 += 1,
-                        None => groups.push((foe.monster, 1)),
+                    match groups.iter_mut().find(|x| x.0 == foe.group) {
+                        Some(x) => x.2 += 1,
+                        None => groups.push((foe.group, foe.monster, 1)),
                     }
                 }
                 v.show("picMonGroups", true).show("lblCurrentGroup", true);
-                for (i, (m, n)) in groups.iter().take(4).enumerate() {
+                for (i, (_, m, n)) in groups.iter().take(4).enumerate() {
                     let k = format!("lblMonster({i})");
                     v.show(&k, true).text(&k, format!("{}. {n} {}", i + 1, monsters::plural(d, *m, *n, g.lead().buffs.see_invisible)));
                     if f.peaceful {

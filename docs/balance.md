@@ -54,6 +54,13 @@ are listed at the end. Notation:
   - 10 each, plus the stat bonus, plus the best guild's A/D, plus items.
   - The stat bonus is +2 per point of STR and DEX above 12, +1 per point of INT and WIS above 14, with mirror penalties below 8. In the remake it is +4 per point of the melee rating above 12 (or below 8).
   - Guild A/D: each guild adds its w114/w116 every Int(w119) levels up to its HP cap (w1). After that the gap is CInt((w1 / 2 + L / 18) / (w119, + 3 for Nomad)) levels, up to level w118. Nomad reaches 45/45 by level 30.
+- **Encounters** (MONGEN, fn0D4D; rooms, sub0A91):
+  - A room's lair monster comes 75% of the time. Otherwise a type the room allows (any type 1% of the time, never in the floor-1 starter rooms, areas below 18), weighted by the spawn weights (w26) of its monsters within the window, then one of those monsters by weight. The window is the floor (+1 on a stud square) down by 1 half the time plus CInt(floor/5), 1 two times in three on a stud square, at most the floor; it widens up to three times if empty. The starter rooms re-roll anything above power level 2 except Slaves.
+  - Up to w4 groups (fewer w4/8 of the time, 1-4), each a follower of the one before by its w49: 0 its w48 type 1-3 levels below, 1 up to 3 below or the same, 2 the same level, 3 the same monster, 4-6 Slaves or monster 5, above 7 monster w49 − 7; followers match the leader's kin (w62 = w63) when they can, and are never solitary (w32 = 1). Each group has half to all of its w32.
+  - Gold: each group's share times ln(n + 1)² / 2, summed, times all the monsters / 2.
+  - A peaceful group offers 1 to 4 of its own to join when d3000 ≤ 10 CHA − 10 (level found − 1), if neutral or of the leader's alignment and no stronger than the leader's level.
+  - Rooms keep their monsters, wounded, until killed. An emptied room refills after max(120, 1200 + 300 × floor / 2 − 5 × the floor's rooms without monsters) ticks, and monsters twice that old are replaced. Coming into a room with hostile monsters gives each group a free attack at d100 < 50 + 5 × (its DEX − its target's), 5 at least.
+  - The original's type pick counted the first type twice in its running total; the remake weights the types as intended.
 - **Monsters:**
   - Each group attacks one member a round, chosen 100/50/25/12/6 by party position, with up to five of its monsters. Each attacker hits the member, or one of its companions.
   - Monster swings use its attack (w0), level (w37), STR (w38) and multiplier (w46). Critical adds 2 and backstab 1.
@@ -70,7 +77,7 @@ are listed at the end. Notation:
   - Companions earn their master a quarter.
   - The remake's depth and catch-up bonuses apply on top.
 - **Peace:** a good group meets a good leader in peace, and a neutral group 40% of the time. Each round a peaceful group turns hostile at a chance set by the two alignments (15-100) minus 7.5 ln CHA.
-- **Leaving** a fight gives the monsters a free attack, 50% + 5% per point of their DEX over the leader's (5% at least).
+- **Leaving** a fight gives each group a free attack at its target, 50% + 5% per point of its DEX over the target's (5-98%); the monsters stay in the room.
 - **Ailments** (timAilment_Timer; one tick is a combat round in a fight and a step outside, never while idle):
   - Poison and disease wear off when d200 + 2 (CON − 10) − 2 × strength beats 185 (195 for disease). Until then poison costs 2 hits a tick and disease 1. An ailment already there isn't renewed.
   - Paralysis has the monster's power level p as its strength. Each tick it holds at clamp(ln(0.6 p) / ln 1.02 − (((ln L + L/10) / ln 1.05) / 10 + 1.5 CON + paralysis resistance), 5, 90)%, L the current guild level, and it ends at once when no monsters are left. Meanwhile the stat bonus to attack and defense is lost.
@@ -290,7 +297,7 @@ without saying so. The rule now: match the original, except where this document 
 a deliberate change. Each of these is to be ported; until it is, the remake's current
 behaviour is a known gap, not a choice.
 
-- **Encounters:** match the original. Up to four linked groups (followers by the
+- **Encounters (ported):** match the original. Up to four linked groups (followers by the
   monster's link fields), spawn weights over the floor window, a 1% wanderer, the
   floor-1 starter rule, half to all of the group size, lairs giving their monster 75% of
   the time with followers. Rooms keep their monsters, wounded, until killed and refill

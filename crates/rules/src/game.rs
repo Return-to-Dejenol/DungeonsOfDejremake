@@ -788,15 +788,17 @@ pub fn saved(dir: &Path) -> Vec<String> {
 }
 
 
-/// A running game: the party plus what isn't saved (the fight, cleared rooms, log).
+/// A running game: the party plus what isn't saved (the fight, the rooms, log).
 /// `party[0]` is the character the player controls.
 pub struct Game {
     pub party: Vec<Character>,
     pub fight: Option<Fight>,
     /// A chest left in the room after a fight, until the party moves on.
     pub chest: Option<Chest>,
-    /// (floor, area) cleared since the last visit to town.
-    pub cleared: Vec<(usize, i16)>,
+    /// Each (floor, area) visited: its monsters and when it was stocked.
+    pub rooms: std::collections::HashMap<(usize, i16), crate::combat::Room>,
+    /// Ailment ticks so far (a combat round or a step each): the rooms' clock.
+    pub ticks: u64,
     pub log: Vec<String>,
     /// The store's and Confinement's shared stock (saves/store.json).
     pub store: Store,
@@ -817,7 +819,7 @@ pub const SQUARE: usize = 2;
 
 impl Game {
     pub fn new(lead: Character) -> Self {
-        Self { party: vec![lead], fight: None, chest: None, cleared: Vec::new(), log: Vec::new(), store: Store::default(), hall: Hall::default(), said: Default::default(), boxes: Vec::new() }
+        Self { party: vec![lead], fight: None, chest: None, rooms: Default::default(), ticks: 0, log: Vec::new(), store: Store::default(), hall: Hall::default(), said: Default::default(), boxes: Vec::new() }
     }
 
     pub fn lead(&self) -> &Character {
@@ -1001,7 +1003,6 @@ impl Game {
             store.restock(data, &mut self.party[0], days);
             self.store = store;
         }
-        self.cleared.clear();
         self.fight = None;
     }
 
@@ -1028,8 +1029,8 @@ impl Game {
             if !f.peaceful {
                 return self.say("You can't walk away; choose Run.");
             }
-            // Peaceful monsters let you walk on through.
-            self.fight = None;
+            // Peaceful monsters let you walk on through; they stay in their room.
+            self.shelve(data);
         }
         let Some(f) = self.floor(data) else { return };
         let Pos { x, y, facing, .. } = self.pos();
@@ -1047,7 +1048,7 @@ impl Game {
         let back = self.pos();
         self.set_pos(data, Pos { x: nx, y: ny, ..back });
         self.walk_effects(data, t);
-        self.arrive(data, back);
+        self.arrive(data, t, back);
     }
 
     /// Each step: an ailment tick, SP trickles back, and a Healer in the party slowly
@@ -1070,6 +1071,7 @@ impl Game {
     /// off when d200 + 2 (CON - 10) - 2 x strength beats 185 (195), else bite for 2 (1);
     /// paralysis wears off at `paralysis_stay`, and at once with no monsters left.
     pub(crate) fn ailments(&mut self, data: &GameData) {
+        self.ticks += 1;
         let foes = self.fight.as_ref().is_some_and(|f| !f.over());
         let mut hurt = Vec::new();
         for (i, m) in self.party.iter_mut().enumerate().filter(|(_, m)| m.alive()) {
@@ -1094,7 +1096,7 @@ impl Game {
     }
 
     /// Effects of the square just entered, then a possible encounter.
-    pub(crate) fn arrive(&mut self, data: &GameData, back: Pos) {
+    pub(crate) fn arrive(&mut self, data: &GameData, t: &Tuning, back: Pos) {
         let Some(f) = self.floor(data) else { return };
         let Pos { x, y, floor, .. } = self.pos();
         let sq = f.square(x, y);
@@ -1172,8 +1174,10 @@ impl Game {
             self.set_pos(data, Pos { x: tx, y: ty, floor: tf, facing: self.pos().facing });
             return self.say(data.t(if self.party.len() == 1 { 0x6e7f_7df7 } else { 0xd5ce_1bdb }));
         }
-        if area != 0 && !self.cleared.contains(&(floor, area)) {
-            self.spawn(data, area, flags & square::STUD != 0, back);
+        // A room's monsters meet the party as it comes in (sub0980).
+        let was = (back.floor == floor).then(|| f.square(back.x, back.y).area);
+        if area != 0 && was != Some(area) {
+            self.enter_room(data, t, area, flags & square::STUD != 0, back);
         }
     }
 
@@ -1210,7 +1214,7 @@ impl Game {
         let name = format!("\"{}\"", m.name);
         self.say(format!("{name}{}", data.t(0x7acb_4bd0)));
         if self.living().is_empty() {
-            self.fight = None;
+            self.shelve(data);
             self.say("The whole party has fallen. Your bodies lie where you fell.");
             for m in &mut self.party {
                 m.pos = Pos::default();
@@ -1237,7 +1241,7 @@ impl Game {
             }
         } else if flags & square::STAIRS_DOWN != 0 && p.floor < data.floors.len() {
             self.set_pos(data, Pos { floor: p.floor + 1, ..p });
-            self.arrive(data, p);
+            self.arrive(data, t, p);
         } else if flags & square::CHUTE != 0 && self.party.iter().filter(|m| m.alive()).all(|m| m.levitates(data)) {
             self.set_pos(data, Pos { floor: (p.floor + 1).min(data.floors.len()), ..p });
         } else {
@@ -1647,7 +1651,7 @@ mod tests {
         g.enter_dungeon(&d).unwrap();
         let kobold = d.monsters.iter().position(|m| m.name == "Kobold").unwrap();
         let foes = vec![crate::combat::Foe { monster: kobold, hp: 50, max_hp: 50, group: 0 }];
-        g.fight = Some(crate::combat::Fight { foes, round: 0, order: Some(Act::Defend), back: g.pos(), lair: false, peaceful: false, chest: None, defending: vec![false; 2], gold: 0, opening: None });
+        g.fight = Some(crate::combat::Fight { foes, round: 0, order: Some(Act::Defend), back: g.pos(), lair: false, peaceful: false, chest: None, defending: vec![false; 2], gold: 0, opening: None, offers: vec![0] });
         g.party[0].hp = 3;
         // MORDOR.EXE: no heals while hostile monsters are about (fn1448).
         let act = crate::ai::decide(&g, &d, &t, 1);
@@ -1724,6 +1728,46 @@ mod tests {
         assert_eq!(raise_odds(c, 1), 98);
         c.stats[CON] = 3;
         assert_eq!((raise_odds(c, 1), raise_odds(c, 2)), (33, 43));
+    }
+
+    /// MONGEN (fn0D4D): linked groups by w4, half to all of w32 each, nothing of spawn
+    /// weight 0 outside a lair; a room keeps its wounded monsters (sub0A91).
+    #[test]
+    fn encounters_as_the_original() {
+        let (d, t) = (data(), Tuning::load(&[]).unwrap());
+        let mut g = Game::new(hero(&d, "Scout", 0, 1, 1, 5));
+        g.enter_dungeon(&d).unwrap();
+        let f = &d.floors[0];
+        let rooms: Vec<usize> = (18..f.areas.len()).filter(|&k| f.areas[k].monster_types != 0 && f.areas[k].lair == 0).collect();
+        let mut multi = 0;
+        for &k in &rooms {
+            for _ in 0..20 {
+                let groups = g.mongen(&d, &f.areas[k], k as i16, false);
+                let Some(&(first, _)) = groups.first() else { continue };
+                multi += usize::from(groups.len() > 1);
+                assert!(groups.len() <= 4 && d.monsters[first].weight > 0, "{groups:?}");
+                for &(m, n) in &groups {
+                    let w = d.monsters[m].w(32).max(1) as u32;
+                    assert!((w / 2..=w).contains(&n) || n == 1, "{} x{n} of {w}", d.monsters[m].name);
+                }
+            }
+        }
+        assert!(multi > 0, "no encounter had followers");
+        let area = rooms[0];
+        let i = f.squares.iter().position(|s| s.area as usize == area).unwrap();
+        g.set_pos(&d, Pos { x: i % f.width, y: i / f.width, floor: 1, facing: 0 });
+        for _ in 0..50 {
+            g.rooms.clear();
+            g.enter_room(&d, &t, area as i16, false, g.pos());
+            if g.fight.is_some() && g.living().len() == 1 {
+                break;
+            }
+        }
+        let Some(fight) = g.fight.as_mut() else { panic!("no encounter in 50 tries") };
+        fight.foes[0].hp = 1;
+        g.shelve(&d);
+        g.enter_room(&d, &t, area as i16, false, g.pos());
+        assert_eq!(g.fight.as_ref().map(|f| f.foes[0].hp), Some(1), "the wounded monster is still there");
     }
 
     /// sub0F74 and fn110D: two hands, one item per class, worn stat modifiers; wearable
@@ -1915,8 +1959,8 @@ mod tests {
         let dagger = d.items.iter().position(|i| i.name == "Iron Dagger").unwrap();
         let p = f64::from(d.items[dagger].price);
         assert_eq!(crate::store::buy_price(&d, dagger, 0, 1), (1.5 * p / 1.15).round() as u64);
-        let kobold = &d.monsters[d.monsters.iter().position(|m| m.name == "Kobold").unwrap()];
-        let gold = crate::treasure::gold(&mut c, kobold, 3, false);
+        let kobold = d.monsters.iter().position(|m| m.name == "Kobold").unwrap();
+        let gold = crate::treasure::gold(&mut c, &d, &[(kobold, 3)], false);
         assert!((400..10_000).contains(&gold), "{gold}");
     }
 

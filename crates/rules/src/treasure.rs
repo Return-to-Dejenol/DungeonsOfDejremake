@@ -6,7 +6,7 @@ use crate::{
     Tuning,
     game::{CHAR_HIT, Character, DEX, Game, INT, THIEVING, WIS},
     magic::{GREATER_POTION_OF_EXPERIENCE, POTION_OF_EXPERIENCE},
-    mdr::{GameData, Monster, Words, square},
+    mdr::{GameData, Words, square},
 };
 
 /// In MORDOR.EXE's numbering, so the monsters' trap lists apply.
@@ -87,19 +87,24 @@ pub fn chest_for(g: &mut Game, d: &GameData, m: usize, lair: bool) -> Option<Che
     Some(c)
 }
 
-/// A group's gold (MORDOR.EXE): B = e x 10^(e - 0.5) / 4 for the monster's gold exponent
-/// e, a quarter to five quarters of it times log2(level + 1) (500 at least), then
-/// ln(n + 1)² / 2 x n / 2 for n monsters, and half again if magically locked.
-pub fn gold(r: &mut Character, mon: &Monster, n: u32, locked: bool) -> u64 {
-    let e = f64::from(mon.gold_exp);
-    let b = (e * 10f64.powf(e - 0.5) / 4.0).round_ties_even();
-    let mut one = ((b / 4.0 + r.rnd() * b / 2.0 + r.rnd() * b / 2.0) * (f64::from(mon.level) + 1.0).log2()).round_ties_even();
-    if one < 500.0 {
-        one = (r.rnd() * 500.0).floor() + 2.0;
+/// An encounter's gold (fn0D4D): for each group of n, B = e x 10^(e - 0.5) / 4 for its
+/// monster's gold exponent e, a quarter to five quarters of it times log2(level + 1)
+/// (500 at least), times ln(n + 1)² / 2; the sum times all the monsters / 2, and half
+/// again if magically locked.
+pub fn gold(r: &mut Character, d: &GameData, groups: &[(usize, u32)], locked: bool) -> u64 {
+    let mut pot = 0.0;
+    for &(m, n) in groups {
+        let mon = &d.monsters[m];
+        let e = f64::from(mon.gold_exp);
+        let b = (e * 10f64.powf(e - 0.5) / 4.0).round_ties_even();
+        let mut one = ((b / 4.0 + r.rnd() * b / 2.0 + r.rnd() * b / 2.0) * (f64::from(mon.level) + 1.0).log2()).round_ties_even();
+        if one < 500.0 {
+            one = (r.rnd() * 500.0).floor() + 2.0;
+        }
+        pot += one * (f64::from(n) + 1.0).ln().powi(2) / 2.0;
     }
-    let n = f64::from(n);
-    let pot = one * (n + 1.0).ln().powi(2) / 2.0 * n / 2.0;
-    (pot * if locked { 1.5 } else { 1.0 }) as u64
+    let all: u32 = groups.iter().map(|g| g.1).sum();
+    (pot * f64::from(all) / 2.0 * if locked { 1.5 } else { 1.0 }) as u64
 }
 
 /// Thieving in percent against the container's monster (MORDOR.EXE): WIS / 4 + DEX / 2,

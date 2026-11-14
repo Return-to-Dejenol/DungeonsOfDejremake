@@ -5,7 +5,7 @@
 use crate::{
     Tuning,
     ai::{self, Act, Target},
-    game::{BACKSTAB, CHAR_HIT, CRITICAL, Character, DEX, Game, Held, MONSTER_HIT, Pos},
+    game::{BACKSTAB, CHA, CHAR_HIT, CRITICAL, Character, DEX, Game, Held, MONSTER_HIT, Pos},
     mdr::{GameData, Words},
     treasure::Chest,
 };
@@ -35,6 +35,15 @@ pub struct Fight {
     pub gold: u64,
     /// A member opening the chest mid-fight, and the rounds it still takes.
     pub opening: Option<(usize, u32)>,
+    /// Per group, how many of a peaceful group offer to join (0 none).
+    pub offers: Vec<u8>,
+}
+
+/// A room's monsters (fn0F88): when it was last stocked, in ailment ticks, and the
+/// encounter still there, wounded, until killed.
+pub struct Room {
+    pub born: u64,
+    pub fight: Option<Fight>,
 }
 
 impl Fight {
@@ -112,42 +121,196 @@ pub(crate) fn size_term(data: &GameData, c: &Character, monster: usize) -> f64 {
     f64::from(data.races[c.race].w(28) - data.monsters[monster].w(64)) / 10.0
 }
 
+/// Ticks before an emptied room refills (sub0A91): 1200 + 300 x floor / 2, less 5 for
+/// each room of the floor without monsters, 120 at least.
+fn refill(floor: usize, rooms: usize, held: usize) -> u64 {
+    (1200.0 + 300.0 * floor as f64 / 2.0 - 5.0 * rooms.saturating_sub(held) as f64).max(120.0) as u64
+}
+
 impl Game {
-    /// Rooms hold their lair monster, or a group of a type the room allows.
-    pub(crate) fn spawn(&mut self, data: &GameData, area: i16, stud: bool, back: Pos) {
+    /// Entering a room (sub0A91): its monsters are still there, wounded, until killed;
+    /// an emptied room refills after `refill` ticks, and one whose monsters are twice
+    /// that old gets new ones. Hostile monsters may strike as the party comes in.
+    pub(crate) fn enter_room(&mut self, data: &GameData, t: &Tuning, area: i16, stud: bool, back: Pos) {
         let floor = self.pos().floor;
         // A few squares name a room past the floor's room list; nothing lives there.
         let Some(a) = data.floors[floor - 1].areas.get(area as usize) else {
             return;
         };
-        let level = floor as i16 + i16::from(stud);
-        let lair = a.lair != 0;
-        let pick = if lair {
-            data.monsters.iter().position(|m| m.id == a.lair)
-        } else {
-            if !self.party[0].chance(0.6) {
-                self.cleared.push((floor, area));
+        let held = self.rooms.iter().filter(|(k, r)| k.0 == floor && r.fight.is_some()).count();
+        let span = refill(floor, data.floors[floor - 1].areas.len(), held);
+        let room = self.rooms.remove(&(floor, area));
+        let age = room.as_ref().map_or(u64::MAX, |r| self.ticks - r.born);
+        match room {
+            Some(Room { fight: Some(mut f), born }) if age <= 2 * span => {
+                f.back = back;
+                f.defending = vec![false; self.party.len()];
+                self.fight = Some(f);
+                self.rooms.insert((floor, area), Room { born, fight: None });
+            }
+            Some(r @ Room { fight: None, .. }) if age <= span => {
+                self.rooms.insert((floor, area), r);
                 return;
             }
-            let fits: Vec<usize> = (0..data.monsters.len()).filter(|&i| a.monster_types >> data.monsters[i].kind & 1 != 0 && data.monsters[i].level == level.min(16)).collect();
-            (!fits.is_empty()).then(|| fits[self.party[0].roll(fits.len() as u32) as usize])
-        };
-        let Some(m) = pick else { return };
-        let mon = &data.monsters[m];
-        // Bigger parties meet bigger groups.
-        let extra = self.party.len() as u32 / 2;
-        let n = if lair { 1 } else { 1 + self.party[0].roll(mon.group.max(1) as u32 + extra) };
-        let foes = (0..n).map(|_| Foe { monster: m, hp: new_hp(&mut self.party[0], i32::from(mon.hp)), max_hp: 0, group: 0 }).map(|f| Foe { max_hp: f.hp, ..f }).collect();
-        let peaceful = crate::monsters::peaceful(self, data, m);
-        let chest = crate::treasure::chest_for(self, data, m, lair);
-        let gold = crate::treasure::gold(&mut self.party[0], mon, n, chest.as_ref().is_some_and(|c| c.magic_lock));
-        if peaceful {
-            // MONSMOD.monShowMonsters: "2 Dwarves offer to 'j'oin."
-            let offer = format!("{n} {}{}", crate::monsters::plural(data, m, n as usize, true), data.t(if n == 1 { 0xc1ae_c013 } else { 0x57df_86ca }));
-            self.said[MONSTER_HIT].clone_from(&offer);
-            self.say(offer);
+            _ => {
+                self.rooms.insert((floor, area), Room { born: self.ticks, fight: None });
+                if a.monster_types == 0 {
+                    return;
+                }
+                let groups = self.mongen(data, a, area, stud);
+                if groups.is_empty() {
+                    return;
+                }
+                self.muster(data, &groups, a.lair, back);
+            }
         }
-        self.fight = Some(Fight { foes, round: 0, order: None, back, lair, peaceful, chest, defending: vec![false; self.party.len()], gold, opening: None });
+        // The monsters' free attack on the party's coming in (sub0A64, mode 1).
+        if self.fight.as_ref().is_some_and(|f| !f.peaceful) {
+            self.free_attacks(data, t, 999);
+        }
+    }
+
+    /// Each hostile group strikes its target when d100 < 50 + 5 x (its DEX - the
+    /// target's), 5 at least and `cap` at most (sub0A64: entering, or leaving at 98).
+    fn free_attacks(&mut self, data: &GameData, t: &Tuning, cap: i32) {
+        let Some(f) = self.fight.as_ref() else { return };
+        for gr in f.groups_from(0) {
+            let Some(m) = self.fight.as_ref().and_then(|f| f.front(gr)).map(|fi| self.fight.as_ref().unwrap().foes[fi].monster) else { continue };
+            let Some(j) = crate::monsters::target(self) else { return };
+            let p = (50 + 5 * (i32::from(data.monsters[m].stats[5]) - i32::from(self.party[j].stats[DEX]))).clamp(5, cap);
+            if self.party[0].d100() < p {
+                crate::monsters::attack(self, data, t, gr, Some(j));
+            }
+        }
+    }
+
+    /// MORDOR.EXE's MONGEN (fn0D4D): the room's lair monster 75% of the time; else a type
+    /// the room allows (any type 1% of the time outside the floor-1 starter rooms),
+    /// weighted by the spawn weights (w26) of its monsters within the window, then one of
+    /// those by weight. Then up to w4 groups, each a follower of the one before (w48
+    /// type, w49 how, w62/w63 kin), of half to all of its group size (w32).
+    pub(crate) fn mongen(&mut self, data: &GameData, a: &crate::mdr::Area, area: i16, stud: bool) -> Vec<(usize, u32)> {
+        let floor = self.pos().floor as i16;
+        let top = floor + i16::from(stud);
+        let starter = floor == 1 && area < 18;
+        let r = &mut self.party[0];
+        let ms = &data.monsters;
+        let in_window = |i: usize, kind: usize, w: i16| ms[i].kind as usize == kind && (top - w..=top).contains(&ms[i].level);
+        let weight = |kind: usize, w: i16| (0..ms.len()).filter(|&i| in_window(i, kind, w)).map(|i| ms[i].weight.max(0) as u32).sum::<u32>();
+        let mut first = if a.lair != 0 && r.rnd() * 100.0 <= 75.0 { ms.iter().position(|m| m.id == a.lair) } else { None };
+        for _ in 0..100 {
+            if first.is_some() {
+                break;
+            }
+            // The window: 1 level below half the time (the original's 2- and 3-level
+            // branches can't be reached), more by floor / 5; on a stud square 1 two times
+            // in three.
+            let mut w = i16::from(r.d100() < 50) + (f64::from(floor) / 5.0).round_ties_even() as i16;
+            if stud && r.rnd() * 75.0 < 50.0 {
+                w = 1;
+            }
+            w = w.min(floor);
+            let types = data.monster_types.len();
+            let allowed: Vec<usize> = (0..types).filter(|&k| a.monster_types >> k & 1 != 0 && ms.iter().any(|m| m.kind as usize == k)).collect();
+            let kind = if r.d100() < 2 && !starter || allowed.is_empty() {
+                r.roll(types as u32) as usize
+            } else {
+                let ws: Vec<(usize, i16)> = allowed.iter().map(|&k| (k, weight(k, w).min(i16::MAX as u32) as i16)).collect();
+                pick(r, &ws).unwrap_or(allowed[r.roll(allowed.len() as u32) as usize])
+            };
+            // An empty window widens, three times at most.
+            let Some(w) = (w..=w + 3).find(|&w| weight(kind, w) > 0) else { continue };
+            let fits: Vec<(usize, i16)> = (0..ms.len()).filter(|&i| in_window(i, kind, w)).map(|i| (i, ms[i].weight)).collect();
+            let Some(m) = pick(r, &fits) else { continue };
+            // The floor-1 starter rooms hold only the weakest (and Slaves).
+            if starter && ms[m].power_level > 2 && m != 4 {
+                continue;
+            }
+            first = Some(m);
+        }
+        let Some(first) = first else { return Vec::new() };
+        let w4 = ms[first].w(4).max(1);
+        let mut n = w4;
+        if f64::from(r.roll(100)) < f64::from(n) / 8.0 * 100.0 {
+            n -= (r.rnd() * (f64::from(w4) / 2.0 + 1.0)) as i16;
+        }
+        let mut chain = vec![first];
+        let mut kin = ms[first].w(63);
+        while chain.len() < n.clamp(1, 4) as usize {
+            let prev = *chain.last().unwrap();
+            let p = &ms[prev];
+            let next = match p.w(49) {
+                3 => Some(prev),
+                4 | 6 => Some(4),
+                5 => Some(5),
+                m if m > 7 => Some((m - 7) as usize),
+                mode => {
+                    let (down, up) = match mode {
+                        0 if p.level > 1 => (3, -1),
+                        0 | 1 => (3, 0),
+                        _ => (0, 0),
+                    };
+                    let fit = |i: usize, kin: i16| ms[i].kind == p.w(48) && (p.level - down..=p.level + up).contains(&ms[i].level) && ms[i].w(32) != 1 && i != prev && (kin <= 0 || ms[i].w(62) == kin);
+                    let fits = |kin: i16| (0..ms.len()).filter(|&i| fit(i, kin)).map(|i| (i, ms[i].weight)).collect::<Vec<_>>();
+                    pick(r, &fits(kin)).or_else(|| pick(r, &fits(0)))
+                }
+            };
+            let Some(next) = next.filter(|&i| i < ms.len()) else { break };
+            kin = ms[next].w(63);
+            chain.push(next);
+        }
+        chain
+            .into_iter()
+            .map(|m| {
+                let g = f64::from(ms[m].w(32).max(1));
+                (m, ((g - r.rnd() * (g / 2.0)).round_ties_even() as u32).max(1))
+            })
+            .collect()
+    }
+
+    /// The encounter from MONGEN's groups: their hits, peace, container and gold, and the
+    /// peaceful groups' offers to join (d3000 <= 10 CHA - 10 (level found - 1)).
+    fn muster(&mut self, data: &GameData, groups: &[(usize, u32)], lair: i16, back: Pos) {
+        let first = groups[0].0;
+        let mut foes = Vec::new();
+        for (gi, &(m, n)) in groups.iter().enumerate() {
+            for _ in 0..n {
+                let hp = new_hp(&mut self.party[0], i32::from(data.monsters[m].hp));
+                foes.push(Foe { monster: m, hp, max_hp: hp, group: gi as u8 });
+            }
+        }
+        let peaceful = crate::monsters::peaceful(self, data, first);
+        let is_lair = lair != 0 && data.monsters[first].id == lair;
+        let chest = crate::treasure::chest_for(self, data, first, is_lair);
+        let gold = crate::treasure::gold(&mut self.party[0], data, groups, chest.as_ref().is_some_and(|c| c.magic_lock));
+        let lead = &self.party[0];
+        let (cha, align, level) = (i32::from(lead.stats[CHA]), lead.alignment, lead.level());
+        let mut offers = vec![0; groups.len()];
+        for (gi, &(m, n)) in groups.iter().enumerate() {
+            let mon = &data.monsters[m];
+            let kin = mon.w(31) == 1 || mon.w(31) == i16::from(align);
+            if peaceful && kin && u32::try_from(mon.power_level).unwrap_or(0) <= level && self.party[0].roll(3000) as i32 + 1 <= (10 * cha - 10 * (i32::from(mon.level) - 1)).max(0) {
+                offers[gi] = (self.party[0].roll(n.min(4)) + 1) as u8;
+                // MONSMOD.monShowMonsters: "2 Dwarves offer to 'j'oin."
+                let k = usize::from(offers[gi]);
+                let offer = format!("{k} {}{}", crate::monsters::plural(data, m, k, true), data.t(if k == 1 { 0xc1ae_c013 } else { 0x57df_86ca }));
+                self.said[MONSTER_HIT].clone_from(&offer);
+                self.say(offer);
+            }
+        }
+        self.fight = Some(Fight { foes, round: 0, order: None, back, lair: is_lair, peaceful, chest, defending: vec![false; self.party.len()], gold, opening: None, offers });
+    }
+
+    /// The encounter, as it stands, goes back to its room (fleeing, walking past peaceful
+    /// monsters, or the party falling).
+    pub(crate) fn shelve(&mut self, data: &GameData) {
+        let Some(f) = self.fight.take() else { return };
+        let Pos { x, y, floor, .. } = self.pos();
+        if floor > 0 && !f.over() {
+            let area = data.floors[floor - 1].square(x, y).area;
+            let born = self.rooms.get(&(floor, area)).map_or(self.ticks, |r| r.born);
+            self.rooms.insert((floor, area), Room { born, fight: Some(f) });
+        }
     }
 
     /// One combat round: each able party member acts, then the companions, then the
@@ -181,8 +344,13 @@ impl Game {
         if f.over() {
             return self.win(data, t);
         }
+        // Each group attacks its own target (MULTIMOD.mdrmulMonsterAttack).
         if !f.peaceful {
-            crate::monsters::attack(self, data, t);
+            for gr in f.groups_from(0) {
+                if self.fight.as_ref().is_some_and(|f| f.front(gr).is_some()) {
+                    crate::monsters::attack(self, data, t, gr, None);
+                }
+            }
         }
         // A round is a tick of the ailment timer (docs/balance.md).
         self.ailments(data);
@@ -212,21 +380,16 @@ impl Game {
         }
     }
 
-    /// Walking away: the monsters get a free attack, 50% + 5% per point their DEX beats
-    /// the leader's (5% at least), as the original's leaving combat.
+    /// Walking away: each hostile group gets a free attack (`free_attacks`, 98 at most);
+    /// the monsters stay in their room.
     fn leave(&mut self, data: &GameData, t: &Tuning) {
         let Some(f) = self.fight.as_ref() else { return };
-        let m = f.alive().next().map(|fi| f.foes[fi].monster);
         let (peaceful, back) = (f.peaceful, f.back);
-        if let Some(m) = m
-            && !peaceful
-        {
-            let p = (50 + 5 * (i32::from(data.monsters[m].stats[5]) - i32::from(self.party[0].stats[DEX]))).max(5);
-            if self.party[0].d100() <= p {
-                crate::monsters::attack(self, data, t);
-            }
+        if !peaceful {
+            self.free_attacks(data, t, 98);
         }
-        if self.fight.take().is_some() {
+        if self.fight.is_some() {
+            self.shelve(data);
             self.ailments(data);
             self.set_pos(data, back);
             crate::ai::tend(self, data, t);
@@ -246,7 +409,8 @@ impl Game {
     /// hit that doesn't kill, ends the turn; a kill moves on to the next foe.
     fn melee(&mut self, data: &GameData, t: &Tuning, i: usize, target: Target) {
         self.provoke();
-        let Some(mut fi) = self.fight.as_ref().and_then(|f| f.pick(target)) else {
+        // A group is fought at its front monster.
+        let Some(mut fi) = self.fight.as_ref().and_then(|f| f.pick(target).and_then(|p| f.front(f.foes[p].group))) else {
             return;
         };
         let name = self.party[i].name.clone();
@@ -403,9 +567,6 @@ impl Game {
         let Some(f) = self.fight.take() else { return };
         // Paralysis ends with the fight (timAilment_Timer).
         self.ailments(_data);
-        let Pos { x, y, floor, .. } = self.pos();
-        let area = _data.floors[floor - 1].square(x, y).area;
-        self.cleared.push((floor, area));
         match f.chest {
             // A container keeps the gold until it is opened.
             Some(mut chest) => {
@@ -446,6 +607,18 @@ impl Game {
             self.say(line);
         }
     }
+}
+
+/// A pick weighted by the table's weights; none when they sum to 0.
+fn pick(r: &mut Character, v: &[(usize, i16)]) -> Option<usize> {
+    let total: u32 = v.iter().map(|&(_, w)| w.max(0) as u32).sum();
+    let mut x = r.roll(total.max(1));
+    v.iter().find(|&&(_, w)| {
+        let w = w.max(0) as u32;
+        let hit = x < w;
+        x = x.saturating_sub(w);
+        hit
+    }).map(|&(i, _)| i)
 }
 
 /// A new monster's hits: the table's, give or take a quarter (MORDOR.EXE).

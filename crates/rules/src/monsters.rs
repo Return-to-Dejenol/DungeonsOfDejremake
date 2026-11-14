@@ -123,7 +123,7 @@ fn element_hit(c: &mut Character, x: f64, level: f64, per: f64, quarter: bool) -
 }
 
 /// The target member for a group's round: 100/50/25/12/6 by party position.
-fn target(g: &mut Game) -> Option<usize> {
+pub(crate) fn target(g: &mut Game) -> Option<usize> {
     let living: Vec<usize> = g.living().into_iter().filter(|&j| !g.party[j].status.stoned).collect();
     let weights: Vec<u32> = (0..living.len()).map(|k| 100 >> k.min(6)).collect();
     let mut r = g.party[0].roll(weights.iter().sum::<u32>().max(1));
@@ -138,15 +138,15 @@ fn target(g: &mut Game) -> Option<usize> {
 
 /// The group's round: breath or acid first, then up to five of its members attack one
 /// character (or its companions), then the special attacks of those that hit.
-pub fn attack(g: &mut Game, d: &GameData, t: &Tuning) {
+pub fn attack(g: &mut Game, d: &GameData, t: &Tuning, group: u8, at: Option<usize>) {
     let Some(f) = g.fight.as_ref() else { return };
-    let awake: Vec<usize> = f.alive().take(5).collect();
+    let awake: Vec<usize> = f.alive().filter(|&fi| f.foes[fi].group == group).take(5).collect();
     let Some(&first) = awake.first() else { return };
     let m = f.foes[first].monster;
     let mon = &d.monsters[m];
     let opener = f.opening.map(|(j, _)| j);
     let defending = f.defending.clone();
-    let Some(j) = target(g) else { return };
+    let Some(j) = at.or_else(|| target(g)) else { return };
     let (lcur, top) = (g.party[j].level(), *g.party[j].levels.iter().max().unwrap_or(&1));
     if mon.specials & (FIRE_BREATH | COLD_BREATH) != 0 && g.party[j].d100() <= odds(top, mon.power_level, 80) {
         let (slot, kind) = if mon.specials & FIRE_BREATH != 0 { (FIRE, "fire") } else { (COLD, "frost") };
