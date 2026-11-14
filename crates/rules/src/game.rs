@@ -1625,6 +1625,34 @@ impl Game {
         true
     }
 
+    /// Waiting for rescue (cmdWait_Click): each day the body is found at (16 - F) in N,
+    /// half again more on a square with flag 23; N is 10,000 for the first
+    /// ln(F)² x 100 + 21 days and 1,000 after (100 in floor 1's first rooms). It ages the
+    /// days waited and lands in the morgue. The message box's text.
+    pub fn wait_for_rescue(&mut self, data: &GameData, i: usize) -> Option<String> {
+        let Life::Dead(p) = self.party[i].life else { return None };
+        let f = p.floor.max(1) as f64;
+        let (bonus, area) = data.floors.get(p.floor.wrapping_sub(1)).map_or((false, 0), |fl| (fl.square(p.x, p.y).flags >> 23 & 1 != 0, fl.square(p.x, p.y).area));
+        let m = &mut self.party[i];
+        let mut days = 0u32;
+        // Bounded: the chance is never below 1 in 10,000 a day.
+        while days < 10_000_000 {
+            days += 1;
+            let n = if p.floor == 1 && area <= 18 { 100.0 } else if f64::from(days) < f.ln().powi(2) * 100.0 + 21.0 { 10_000.0 } else { 1_000.0 };
+            let mut odds = (16.0 - f).max(0.1);
+            if bonus {
+                odds += 16.0 - f;
+            }
+            if m.rnd() * n <= odds {
+                break;
+            }
+        }
+        m.age_days += days;
+        m.life = Life::InMorgue;
+        m.pos = Pos::default();
+        Some(format!("{}{days}{}", data.t(0xe5ef_49ce), data.t(0x9fba_2bcc)))
+    }
+
     /// FRMMORG's rescue, told in the original's words.
     pub fn rescue(&mut self, data: &GameData, i: usize) {
         let Life::Dead(p) = self.party[i].life else { return };
@@ -1880,6 +1908,10 @@ mod tests {
         (g.party[0].gold, g.party[0].bank) = (0, 0);
         g.rescue(&d, 0);
         assert!(matches!(g.party[0].life, Life::Dead(_)), "no rescue without the gold");
+        // Waiting for rescue costs days, not gold (cmdWait_Click).
+        let before = g.party[0].age_days;
+        assert!(g.wait_for_rescue(&d, 0).is_some());
+        assert!(g.party[0].life == Life::InMorgue && g.party[0].age_days > before);
         g.party[0].life = Life::InMorgue;
         g.raise(&d, 0);
         assert_eq!(g.party[0].life, Life::InMorgue, "level 9 pays");

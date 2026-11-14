@@ -353,8 +353,16 @@ impl App {
         if let Some((k, cost)) = comp {
             v.text("cmdCommand(2)", format!("{}{}{}{}", d.t(0x4c84_5f59), d.monsters[g.party[0].companions[k].monster].name, d.t(0x6bc1_25fe), commas(cost)));
         }
-        v.enable("cmdCommand(0)", in_morgue.is_some()).enable("cmdCommand(1)", false).enable("cmdCommand(2)", comp.is_some()).enable("cmdCommand(3)", lost.is_some());
+        // The original's dungeon button for the dead, "Wait for Rescue", in place of Pickup.
+        v.text("cmdCommand(1)", d.t(0xfc5d_f418));
+        v.enable("cmdCommand(0)", in_morgue.is_some()).enable("cmdCommand(1)", lost.is_some()).enable("cmdCommand(2)", comp.is_some()).enable("cmdCommand(3)", lost.is_some());
         let ev = desk.window(ctx, "frmCityMorgue", v, false);
+        if ev.click("cmdCommand(1)")
+            && let Some(i) = lost
+            && let Some(s) = g.wait_for_rescue(d, i)
+        {
+            self.boxes.push((d.t(0xfa49_19a4).into(), s));
+        }
         if ev.click("cmdCommand(2)") && comp.is_some() {
             match g.raise_companion(d, 0) {
                 Ok(s) => g.log.push(s),
