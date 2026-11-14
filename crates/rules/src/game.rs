@@ -19,7 +19,7 @@ use crate::{
     treasure::Chest,
 };
 
-pub const SAVE_VERSION: u32 = 3;
+pub const SAVE_VERSION: u32 = 4;
 /// Item 0, "Hands": every character's first slot, the weapon when no other is wielded
 /// (two swings at half damage). It can't be sold, dropped, stolen or destroyed.
 pub const HANDS: usize = 0;
@@ -88,9 +88,19 @@ pub struct Held {
     /// Uses left for potions, scrolls and spell-casting items; 0 for the rest.
     #[serde(default)]
     pub charges: i16,
-    /// Fully identified (name, abilities and curses known).
+    /// How unknown it is (MORDOR.EXE's identification level): 0 fully identified, 1-3
+    /// needing that many steps at the store.
     #[serde(default)]
-    pub known: bool,
+    pub id: u8,
+    /// Saves before version 4 kept only "fully identified".
+    #[serde(default, rename = "known", skip_serializing)]
+    pub(crate) old_known: bool,
+}
+
+impl Held {
+    pub fn known(&self) -> bool {
+        self.id == 0
+    }
 }
 
 /// Lasting conditions; the city cures them on arrival.
@@ -351,8 +361,44 @@ impl Character {
     }
 
     /// Melee rating (2 x STR + DEX) / 3, the decided stand-in for STR (docs/balance.md).
-    pub(crate) fn melee_rating(&self) -> i32 {
-        (2 * i32::from(self.stats[STR]) + i32::from(self.stats[DEX])) / 3
+    pub(crate) fn melee_rating(&self, d: &GameData) -> i32 {
+        (2 * i32::from(self.stat(d, STR)) + i32::from(self.stat(d, DEX))) / 3
+    }
+
+    /// The worn items' stat modifiers (w33-38; sub0F74).
+    pub fn mods(&self, d: &GameData) -> [i16; 6] {
+        let mut m = [0; 6];
+        for h in self.items.iter().filter(|h| h.equipped) {
+            for (s, v) in m.iter_mut().enumerate() {
+                *v += d.items[h.item].w(33 + s);
+            }
+        }
+        m
+    }
+
+    /// A stat with the worn modifiers, as MORDOR.EXE counts it for attack and defense,
+    /// casting, thieving and identifying (natural stats alone for max SP, guilds and
+    /// item requirements).
+    pub fn stat(&self, d: &GameData, s: usize) -> i16 {
+        self.stats[s] + self.mods(d)[s]
+    }
+
+    /// A worn item's flag (w7; sub11B9): 0 levitate, 1 invisible, 2 protection, 3 see
+    /// invisible.
+    fn worn(&self, d: &GameData, bit: u32) -> bool {
+        self.items.iter().any(|h| h.equipped && d.items[h.item].long(7) >> bit & 1 != 0)
+    }
+
+    pub fn levitates(&self, d: &GameData) -> bool {
+        self.buffs.levitate || self.worn(d, 0)
+    }
+
+    pub fn unseen(&self, d: &GameData) -> bool {
+        self.buffs.invisible || self.worn(d, 1)
+    }
+
+    pub fn sees_invisible(&self, d: &GameData) -> bool {
+        self.buffs.see_invisible || self.worn(d, 3)
     }
 
     /// Attack and defense as MORDOR.EXE keeps them: 10 each, the stat bonus, the best
@@ -360,13 +406,15 @@ impl Character {
     /// of STR and DEX above 12, -4 below 8) on the melee rating, and STR above 15 adds
     /// defense (docs/balance.md).
     pub fn att_def(&self, data: &GameData, _t: &Tuning) -> (i32, i32) {
-        let r = self.melee_rating();
+        let r = self.melee_rating(data);
         // Paralysis takes the stat bonus away (sub0D1D).
         let still = self.status.paralysis > 0;
         let bonus = if still { 0 } else { 4 * ((r - 12).max(0) - (8 - r).max(0)) };
-        let strong = if still { 0 } else { (i32::from(self.stats[STR]) - 15).max(0) };
+        let strong = if still { 0 } else { (i32::from(self.stat(data, STR)) - 15).max(0) };
         let ad = |k: usize| self.guild_best(|g, l| guild_ad(data, g, l)[k]) as i32;
-        let p = f64::from(self.buffs.protection.max(1));
+        // A worn protection item holds Int(current level / 2) + 1 (sub0894).
+        let worn = if self.worn(data, 2) { self.level() as i32 / 2 + 1 } else { 0 };
+        let p = f64::from(self.buffs.protection.max(worn).max(1));
         let (mut a, mut d) = (10 + bonus + ad(0), 10 + bonus + ad(1) + strong + (3.0 * p.ln().powi(2)).round_ties_even() as i32);
         for h in self.items.iter().filter(|h| h.equipped) {
             a += i32::from(data.items[h.item].attack);
@@ -547,7 +595,10 @@ impl Character {
         Ok(if off { data.t(0x7edb_3449).into() } else { String::new() })
     }
 
-    /// One weapon, and one item of each other kind, may be equipped at a time.
+    /// Equipping or taking off an item (sub0F74, fn110D): two hands, the item class's
+    /// count, the guild rule (w42: 0 any joined guild, -1 the current one) and its level
+    /// CInt(3.97 x guild w112 x item w17), the natural stats (w26-31), and no stat pushed
+    /// below the race minimum.
     pub fn toggle_equip(&mut self, data: &GameData, slot: usize) -> Result<(), String> {
         let it = &data.items[self.items[slot].item];
         if self.items[slot].equipped {
@@ -566,15 +617,44 @@ impl Character {
             }
             return Ok(());
         }
-        if it.guilds & (1 << self.guild) == 0 {
-            return Err(data.t(0x3ed9_504a).into());
-        }
-        if crate::magic::consumable(data, self.items[slot].item) {
+        let class = |i: &crate::mdr::Item| data.item_type_class.get(i.kind as usize).copied().unwrap_or(-1);
+        let max = usize::try_from(class(it)).ok().and_then(|c| data.item_class_max.get(c)).copied().unwrap_or(0);
+        if max <= 0 {
             return Err(format!("{} is used, not worn.", it.name));
         }
-        let clash = |o: &crate::mdr::Item| if it.power > 0 { o.power > 0 } else { o.power == 0 && o.kind == it.kind };
-        for h in &mut self.items {
-            if h.equipped && clash(&data.items[h.item]) {
+        let worn = || self.items.iter().filter(|h| h.equipped && h.item != HANDS).map(|h| &data.items[h.item]);
+        let refuse = |id: u32| Err(data.t(id).into());
+        if worn().map(|o| o.w(22)).sum::<i16>() + it.w(22) > 2 {
+            return refuse(0xeda8_6a59);
+        }
+        if worn().filter(|o| class(o) == class(it)).count() >= max as usize {
+            return refuse(0xb9a9_fca7);
+        }
+        let can = |g: usize| it.guilds & (1 << g) != 0;
+        let need = |g: usize| ((f64::from(data.guilds[g].single(112)) * 3.97 * f64::from(it.w(17))).round_ties_even() as u32).max(1);
+        let joined: Vec<usize> = (0..self.levels.len()).filter(|&g| self.levels[g] > 0 && can(g)).collect();
+        if it.w(42) == 0 {
+            if joined.is_empty() {
+                return refuse(0x177d_4641);
+            }
+            if !joined.iter().any(|&g| self.levels[g] >= need(g)) {
+                return refuse(0x91a0_377e);
+            }
+        } else if !can(self.guild) {
+            return refuse(0x3ed9_504a);
+        } else if self.level() < need(self.guild) {
+            return refuse(0x4b92_dfcf);
+        }
+        if (0..6).any(|s| self.stats[s] < it.w(26 + s)) {
+            return refuse(0x0f97_d4af);
+        }
+        let mods = self.mods(data);
+        if (0..6).any(|s| self.stats[s] + mods[s] + it.w(33 + s) < data.races[self.race].stat_min[s]) {
+            return refuse(0x1735_6505);
+        }
+        // A weapon takes the place of Hands.
+        if class(it) == 0 {
+            for h in self.items.iter_mut().filter(|h| h.item == HANDS) {
                 h.equipped = false;
             }
         }
@@ -619,6 +699,12 @@ impl Character {
             c.macros = ai::preset(ai::Role::of(c.guild), |_| None);
             c.age_days = c.age_days.max(16 * 365);
         }
+        // Version 4 keeps the original's identification levels.
+        if c.version < 4 {
+            for h in &mut c.items {
+                h.id = if h.old_known { 0 } else { 2 };
+            }
+        }
         // Version 3 learns spells as MORDOR.EXE (about twice the guild level): macros
         // naming a spell no longer known are dropped.
         if c.version < 3 {
@@ -626,7 +712,7 @@ impl Character {
         }
         // Saves from before Hands was carried get it back in the first slot.
         if !c.items.iter().any(|h| h.item == HANDS) {
-            c.items.insert(0, Held { item: HANDS, equipped: false, charges: 0, known: true });
+            c.items.insert(0, Held { item: HANDS, equipped: false, charges: 0, id: 0, old_known: true });
         }
         c.version = SAVE_VERSION;
         Ok(c)
@@ -658,7 +744,7 @@ pub(crate) fn guild_ad(data: &GameData, g: usize, level: u32) -> [f64; 2] {
 /// and current guild level L.
 pub(crate) fn paralysis_stay(data: &GameData, c: &Character) -> f64 {
     let (p, l) = (f64::from(c.status.paralysis), f64::from(c.level().max(1)));
-    let save = ((l.ln() + l / 10.0) / 1.05f64.ln()) / 10.0 + 1.5 * f64::from(c.stats[CON]) + f64::from(crate::monsters::resist(c, data, 8));
+    let save = ((l.ln() + l / 10.0) / 1.05f64.ln()) / 10.0 + 1.5 * f64::from(c.stat(data, CON)) + f64::from(crate::monsters::resist(c, data, 8));
     ((0.6 * p).ln() / 1.02f64.ln() - save).clamp(5.0, 90.0)
 }
 
@@ -980,7 +1066,7 @@ impl Game {
         let foes = self.fight.as_ref().is_some_and(|f| !f.over());
         let mut hurt = Vec::new();
         for (i, m) in self.party.iter_mut().enumerate().filter(|(_, m)| m.alive()) {
-            let con = 2 * i32::from(m.stats[CON] - 10);
+            let con = 2 * i32::from(m.stat(data, CON) - 10);
             for (k, cure, dmg) in [(0, 185, 2), (1, 195, 1)] {
                 let strength = [m.status.poison, m.status.disease][k];
                 if strength > 0 {
@@ -1015,7 +1101,7 @@ impl Game {
             let dir = self.party[0].roll(4) as u8;
             self.turn_to(dir);
         }
-        let levitating = self.party.iter().filter(|m| m.alive()).all(|m| m.buffs.levitate);
+        let levitating = self.party.iter().filter(|m| m.alive()).all(|m| m.levitates(data));
         if flags & square::PIT != 0 && !levitating {
             for i in self.living() {
                 let dmg = 1 + self.party[i].roll(4 * floor as u32) as i32;
@@ -1145,7 +1231,7 @@ impl Game {
         } else if flags & square::STAIRS_DOWN != 0 && p.floor < data.floors.len() {
             self.set_pos(data, Pos { floor: p.floor + 1, ..p });
             self.arrive(data, p);
-        } else if flags & square::CHUTE != 0 && self.party.iter().filter(|m| m.alive()).all(|m| m.buffs.levitate) {
+        } else if flags & square::CHUTE != 0 && self.party.iter().filter(|m| m.alive()).all(|m| m.levitates(data)) {
             self.set_pos(data, Pos { floor: (p.floor + 1).min(data.floors.len()), ..p });
         } else {
             self.say("There are no stairs here.");
@@ -1223,19 +1309,19 @@ impl Game {
     /// Member `i`'s price for an item (CHA's passive included).
     pub fn buy_price(&mut self, data: &GameData, i: usize, item: usize) -> u64 {
         let s = self.stock(data).count(item);
-        store::cha_buy(&self.party[i], store::buy_price(data, item, s))
+        store::cha_buy(&self.party[i], data, store::buy_price(data, item, s))
     }
 
     pub fn sell_price(&mut self, data: &GameData, i: usize, slot: usize) -> u64 {
         let h = self.party[i].items[slot].clone();
         let s = self.stock(data).count(h.item);
-        store::cha_sell(&self.party[i], store::sell_price(data, &h, s))
+        store::cha_sell(&self.party[i], data, store::sell_price(data, &h, s))
     }
 
     pub fn identify_price(&mut self, data: &GameData, i: usize, slot: usize) -> u64 {
-        let item = self.party[i].items[slot].item;
-        let s = self.stock(data).count(item);
-        store::identify_price(data, item, s)
+        let h = self.party[i].items[slot].clone();
+        let s = self.stock(data).count(h.item);
+        store::identify_price(data, &h, s)
     }
 
     /// The store's services (FRMCTYS) answer in the original's words: Ok is the
@@ -1267,6 +1353,9 @@ impl Game {
         if (500..512).contains(&it.w(10)) {
             return data.t(0xdb51_2bd8).into();
         }
+        if self.party[i].items[slot].equipped && crate::magic::cursed(data, self.party[i].items[slot].item, self.party[i].alignment) {
+            return data.t(0x0997_b513).into();
+        }
         let price = self.sell_price(data, i, slot);
         let h = self.party[i].items.remove(slot);
         self.party[i].gold += price;
@@ -1281,12 +1370,13 @@ impl Game {
             return Err((0x4a17_88e0, data.t(0x22bd_be43).into()));
         }
         c.pay(cost);
-        c.items[slot].known = true;
+        // One step of identification (cmdID_Click).
+        c.items[slot].id = c.items[slot].id.saturating_sub(1);
         Ok(String::new())
     }
 
-    /// Uncursing an equipped item costs 1.6 x its price and takes it off; the item
-    /// stays cursed (MORDOR.EXE).
+    /// Uncursing an equipped item costs 1.6 x its price, takes it off and identifies it;
+    /// the item stays cursed (MORDOR.EXE).
     pub fn uncurse(&mut self, data: &GameData, i: usize, slot: usize) -> Result<String, (u32, String)> {
         let c = &mut self.party[i];
         let item = c.items[slot].item;
@@ -1296,7 +1386,7 @@ impl Game {
         }
         c.pay(cost);
         c.items[slot].equipped = false;
-        c.items[slot].known = false;
+        c.items[slot].id = 0;
         Ok(data.t(0x4549_b450).into())
     }
 
@@ -1609,6 +1699,35 @@ mod tests {
         assert_eq!(raise_odds(c, 1), 98);
         c.stats[CON] = 3;
         assert_eq!((raise_odds(c, 1), raise_odds(c, 2)), (33, 43));
+    }
+
+    /// sub0F74 and fn110D: two hands, one item per class, worn stat modifiers; wearable
+    /// spell items stay at 0 charges; identification levels and their prices.
+    #[test]
+    fn items_as_the_original() {
+        let d = data();
+        let item = |n: &str| d.items.iter().position(|i| i.name == n).unwrap();
+        let mut c = hero(&d, "Kit", 0, 1, 1, 5);
+        c.stats[STR] = 14;
+        c.stats[DEX] = 14;
+        let add = |c: &mut Character, n: &str| {
+            c.items.push(magic::new_held(&d, item(n), true));
+            c.items.len() - 1
+        };
+        let axe = add(&mut c, "Bronze Battle Axe");
+        assert_eq!(c.toggle_equip(&d, axe), Err(d.t(0xeda8_6a59).into()), "sword and shield fill both hands");
+        let chain = add(&mut c, "Bronze Chain Mail");
+        assert_eq!(c.toggle_equip(&d, chain), Err(d.t(0xb9a9_fca7).into()), "leather is worn already");
+        let leather = c.items.iter().position(|h| h.item == item("Leather Armor")).unwrap();
+        c.toggle_equip(&d, leather).unwrap();
+        c.toggle_equip(&d, chain).unwrap();
+        assert_eq!(c.stat(&d, DEX), 13, "chain mail costs a point of DEX");
+        assert!(!magic::consumable(&d, item("Crest of the Warrior")) && magic::consumable(&d, item("Potion of Might")));
+        let mut h = magic::new_held(&d, item("Bronze Chain Mail"), false);
+        h.id = 2;
+        let (p, full) = (crate::store::identify_price(&d, &h, 0), crate::store::sell_price(&d, &h, 0));
+        h.id = 0;
+        assert!(crate::store::sell_price(&d, &h, 0) > 2 * full && p > 0 && crate::store::identify_price(&d, &h, 0) == 0);
     }
 
     /// timAilment_Timer's paralysis: strength = power level, the stay roll, gone with no

@@ -130,9 +130,9 @@ impl App {
         v.enable("cmdUncurse", unc.is_some_and(|s| g.party[sel].items[s].equipped && magic::cursed(d, g.party[sel].items[s].item, g.party[sel].alignment)));
         v.text("txtID", idd.map_or(String::new(), |s| magic::item_name(d, &g.party[sel].items[s])));
         v.text("lblValue", idd.map_or(String::new(), |s| g.sell_price(d, sel, s).to_string()));
-        v.text("lblIDCost", idd.map_or(String::new(), |s| if g.party[sel].items[s].known { String::new() } else { g.identify_price(d, sel, s).to_string() }));
+        v.text("lblIDCost", idd.map_or(String::new(), |s| if g.party[sel].items[s].known() { String::new() } else { g.identify_price(d, sel, s).to_string() }));
         v.text("lblIDLevel", "");
-        v.enable("cmdSell", idd.is_some()).enable("cmdID", idd.is_some_and(|s| !g.party[sel].items[s].known)).enable("cmdIDInfo", idd.is_some());
+        v.enable("cmdSell", idd.is_some()).enable("cmdID", idd.is_some_and(|s| !g.party[sel].items[s].known())).enable("cmdIDInfo", idd.is_some());
         v.text("txtCombine", "").enable("txtCombine", false);
         let ev = desk.window(ctx, F, v, false);
         if let Some(r) = ev.index("elaItem").or(ev.index("elaItemInfo")) {

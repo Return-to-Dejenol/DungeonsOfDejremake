@@ -200,7 +200,7 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning) {
         mult += knack_bonus(g, mon, lcur, 2.0);
         mult -= size_term(d, &g.party[j], m);
         // An unseen target: -0.5 unless the monster sees invisible (sub0E85).
-        if g.party[j].buffs.invisible && mon.flags & SEES_INVISIBLE == 0 {
+        if g.party[j].unseen(d) && mon.flags & SEES_INVISIBLE == 0 {
             mult -= 0.5;
         }
         let dmg = swing(&mut g.party[j], i32::from(mon.attack), def, f64::from(mon.power_level), i32::from(mon.stats[0]), mult);
@@ -210,7 +210,7 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning) {
     let name = g.party[j].name.clone();
     if total > 0 {
         // MONSMOD: "2 Zombies hit for 13!"
-        let you = format!("{} {}{} {total}!", awake.len(), plural(d, m, awake.len(), g.party[j].buffs.see_invisible), d.t(0x0354_4daf));
+        let you = format!("{} {}{} {total}!", awake.len(), plural(d, m, awake.len(), g.party[j].sees_invisible(d)), d.t(0x0354_4daf));
         struck(g, j, you, format!("The {}{} hit {name} for {total}.", mon.name, if awake.len() > 1 { "s" } else { "" }));
         let at = g.log.len();
         if hurt(g, d, j, total) {
@@ -605,7 +605,7 @@ impl Game {
         if s == 0 {
             return Err((BUY, "None left.".into()));
         }
-        let price = crate::store::cha_buy(&self.party[0], companion_buy_price(d, m, s));
+        let price = crate::store::cha_buy(&self.party[0], d, companion_buy_price(d, m, s));
         let lead = &mut self.party[0];
         if lead.companions.len() >= MAX_COMPANIONS {
             return Err((BUY, d.t(0xa7db_2fb7).into()));
@@ -628,7 +628,7 @@ impl Game {
         let lead = &mut self.party[0];
         let c = lead.companions.remove(k);
         let s = self.store.companions.get(c.monster).copied().unwrap_or(0);
-        let price = crate::store::cha_sell(lead, (0.9 * companion_value(d, c.monster) / (f64::from(s.min(9)) + 1.15)).round_ties_even() as u64);
+        let price = crate::store::cha_sell(lead, d, (0.9 * companion_value(d, c.monster) / (f64::from(s.min(9)) + 1.15)).round_ties_even() as u64);
         lead.gold += price;
         if let Some(n) = self.store.companions.get_mut(c.monster)
             && *n < 9

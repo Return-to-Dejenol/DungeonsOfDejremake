@@ -399,7 +399,7 @@ impl App {
             (Some(3), Some(i)) => {
                 let h = &g.party[sel].items[i];
                 let it = &d.items[h.item];
-                msg = if h.known { format!("{}: attack {}, defense {}, worth {} gold.", magic::item_name(d, h), it.attack, it.defense, it.price) } else { format!("{} is unidentified.", magic::item_name(d, h)) };
+                msg = if h.known() { format!("{}: attack {}, defense {}, worth {} gold.", magic::item_name(d, h), it.attack, it.defense, it.price) } else { format!("{} is unidentified.", magic::item_name(d, h)) };
             }
             _ => {}
         }

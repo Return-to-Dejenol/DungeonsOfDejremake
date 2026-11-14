@@ -369,7 +369,11 @@ pub struct GameData {
     pub races: Vec<Race>,
     pub guilds: Vec<Guild>,
     pub item_types: Vec<String>,
+    /// Each item type's class (its w0), an index into `item_classes`.
+    pub item_type_class: Vec<i16>,
     pub item_classes: Vec<String>,
+    /// How many items of each class may be worn at once (its w0; 0 = used, not worn).
+    pub item_class_max: Vec<i16>,
     pub monster_types: Vec<String>,
     /// Each monster type's family (its w0), an index into `monster_families`: what typed
     /// spells (effects 75-99) match.
@@ -442,15 +446,15 @@ impl GameData {
             let gold_factor = c.i16();
             Guild { name, hp_per_level, hp_cap, hp_after, xp_factor, stat_req, alignments, abilities, spell_rates, races, gold_factor, rest: c.rest(start) }
         }).collect();
-        let mut names = |n: usize| section(n).map(|i| t.rec(i).str()).collect::<Vec<_>>();
-        let (item_types, item_classes) = (names(counts[2]), names(counts[3]));
-        let first = 7 + counts[0] + counts[1] + counts[2] + counts[3];
-        let monster_type_family = (first..first + counts[4]).map(|i| {
-            let mut c = t.rec(i);
-            c.str();
-            c.i16()
-        }).collect();
-        let (monster_types, monster_families) = (names(counts[4]), names(counts[5]));
+        // The four name lists; their records' w0 says the type's class or family.
+        let mut names = |n: usize| {
+            section(n).map(|i| {
+                let mut c = t.rec(i);
+                (c.str(), c.i16())
+            }).unzip::<_, _, Vec<_>, Vec<_>>()
+        };
+        let ((item_types, item_type_class), (item_classes, item_class_max)) = (names(counts[2]), names(counts[3]));
+        let ((monster_types, monster_type_family), (monster_families, _)) = (names(counts[4]), names(counts[5]));
 
         // Other files: record 0 version, then counts; data from `first`.
         let rows = |m: &Mdr<'_>, count_rec: usize, first: usize| (first..first + m.count(count_rec)).collect::<Vec<_>>();
@@ -533,7 +537,7 @@ impl GameData {
         let du = Mdr { b: m11, size: 20 };
         let floors = (1..=du.count(0)).map(|i| Floor::parse(&du, du.count(i).saturating_sub(1))).collect();
 
-        let mut d = Self { races, guilds, item_types, item_classes, monster_types, monster_type_family, monster_families, items, monsters, spells, floors, text: Default::default() };
+        let mut d = Self { races, guilds, item_types, item_type_class, item_classes, item_class_max, monster_types, monster_type_family, monster_families, items, monsters, spells, floors, text: Default::default() };
         crate::magic::add_remake_entries(&mut d);
         Ok(d)
     }

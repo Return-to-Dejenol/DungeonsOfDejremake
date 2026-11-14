@@ -285,16 +285,16 @@ impl Game {
             let (critical, backstab) = (f64::from(c.roll(100)) < crit, f64::from(c.roll(100)) < stab);
             if critical {
                 // DEX passive (docs/balance.md): +3% critical damage a point above 15.
-                mult += 5.0 * (1.0 + 0.03 * f64::from((c.stats[DEX] - 15).max(0)));
+                mult += 5.0 * (1.0 + 0.03 * f64::from((c.stat(data, DEX) - 15).max(0)));
             }
             if backstab {
                 mult += 2.0;
             }
-            if mon.flags & 2 != 0 && !c.buffs.see_invisible {
+            if mon.flags & 2 != 0 && !c.sees_invisible(data) {
                 mult -= mult / 2.0;
             }
             mult += size_term(data, c, m);
-            let dmg = swing(c, att, i32::from(mon.defense), flevel, c.melee_rating(), mult);
+            let dmg = swing(c, att, i32::from(mon.defense), flevel, c.melee_rating(data), mult);
             if dmg == 0 {
                 self.fought(i, data.t(0x0f2f_e6dc).into(), format!("{name} misses the {}.", mon.name));
                 return;
@@ -424,13 +424,26 @@ impl Game {
         let Some(j) = self.living().into_iter().find(|&j| self.party[j].items.len() < 40) else {
             return self.say(data.t(0x2ec8_5095));
         };
-        let known = crate::treasure::identifies(&self.party[j], data, item);
-        let held: Held = crate::magic::new_held(data, item, known);
+        // fn129A's identification level, and w13 charges give or take up to half.
+        let mut held: Held = crate::magic::new_held(data, item, false);
+        held.id = crate::treasure::identifies(&self.party[j], data, item);
+        let full = data.items[item].w(13);
+        if full > 1 && data.items[item].id < crate::magic::POTION_OF_EXPERIENCE {
+            let r = &mut self.party[j];
+            let by = (r.rnd() * f64::from(full) / 2.0) as i16;
+            held.charges = if r.roll(2) == 0 { full + by } else { full - by };
+        }
         // MONSMOD.monOpenChest: "CHEST: Slot #3, Dagger", by name in a party.
         let found = format!("{}{}{}{}{}", data.t(if chest { 0x3e05_53f6 } else { 0xd5cb_7ed2 }).to_uppercase(), data.t(0xdc80_56b6), self.party[j].items.len() + 1, data.t(0x89d0_00f1), crate::magic::item_name(data, &held));
         let line = if self.party.len() == 1 { found } else { format!("{}{}{found}", self.quoted(j), data.t(0x9918_0f02)) };
         self.say(line);
         self.party[j].items.push(held);
+        // A "sticks on by itself" curse (w40 = 2) attaches itself (monOpenChest).
+        let slot = self.party[j].items.len() - 1;
+        if data.items[item].w(40) == 2 && self.party[j].toggle_equip(data, slot).is_ok() {
+            let line = if j == 0 { data.t(0xb969_69a3).into() } else { format!("{}\"{}\"!!", data.t(0xb328_a64b), self.party[j].name) };
+            self.say(line);
+        }
     }
 }
 

@@ -162,15 +162,15 @@ pub fn buy_price(d: &GameData, item: usize, s: u8) -> u64 {
     if d.items[item].level == 0 { p as u64 } else { (1.5 * p / (stock(s).ln() + 1.15)).round_ties_even() as u64 }
 }
 
-/// What the store pays: 0.9 P / (s + 1.15), a third of that for an unidentified item,
-/// less 5% per unit of ln(charges used + 1) (x5 for potions, scrolls and the like).
-/// Known cursed items fetch nothing.
+/// What the store pays (fn273B): 0.9 P / (s + 1.15) / (identification level + 1), less
+/// 5% per unit of ln(charges used + 1) (x5 for potions, scrolls and the like). Known
+/// cursed items fetch nothing.
 pub fn sell_price(d: &GameData, h: &Held, s: u8) -> u64 {
     let it = &d.items[h.item];
-    if h.known && it.w(40) != 0 {
+    if h.known() && it.w(40) != 0 {
         return 0;
     }
-    let base = (0.9 * f64::from(it.price) / (f64::from(s.min(9)) + 1.15) / if h.known { 1.0 } else { 3.0 }).round_ties_even();
+    let base = (0.9 * f64::from(it.price) / (f64::from(s.min(9)) + 1.15) / (f64::from(h.id) + 1.0)).round_ties_even();
     let full = it.w(13);
     let charged = full > 0 && matches!(it.kind, 23..=28 | 30 | 31);
     let used = f64::from((full - if charged { h.charges.min(full) } else { h.charges }).abs());
@@ -178,10 +178,12 @@ pub fn sell_price(d: &GameData, h: &Held, s: u8) -> u64 {
     (base - m * 0.05 * base).max(0.0).round_ties_even() as u64
 }
 
-/// Identifying an unknown item: the original's two steps, 0.23 P / ((s/2 + 1) 0.9) / step.
-pub fn identify_price(d: &GameData, item: usize, s: u8) -> u64 {
-    let p = 0.23 * f64::from(d.items[item].price) / ((f64::from(s.min(9)) / 2.0 + 1.0) * 0.9);
-    (p / 2.0 + p + 2.0).round_ties_even() as u64
+/// One identification step (fn271B): 0.23 P / ((s/2 + 1) x 0.9) / level + 1.
+pub fn identify_price(d: &GameData, h: &Held, s: u8) -> u64 {
+    if h.known() {
+        return 0;
+    }
+    (0.23 * f64::from(d.items[h.item].price) / ((f64::from(s.min(9)) / 2.0 + 1.0) * 0.9) / f64::from(h.id) + 1.0).round_ties_even() as u64
 }
 
 /// Uncursing: 1.6 x the price.
@@ -190,14 +192,14 @@ pub fn uncurse_price(d: &GameData, item: usize) -> u64 {
 }
 
 /// CHA's passive (docs/balance.md): 1% better a point above 10, buying and selling.
-fn cha(c: &Character) -> f64 {
-    f64::from(c.stats[CHA] - 10).max(0.0) / 100.0
+fn cha(c: &Character, d: &GameData) -> f64 {
+    f64::from(c.stat(d, CHA) - 10).max(0.0) / 100.0
 }
 
-pub(crate) fn cha_buy(c: &Character, price: u64) -> u64 {
-    (price as f64 * (1.0 - cha(c))).round() as u64
+pub(crate) fn cha_buy(c: &Character, d: &GameData, price: u64) -> u64 {
+    (price as f64 * (1.0 - cha(c, d))).round() as u64
 }
 
-pub(crate) fn cha_sell(c: &Character, price: u64) -> u64 {
-    (price as f64 * (1.0 + cha(c))).round() as u64
+pub(crate) fn cha_sell(c: &Character, d: &GameData, price: u64) -> u64 {
+    (price as f64 * (1.0 + cha(c, d))).round() as u64
 }

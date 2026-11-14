@@ -35,7 +35,6 @@ pub const POTION_OF_EXPERIENCE: i16 = 1000;
 pub const GREATER_POTION_OF_EXPERIENCE: i16 = 1001;
 /// Item kinds that are used up rather than worn.
 const POTION: i16 = 23;
-const SCROLL: i16 = 24;
 const TOME: i16 = 25;
 
 /// Adds Charm of Experience and the two experience potions to the imported tables.
@@ -147,7 +146,7 @@ pub fn sp_cost(c: &Character, d: &GameData, s: usize) -> i32 {
 pub fn castable(c: &Character, d: &GameData, t: &Tuning, s: usize) -> bool {
     let sp = &d.spells[s];
     let _ = t;
-    c.able() && c.pos.floor > 0 && c.sp >= sp_cost(c, d, s) && (0..6).all(|i| c.stats[i] >= sp.stat_req[i]) && power(c, d, s) > 0.0
+    c.able() && c.pos.floor > 0 && c.sp >= sp_cost(c, d, s) && (0..6).all(|i| c.stat(d, i) >= sp.stat_req[i]) && power(c, d, s) > 0.0
 }
 
 /// When a spell may be thrown (fn1448): heal-class spells and those without hits are
@@ -205,7 +204,7 @@ pub fn kind(sp: &Spell) -> Option<Magic> {
 
 /// The strongest known spell of a kind the character's stats allow, whatever its SP.
 pub fn best_known(c: &Character, d: &GameData, k: Magic) -> Option<usize> {
-    known(c, d).into_iter().filter(|&s| kind(&d.spells[s]) == Some(k) && (0..6).all(|i| c.stats[i] >= d.spells[s].stat_req[i])).max_by_key(|&s| (d.spells[s].level, d.spells[s].base))
+    known(c, d).into_iter().filter(|&s| kind(&d.spells[s]) == Some(k) && (0..6).all(|i| c.stat(d, i) >= d.spells[s].stat_req[i])).max_by_key(|&s| (d.spells[s].level, d.spells[s].base))
 }
 
 /// The strongest spell of a kind that can be cast now.
@@ -238,8 +237,10 @@ pub fn item_spell(d: &GameData, item: usize) -> Option<usize> {
     (n > 0 && (n as usize) <= d.spells.len()).then(|| n as usize - 1)
 }
 
+/// Used up at 0 charges: potions, scrolls, tomes, dust, crystals, rods, spheres and
+/// cubes (types 23-28, 30, 31; mdrcharSubtractItemUse). Everything else is worn.
 pub fn consumable(d: &GameData, item: usize) -> bool {
-    matches!(d.items[item].kind, POTION | SCROLL | TOME) || item_spell(d, item).is_some() && d.items[item].power == 0
+    matches!(d.items[item].kind, 23..=28 | 30 | 31)
 }
 
 /// Cursed (w40, MORDOR.EXE): it sticks once equipped.
@@ -254,14 +255,14 @@ pub fn stat_req(d: &GameData, item: usize) -> [i16; 6] {
 
 pub fn new_held(d: &GameData, item: usize, known: bool) -> Held {
     let charges = if d.items[item].id >= POTION_OF_EXPERIENCE { 1 } else { word(&d.items[item], 13).max(0) };
-    Held { item, equipped: false, charges, known }
+    Held { item, equipped: false, charges, id: if known { 0 } else { 2 }, old_known: false }
 }
 
 /// An item's name, or the original's "Unidentified Item", with its charges.
 pub fn item_name(d: &GameData, h: &Held) -> String {
     let it = &d.items[h.item];
-    let charges = if h.charges > 0 && consumable(d, h.item) { format!(" [{}]", h.charges) } else { String::new() };
-    format!("{}{charges}", if h.known { &it.name } else { d.t(0xee45_3c5e) })
+    let charges = if h.charges > 0 && (consumable(d, h.item) || item_spell(d, h.item).is_some()) { format!(" [{}]", h.charges) } else { String::new() };
+    format!("{}{charges}", if h.known() { &it.name } else { d.t(0xee45_3c5e) })
 }
 
 fn target_ally(g: &Game, t: Target, caster: usize) -> usize {
@@ -307,16 +308,20 @@ fn gate(g: &mut Game, d: &GameData, i: usize, s: usize) -> bool {
 pub fn use_item(g: &mut Game, d: &GameData, t: &Tuning, i: usize, item: usize) {
     let it = &d.items[item];
     let name = g.party[i].name.clone();
-    // Only potions, scrolls, tomes and items that cast a spell can be used; a used-up
-    // sword or artifact keeps its place at [0] (the store recharges it).
-    if !matches!(it.kind, POTION | SCROLL | TOME) && item_spell(d, item).is_none() {
+    // Only used-up kinds and items that cast a spell can be used; a worn one must be
+    // equipped, and keeps its place at 0 charges (mdrcharUseItem).
+    if !consumable(d, item) && item_spell(d, item).is_none() {
         return g.tell(i, CHAR_HIT, d.t(0x3ed9_504a).into(), None);
     }
-    let Some(slot) = g.party[i].items.iter().position(|h| h.item == item && (h.charges > 0 || consumable(d, item))) else {
+    let worn = !consumable(d, item);
+    if worn && !g.party[i].items.iter().any(|h| h.item == item && h.equipped) {
+        return g.tell(i, CHAR_HIT, d.t(0x29e2_3b08).into(), None);
+    }
+    let Some(slot) = g.party[i].items.iter().position(|h| h.item == item && (!worn || h.equipped) && (h.charges > 0 || !worn)) else {
         let named = format!("\"{name}\"{}", d.t(0x769d_d43e));
         return g.tell(i, CHAR_HIT, d.t(0x8d26_48cf).into(), Some(named));
     };
-    g.party[i].items[slot].known = true;
+    g.party[i].items[slot].id = 0;
     match it.id {
         POTION_OF_EXPERIENCE | GREATER_POTION_OF_EXPERIENCE => {
             let mult = if it.id == POTION_OF_EXPERIENCE { 1.5 } else { 2.0 };
@@ -334,27 +339,43 @@ pub fn use_item(g: &mut Game, d: &GameData, t: &Tuning, i: usize, item: usize) {
             effect(g, d, t, i, s, if level == 0 { -1 } else { level }, Target::LowestAlly);
         }
         _ => {
-            // Stat potions and tomes: +1 to a stat up to the race maximum + 5 (the original).
-            let stat = ["Might", "Intelligence|Learning", "Insight", "Fitness|Endurance", "Leadership", "Agility"].iter().position(|k| k.split('|').any(|k| it.name.contains(k)));
-            match stat {
-                Some(st) => {
-                    let cap = d.races[g.party[i].race].stat_max[st] + 5;
-                    let c = &mut g.party[i];
-                    let was = c.stats[st];
-                    c.stats[st] = (c.stats[st] + 1).min(cap);
-                    let (by, stat, female) = (c.stats[st] - was, d.t(crate::game::STAT_NAMES[st]), c.female);
-                    // MAINMOD2.mdrcharStatRaiseMessage
-                    let you = format!("{}{stat}{}{by}.", d.t(0x5736_375e), d.t(0x0ea0_01a2));
-                    let named = format!("\"{name}\"{}{}{stat}{}{by}.", d.t(0x3b35_7578), d.t(if female { 0xe43b_05c4 } else { 0x7dac_81f1 }), d.t(0xdc07_e37a));
-                    g.tell(i, CHAR_HIT, you, Some(named));
+            // By the table (mdrcharUseItem): w10 1 adds the stat modifiers w33-38 to the
+            // natural stats (race minimum to maximum + 5), 11 and 12 give 50 and 200 SP, 13
+            // and 14 take one and ten years off (never below 16).
+            let c = &mut g.party[i];
+            let r = &d.races[c.race];
+            let mut said = Vec::new();
+            match it.w(10) {
+                1 => {
+                    for st in 0..6 {
+                        let was = c.stats[st];
+                        c.stats[st] = (was + it.w(33 + st)).clamp(r.stat_min[st], r.stat_max[st] + 5);
+                        if c.stats[st] != was {
+                            said.push((st, c.stats[st] - was));
+                        }
+                    }
                 }
-                None if it.name.contains("Youth") => {
-                    g.party[i].age_days = g.party[i].age_days.saturating_sub(365);
+                11 | 12 => c.sp += if it.w(10) == 11 { 50 } else { 200 },
+                13 | 14 => {
+                    let years = if it.w(10) == 13 { 1 } else { 10 };
+                    c.age_days = c.age_days.saturating_sub(365 * years).max(16 * 365);
                     g.tell(i, CHAR_HIT, d.t(0x7356_987a).into(), None);
                 }
-                None => g.tell(i, CHAR_HIT, d.t(0x9080_da93).into(), Some(format!("\"{name}\"{}", d.t(0x8366_5842)))),
+                _ => g.tell(i, CHAR_HIT, d.t(0x9080_da93).into(), Some(format!("\"{name}\"{}", d.t(0x8366_5842)))),
+            }
+            for (st, by) in said {
+                // MAINMOD2.mdrcharStatRaiseMessage
+                let (stat, female) = (d.t(crate::game::STAT_NAMES[st]), g.party[i].female);
+                let (mine, theirs) = if by > 0 { (0x0ea0_01a2, 0xdc07_e37a) } else { (0x5529_6f8a, 0x93b2_b2c2) };
+                let you = format!("{}{stat}{}{}.", d.t(0x5736_375e), d.t(mine), by.abs());
+                let named = format!("\"{name}\"{}{}{stat}{}{}.", d.t(0x3b35_7578), d.t(if female { 0xe43b_05c4 } else { 0x7dac_81f1 }), d.t(theirs), by.abs());
+                g.tell(i, CHAR_HIT, you, Some(named));
             }
         }
+    }
+    // Reading a tome ages the reader 28 days.
+    if it.kind == TOME {
+        g.party[i].age_days += 28;
     }
     let h = &mut g.party[i].items[slot];
     h.charges -= 1;
@@ -368,7 +389,7 @@ pub fn use_item(g: &mut Game, d: &GameData, t: &Tuning, i: usize, item: usize) {
 fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, item: i16, target: Target) {
     let sp = &d.spells[s];
     let caster = g.party[i].name.clone();
-    let stat_bonus = |c: &Character, st: usize| 1.0 + 0.02 * f32::from((c.stats[st] - 15).max(0));
+    let stat_bonus = |c: &Character, st: usize| 1.0 + 0.02 * f32::from((c.stat(d, st) - 15).max(0));
     let current = f64::from(spell_level(g.party[i].level()));
     let p = match item {
         0 => f64::from(power(&g.party[i], d, s)),
@@ -554,7 +575,7 @@ fn offensive(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f64,
         return g.say(format!("\"{}\"{}", sp.name, d.t(0x92fb_ac7a)));
     }
     g.provoke();
-    let int_bonus = 1.0 + 0.02 * f64::from((g.party[i].stats[INT] - 15).max(0));
+    let int_bonus = 1.0 + 0.02 * f64::from((g.party[i].stat(d, INT) - 15).max(0));
     // Sorcerers' elemental spells ignore half of a monster's resistance.
     let pierce = if g.party[i].guild == SORCERER && [0, 1, 2, 5].contains(&sp.class) { 0.5 } else { 1.0 };
     let wizard = g.party[i].guild == WIZARD && school(WIZARD, sp.class);

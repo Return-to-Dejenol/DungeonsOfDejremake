@@ -108,7 +108,8 @@ are listed at the end. Notation:
 - **Items:**
   - d100 (−25 for a chest) against the monster's item % (w66), then a tenth of it for each further item.
   - Each item comes from one of the monster's ten classes (w51-60), at a level from half its item level (w65) to all of it, weighted by rarity (w6).
-  - The finder knows it when the item's difficulty, 25 + (ln(mult + 1) + 0.3) ln(w17 + 1) × level, is within (INT + WIS)/2 × ln((best level + 5)/10 + 1), and only for items up to level 5.
+  - Identification has four levels, 0 fully known to 3 (fn129A). A find is level 1 (named) when the item's difficulty, 25 + (ln(mult + 1) + 0.3) ln(w17 + 1) × level, is within the ID skill (INT + WIS)/2 × ln((best level + 5)/10 + 1) and the item is level 5 or less; level 3 when the difficulty is 20 or more beyond it; else 2. Found charges are w13 give or take up to half. The four "sticks on by itself" curses (w40 = 2) attach themselves when found.
+- **Wearing** (sub0F74, fn110D): at most two hands (w22) and the item class's count; the guild rule w42 (0: any joined guild in the item's mask, −1: the current guild) at guild level CInt(3.97 × guild w112 × item w17) or more; natural stats at the item's w26-31; no stat pushed below the race minimum. Worn items add their stat modifiers (w33-38), which count for attack and defense, casting, thieving, identifying and the stat passives, and their flags (w7): levitation, invisibility, protection (Int(level/2) + 1) and see invisible. Cursed items (w40) stick once worn. Only types 23-28, 30 and 31 are used up; other items with a spell must be worn to use and keep their place at 0 charges. Stat potions and tomes add their w33-38 (to the race maximum + 5); SP and youth potions follow w10; tomes age the reader 28 days.
 
 **Magic** (`magic.rs`; mdrcharCheckCast, mdrcharCastSpell, monGetSpellHits):
 - **Learning:** a guild teaches a spell when its rate for the class is above 0, the spell's level is no higher than the guild's max for the class (w71 + 2c), and CInt(level × rate) ≤ Int(L/2 + 0.5), the caster's spell level. Paladins learn Minor Heal (level 2, rate 3) at guild level 11.
@@ -125,11 +126,11 @@ are listed at the end. Notation:
 - **Stock:**
   - The store's and Confinement's stock is shared by every character (saves/store.json). Store-only (level 0) items never run out.
   - Buying costs 1.5 P / (ln s + 1.15) with s in stock (1.3 P for the last one, 0.45 P with nine); store-only items cost P.
-  - The store pays 0.9 P / (s + 1.15), a third of that unidentified, less for used charges, and nothing for known cursed items. Items sold go back on the shelf.
+  - The store pays 0.9 P / (s + 1.15) / (identification level + 1), less for used charges, and nothing for known cursed items. It won't take a cursed item that is worn. Items sold go back on the shelf.
   - Resting in the city ages a day per 3.25% of hits missing, and restocks: while d100 ≤ days (up to 50), one more event. Each event is 60% new stock from the floors reached and 40% sold off.
 - **Item services:**
-  - Identify: 0.23 P / ((s/2 + 1) × 0.9) per step (two steps).
-  - Uncurse: 1.6 P, and the item comes off.
+  - Identify: one level a step, for 0.23 P / ((s/2 + 1) × 0.9) / level + 1.
+  - Uncurse: 1.6 P; the item comes off, fully identified.
   - CHA's passive (remake) takes 1% a point above 10 off every buy and sell price.
 - **Guilds:**
   - Joining: free while you belong only to your current guild; otherwise A² × 5356. A sums (rate + 1) × 1.25 over the guild's abilities and max spell level / 3 over its classes: Nomad 1.7 million, Ninja 10.9 million.
@@ -305,7 +306,7 @@ behaviour is a known gap, not a choice.
   roll reaches the foe's hits, flag-4 monsters immune to player spells).
   **Deliberate change:** the remake's growing max SP pool and its gradual SP regen stay,
   instead of the original's flat 5 x (INT + WIS).
-- **Items:** match the original. Equip limits (two hands, the item class's count, the
+- **Items (ported but for alignment, Realign and per-alignment stock):** match the original. Equip limits (two hands, the item class's count, the
   guild and guild-level rules, natural stat requirements, no stat below the race minimum);
   worn stat modifiers on a separate modified-stat array; levitate, invisible, protection
   and see invisible from worn items; wearable spell items stay when their charges run out
@@ -364,7 +365,7 @@ can be changed in `patches/modern.toml` or here.
   rating (counting Nomad levels up to the best other guild's level), and a level in
   another guild gains 1 extra hit when Nomad is already at that level. Pure Nomads rate
   at 70%.
-- **Items**: unidentified finds show as "Unidentified Potion" and so on. Stat potions and tomes raise a stat by one, to the race max + 5.
+- **Items**: unidentified finds show as "Unidentified Item".
   Experience potions cost 7,500 (Greater: drop only, 30,000 value); a found item is an
   experience potion 4% of the time (Greater 30% of those, floor 5+).
 - **Charm of Experience**: 60 SP, needs INT and WIS 14.

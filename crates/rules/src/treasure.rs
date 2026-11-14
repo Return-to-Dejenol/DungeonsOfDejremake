@@ -106,7 +106,7 @@ pub fn gold(r: &mut Character, mon: &Monster, n: u32, locked: bool) -> u64 {
 /// plus (4.5 + (L + 1)^(1 / ln 15)) x rate x 1.4 for the best guild, less
 /// 9.375 x ln(monster level) x ln(floor + 1); 5-98.
 pub fn thieving(c: &Character, d: &GameData, mlevel: i16, floor: u32) -> f64 {
-    let s = f64::from(c.stats[WIS]) / 4.0 + f64::from(c.stats[DEX]) / 2.0;
+    let s = f64::from(c.stat(d, WIS)) / 4.0 + f64::from(c.stat(d, DEX)) / 2.0;
     let skill = c.guild_best(|g, l| (4.5 + ((f64::from(l) + 1.0).ln() / 15f64.ln()).exp()) * f64::from(Character::guild_ability(d, g, THIEVING)) / 10.0 * 14.0);
     let hard = 6.25 * f64::from(mlevel.max(1)).ln() * (f64::from(floor) + 1.0).ln();
     (s + skill - 1.5 * hard).clamp(5.0, 98.0)
@@ -116,7 +116,7 @@ pub fn thieving(c: &Character, d: &GameData, mlevel: i16, floor: u32) -> f64 {
 /// the monster's level and DEX, plus thieving / 1.2 and ln(thief level)², against d100.
 fn examine(c: &mut Character, d: &GameData, ch: &mut Chest, floor: u32) {
     let mon = &d.monsters[ch.monster];
-    let wis = f64::from(c.stats[WIS]) - (f64::from(mon.power_level.max(1)).ln() * f64::from(mon.stats[5].max(1)).ln() * 2.5).round_ties_even();
+    let wis = f64::from(c.stat(d, WIS)) - (f64::from(mon.power_level.max(1)).ln() * f64::from(mon.stats[5].max(1)).ln() * 2.5).round_ties_even();
     let t = thieving(c, d, mon.power_level, floor).round_ties_even().max(5.0);
     let (_, l) = c.best_rate(d, THIEVING);
     let p = ((wis.clamp(2.0, 98.0) + t / 1.2).floor() + l.max(1.0).ln().powi(2)).round_ties_even();
@@ -311,13 +311,18 @@ pub fn random_item(r: &mut Character, d: &GameData, m: usize, chest: bool) -> Op
     None
 }
 
-/// Whether the finder knows what it found (MORDOR.EXE): the item's difficulty,
-/// 25 + (ln(mult + 1) + 0.3) x ln(w17 + 1) x level, against (INT + WIS) / 2 x
-/// ln((best level + 5) / 10 + 1); and only items of level 5 or less are named.
-pub fn identifies(c: &Character, d: &GameData, item: usize) -> bool {
+/// How well the finder knows what it found (fn129A), as an identification level: the
+/// item's difficulty, 25 + (ln(mult + 1) + 0.3) x ln(w17 + 1) x level, against the ID
+/// skill (INT + WIS) / 2 x ln((best level + 5) / 10 + 1): 1 (named) within it for items
+/// up to level 5, 3 when 20 or more beyond it, else 2.
+pub fn identifies(c: &Character, d: &GameData, item: usize) -> u8 {
     let it = &d.items[item];
     let hard = (25.0 + ((f64::from(it.damage_mult) + 1.0).ln() + 0.3) * (f64::from(it.w(17).max(0)) + 1.0).ln() * f64::from(it.level)).round_ties_even();
     let best = f64::from(*c.levels.iter().max().unwrap_or(&1));
-    let skill = f64::from(c.stats[INT] + c.stats[WIS]) / 2.0 * ((best + 5.0) / 10.0 + 1.0).ln();
-    hard <= skill && it.level <= 5
+    let skill = (f64::from(c.stat(d, INT) + c.stat(d, WIS)) / 2.0 * ((best + 5.0) / 10.0 + 1.0).ln()).round_ties_even();
+    match hard - skill {
+        x if x <= 0.0 && it.level <= 5 => 1,
+        x if x >= 20.0 => 3,
+        _ => 2,
+    }
 }
