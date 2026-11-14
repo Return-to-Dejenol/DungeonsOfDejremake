@@ -64,7 +64,7 @@ impl App {
         let closed = match f {
             "frmCityStore" => self.store(desk, ctx, d, t),
             "frmCityGuild" => self.guild(desk, ctx, d, t),
-            "frmCityBank" => self.bank(desk, ctx),
+            "frmCityBank" => self.bank(desk, ctx, d),
             "frmCityMorgue" => self.morgue(desk, ctx, d),
             "frmCitySeer" => {
                 let ev = desk.window(ctx, f, View::default(), false);
@@ -135,7 +135,9 @@ impl App {
         v.text("lblIDCost", idd.map_or(String::new(), |s| if g.party[sel].items[s].known() { String::new() } else { g.identify_price(d, sel, s).to_string() }));
         v.text("lblIDLevel", "");
         v.enable("cmdSell", idd.is_some()).enable("cmdID", idd.is_some_and(|s| !g.party[sel].items[s].known())).enable("cmdIDInfo", idd.is_some());
-        v.text("txtCombine", "").enable("txtCombine", false);
+        // Combine: an item dropped here gathers the charges of its fellows (sub2621).
+        let comb = desk.state(F, "combine").sel.filter(|&s| s < g.party[sel].items.len());
+        v.text("txtCombine", comb.map_or(String::new(), |s| magic::item_name(d, &g.party[sel].items[s]))).enable("cmdCommand(0)", comb.is_some());
         let ev = desk.window(ctx, F, v, false);
         if let Some(a) = ev.index("cmdAlign") {
             desk.state(F, "align").sel = Some(usize::from(a));
@@ -149,6 +151,7 @@ impl App {
             match k.as_str() {
                 "txtUncurse" | "lblUncurse" => desk.state(F, "uncurse").sel = Some(slot),
                 "txtID" | "lblValue" | "lblIDCost" | "lblIDLevel" => desk.state(F, "id").sel = Some(slot),
+                "txtCombine" | "lblCombine" => desk.state(F, "combine").sel = Some(slot),
                 _ => {}
             }
         }
@@ -186,6 +189,15 @@ impl App {
             && let Some(s) = idd
         {
             msg = answer(&mut self.boxes, d, g.identify(d, sel, s));
+        }
+        if ev.click("cmdCommand(0)")
+            && let Some(s) = comb
+        {
+            match g.party[sel].combine(d, s) {
+                Ok(m) => msg = m,
+                Err(e) => self.boxes.push((String::new(), e)),
+            }
+            desk.state(F, "combine").sel = None;
         }
         if ev.click("cmdIDInfo")
             && let Some(s) = idd
@@ -299,14 +311,29 @@ impl App {
 
     /// The Bank: type an amount and press Enter (or All) to deposit or withdraw; the
     /// party buttons pool and deposit everyone's gold.
-    fn bank(&mut self, desk: &mut Desk, ctx: &egui::Context) -> bool {
+    fn bank(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData) -> bool {
         const F: &str = "frmCityBank";
         let sel = self.sel.min(self.game.as_ref().unwrap().party.len() - 1);
         let g = self.game.as_mut().unwrap();
         let c = &g.party[sel];
         let mut v = View::default();
-        v.text("lblStatus", format!("You have {} gold on hand and {} in the bank.", c.gold, c.bank)).items("lstItems", Vec::new()).enable("cmdInfo", false);
+        // The bank's items (lstItems): drop a pack item on it to bank it, pick one to take it back.
+        let kept: Vec<String> = c.vault.iter().map(|h| magic::item_name(d, h)).collect();
+        v.text("lblStatus", format!("You have {} gold on hand and {} in the bank.", c.gold, c.bank)).items("lstItems", kept).enable("cmdInfo", false);
         let ev = desk.window(ctx, F, v, false);
+        if let Some((k, Drag(1, m, slot))) = ev.dropped.clone()
+            && m == sel
+            && k == "lstItems"
+            && let Err(e) = g.party[sel].stash(d, slot)
+        {
+            self.boxes.push((String::new(), e));
+        }
+        if let Some(k) = desk.state(F, "lstItems").sel.take()
+            && k < g.party[sel].vault.len()
+            && let Err(e) = g.party[sel].unstash(d, k)
+        {
+            self.boxes.push((String::new(), e));
+        }
         let enter = ctx.input(|i| i.key_pressed(Key::Enter));
         let amount = |desk: &mut Desk, k: &str| desk.state(F, k).text.trim().replace(',', "").parse::<u64>().ok();
         let c = &mut g.party[sel];
@@ -321,9 +348,10 @@ impl App {
             desk.state(F, "txtAmount(1)").text.clear();
         }
         match ev.index("cmdCommand") {
-            // Pool & Deposit: the party's gold to this character's account.
-            Some(2) | Some(4) => {
-                let pooled: u64 = g.party.iter_mut().enumerate().filter(|(i, _)| *i != sel).map(|(_, m)| std::mem::take(&mut m.gold)).sum();
+            // Pool & Deposit: the party's purses to this character's account; Pool All
+            // (4) the others' bank balances too (cmdCommand_Click).
+            Some(b @ (2 | 4)) => {
+                let pooled: u64 = g.party.iter_mut().enumerate().filter(|(i, _)| *i != sel).map(|(_, m)| std::mem::take(&mut m.gold) + if b == 4 { std::mem::take(&mut m.bank) } else { 0 }).sum();
                 g.party[sel].gold += pooled;
                 let gold = g.party[sel].gold;
                 g.party[sel].deposit(gold);

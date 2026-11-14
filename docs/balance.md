@@ -146,6 +146,8 @@ are listed at the end. Notation:
 - **Item services:**
   - Identify: one level a step, for 0.23 P / ((s/2 + 1) × 0.9) / level + 1.
   - Uncurse: 1.6 P; the item comes off, fully identified.
+  - Combine gathers the charges of every fully identified item of the same kind and alignment of a used-up type into one slot, free.
+  - The bank keeps up to 40 items per character (never worn ones). Pool puts everyone's purse in the chosen member's account; Pool All the others' bank balances too. A Crest in the bank counts.
   - CHA's passive (remake) takes 1% a point above 10 off every buy and sell price.
 - **Guilds:**
   - Joining: free while you belong only to your current guild; otherwise A² × 5356. A sums (rate + 1) × 1.25 over the guild's abilities and max spell level / 3 over its classes: Nomad 1.7 million, Ninja 10.9 million.
@@ -351,8 +353,8 @@ behaviour is a known gap, not a choice.
   levels, bank item storage, Pool, restocking and the minor items): match the original by
   default. Where a rule would hurt play on a phone, it comes back to the owner as its own
   decision first.
-- **Still to port** (2026-11-14): Confinement's Realign; bank item storage and Pool moving
-  bank balances; Combine. Teleport and Displacement wait on the owner (they take typed
+- **Still to port** (2026-11-14): Confinement's Realign (companions keep their monster's
+  alignment). Teleport and Displacement wait on the owner (they take typed
   offsets).
 
 ## Taken while building (review at play-test)

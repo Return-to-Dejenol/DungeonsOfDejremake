@@ -184,6 +184,9 @@ pub struct Character {
     /// Or bring back this item (index into `GameData::items`).
     #[serde(default)]
     pub quest_item: Option<usize>,
+    /// Items kept in the bank, 40 at most (the record's second item list).
+    #[serde(default)]
+    pub vault: Vec<Held>,
     rng: u64,
 }
 
@@ -276,6 +279,7 @@ impl Character {
             age_days: 16 * 365,
             quest: None,
             quest_item: None,
+            vault: Vec::new(),
             rng: seed | 1,
         };
         c.sp = c.max_sp(data, &Tuning::load(&[]).expect("built-in tuning"));
@@ -779,6 +783,50 @@ impl Character {
         Ok(())
     }
 
+    /// A pack item into the bank (frmCityBank): never a worn one, 40 at most.
+    pub fn stash(&mut self, data: &GameData, slot: usize) -> Result<(), String> {
+        let h = &self.items[slot];
+        if h.equipped || h.item == HANDS {
+            return Err(data.t(0x98da_edf1).into());
+        }
+        if self.vault.len() >= 40 {
+            return Err(data.t(0x6ac7_6f90).into());
+        }
+        let h = self.items.remove(slot);
+        self.vault.push(h);
+        Ok(())
+    }
+
+    /// An item from the bank back into the pack.
+    pub fn unstash(&mut self, data: &GameData, k: usize) -> Result<(), String> {
+        if self.items.len() >= 40 {
+            return Err(data.t(0x6ac7_6f90).into());
+        }
+        let h = self.vault.remove(k);
+        self.items.push(h);
+        Ok(())
+    }
+
+    /// Combine (the store's sub2621): the charges of every other fully identified item
+    /// of this one's kind and alignment, of a used-up type, join it, free.
+    pub fn combine(&mut self, data: &GameData, slot: usize) -> Result<String, String> {
+        let h = self.items[slot].clone();
+        if !crate::magic::consumable(data, h.item) || !h.known() {
+            return Err(data.t(0x76a4_1e30).into());
+        }
+        let mut sum = 0;
+        for k in (0..self.items.len()).rev() {
+            let o = &self.items[k];
+            if k != slot && o.item == h.item && o.align == h.align && o.known() && !o.equipped {
+                sum += o.charges;
+                self.items.remove(k);
+            }
+        }
+        let at = self.items.iter().position(|o| o.item == h.item && o.align == h.align && o.charges == h.charges).unwrap_or(0);
+        self.items[at].charges += sum;
+        Ok(format!("{}{}", data.t(0x5946_88b1), at + 1))
+    }
+
     pub fn deposit(&mut self, gold: u64) {
         let n = gold.min(self.gold);
         self.gold -= n;
@@ -987,7 +1035,8 @@ impl Game {
             said.push((0x73d1_9d26, format!("{}\n{}", d.t(CONGRATULATIONS), d.t(0xc647_0b35))));
         }
         let crest = d.items.iter().position(|it| usize::try_from(it.id) == Ok(CREST + g));
-        if let Some(k) = crest.filter(|&k| !c.items.iter().any(|h| h.item == k)) {
+        // A Crest kept in the bank counts (modAwardCrest).
+        if let Some(k) = crest.filter(|&k| !c.items.iter().chain(&c.vault).any(|h| h.item == k)) {
             let name = &d.items[k].name;
             if c.items.len() >= 40 {
                 said.push((0x6255_8b51, format!("{}{name}{}", d.t(0x64e3_8593), d.t(0xe3c2_b5a9))));
@@ -2124,6 +2173,19 @@ mod tests {
         let worn = evil.att_def(&d, &Tuning::load(&[]).unwrap()).0;
         assert_eq!(worn - bare, -i32::from(d.items[sword].attack));
         assert!(evil.toggle_equip(&d, k).is_err(), "an opposite item sticks");
+        // The bank keeps items (not worn ones); Combine gathers charges (sub2621).
+        assert!(evil.stash(&d, k).is_err());
+        let potion = item("Potion of Might");
+        for _ in 0..2 {
+            evil.items.push(magic::new_held(&d, potion, true));
+        }
+        let n = evil.items.len();
+        evil.stash(&d, n - 1).unwrap();
+        assert_eq!(evil.vault.len(), 1);
+        evil.unstash(&d, 0).unwrap();
+        let each = evil.items[n - 1].charges;
+        evil.combine(&d, n - 2).unwrap();
+        assert_eq!((evil.items.len(), evil.items[n - 2].charges), (n - 1, 2 * each));
     }
 
     /// timAilment_Timer's paralysis: strength = power level, the stay roll, gone with no
