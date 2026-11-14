@@ -347,6 +347,13 @@ behaviour is a known gap, not a choice.
   levels, bank item storage, Pool, restocking and the minor items): match the original by
   default. Where a rule would hurt play on a phone, it comes back to the owner as its own
   decision first.
+- **Still to port** (2026-11-14): companions' breath, acid, shocks and spells, with their
+  friendly fire (monCompanionAttack); keeping dead companions and raising them (spell and
+  morgue); Confinement's companion identification levels, its sale divisor and identify
+  service; the Seer's failure rolls, item search and own-floor lair rule; Wait for Rescue;
+  bank item storage and Pool moving bank balances; Combine; electrocution and stoning of
+  companions that were hit; the original's round order (each member, then its
+  companions). Teleport and Displacement wait on the owner (they take typed offsets).
 
 ## Taken while building (review at play-test)
 
