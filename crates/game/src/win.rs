@@ -421,6 +421,11 @@ impl Desk {
         p
     }
 
+    /// Sets the scale text is drawn at, returning the one before.
+    pub fn scale(&mut self, s: f32) -> f32 {
+        std::mem::replace(&mut self.s, s)
+    }
+
     /// Virtual pixels to screen points.
     pub fn to_screen(&self, r: Rect) -> Rect {
         Rect::from_min_size(self.org + r.min.to_vec2() * self.s, r.size() * self.s)

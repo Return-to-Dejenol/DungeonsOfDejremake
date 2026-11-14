@@ -261,7 +261,12 @@ impl Viewer {
             let px = |v: i32, of: i32| (v * of / 1024).clamp(0, of);
             let (x, y, ow, oh) = (px(w.rect[0], 800), px(w.rect[1], 600), px(w.rect[2] + 1, 800), px(w.rect[3] + 1, 600));
             let table = self.help.topics[topic].body.iter().filter_map(|b| b.cell).map(|(_, x, w)| ((x + w) as f32 * U + 2.0 * MARGIN) as i32 + 25).max();
-            let (cw, ch) = (ow.max(120).max(table.unwrap_or(0)).min(800) - 6, oh.max(80) - 24);
+            let (mut cw, mut ch) = (ow.max(120).max(table.unwrap_or(0)).min(800) - 6, oh.max(80) - 24);
+            // The phone shell: the main window as big as the screen, its text a little larger.
+            if desk.shell && win == 0 {
+                let sz = desk.to_screen(egui::Rect::from_min_size(egui::Pos2::ZERO, desk.screen)).size() / 1.05;
+                (cw, ch) = (cw.min(sz.x as i32), (sz.y * 0.95) as i32);
+            }
             let top = if win == 0 { BAR } else { 0 };
             let mut ctls: Vec<crate::win::Synth> = vec![("VScrollBar", "vsbTopic", None, [cw - 17, top + 1, 16, ch - top - 2], ""), ("PictureBox", "picTopic", None, [0, top, cw, ch - top], "")];
             if win == 0 {
@@ -337,7 +342,7 @@ impl Viewer {
         let scroll = desk.state(&form, "vsbTopic").top.min(max);
         let slot: Cell<Option<(Painter, Rect, f32)>> = Cell::new(None);
         let mut v = View::default();
-        v.paint("picTopic", |p, r, s| slot.set(Some((p.clone(), r, s))));
+        v.paint("picTopic", |p, r, s| slot.set(Some((p.clone(), r, s)))).scroll("picTopic", "vsbTopic", STEP, max);
         v.show("vsbTopic", max > 0).rect("vsbTopic", [size.x as i32 - 17, (top + 1.0 + head_h) as i32, 16, view as i32]);
         if win == 0 {
             let t = &self.help.topics[topic];
@@ -350,6 +355,8 @@ impl Viewer {
         }
         let mut nav = None;
         if let Some((p, r, s)) = slot.take() {
+            // The text at the scale the window was drawn at (the phone shell's own).
+            let base = desk.scale(s);
             let cv = Cv { p: p.clone(), o: r.min, s };
             let back = |c: Option<[u8; 3]>, d: Color32| c.map_or(d, |c| Color32::from_rgb(c[0], c[1], c[2]));
             let wi = &self.help.windows[win.min(self.help.windows.len() - 1)];
@@ -365,9 +372,12 @@ impl Viewer {
             }
             let dy = head_h + 2.0 - scroll as f32 * STEP;
             draw(desk, &bcv, &self.help, body, dy, body_r);
+            desk.scale(base);
             // Jumps: the hand over hot text, and a click follows it.
             let ours = |pos| ctx.layer_id_at(pos) == Some(p.layer_id());
-            if let Some(pos) = ctx.pointer_hover_pos().filter(|&pos| r.contains(pos) && ours(pos)) {
+            // A touch has no hover once lifted: where it tapped.
+            let at_pos = ctx.pointer_hover_pos().or_else(|| ctx.input(|i| i.pointer.interact_pos()).filter(|_| desk.touch));
+            if let Some(pos) = at_pos.filter(|&pos| r.contains(pos) && ours(pos)) {
                 let at = ((pos - r.min) / s).to_pos2();
                 let hit = |runs: &[Run], dy: f32| runs.iter().find(|x| x.link.is_some() && x.r.translate(vec2(0.0, dy)).contains(at)).and_then(|x| x.link);
                 let link = if at.y < head_h { hit(head, 2.0) } else { hit(body, dy) };
@@ -381,7 +391,9 @@ impl Viewer {
                     self.wheel += ctx.input(|i| i.smooth_scroll_delta.y) / s / STEP;
                     let n = self.wheel.trunc();
                     self.wheel -= n;
-                    desk.state(&form, "vsbTopic").top = (scroll as f32 - n).clamp(0.0, max as f32) as usize;
+                    if n != 0.0 {
+                        desk.state(&form, "vsbTopic").top = (scroll as f32 - n).clamp(0.0, max as f32) as usize;
+                    }
                 }
             }
         }
