@@ -601,8 +601,8 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, item: i16,
         // spell level) / 5), Life Domination for life (mdrcharCastSpell).
         (8, _) => {
             let bind = if sp.effect == 150 { 100.0 } else { f64::from(sp.level) + ((10.0 + p) / 5.0).ln() };
-            if let Some(c) = g.party[0].companions.iter_mut().min_by_key(|c| c.bind) {
-                c.bind = c.bind.max(bind as u8);
+            if let Some(c) = g.party[i].companions.iter_mut().min_by_key(|c| c.bind) {
+                c.bind = c.bind.max(bind as i16);
             }
         }
         _ => offensive(g, d, t, i, s, p, target),
@@ -619,7 +619,7 @@ fn offensive(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f64,
     let Some(f) = g.fight.as_ref() else { return };
     let first = f.pick(target).map_or(0, |fi| f.foes[fi].group);
     let groups = f.groups_from(first);
-    if sp.class == 7 && g.party[0].companions.len() >= crate::monsters::MAX_COMPANIONS {
+    if sp.class == 7 && g.party[i].companions.len() >= crate::monsters::MAX_COMPANIONS {
         return g.say(format!("\"{}\"{}", sp.name, d.t(0x92fb_ac7a)));
     }
     g.provoke();
@@ -645,11 +645,9 @@ fn offensive(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f64,
                 // fn10BA: it joins with the hits it had, bound at the spell's level.
                 g.award(d, t, i, m, hp, 1.0);
                 g.fight.as_mut().unwrap().foes[fi].hp = 0;
-                let bind = sp.level.clamp(1, 100) as u8;
-                let bound = crate::monsters::bind_steps(&g.party[i], bind);
-                g.party[0].companions.push(crate::monsters::Companion { monster: m, hp, max_hp: hp, bound, bind });
+                g.party[i].companions.push(crate::monsters::Companion { monster: m, hp, max_hp: hp, bind: sp.level.clamp(1, 100) });
                 charmed += 1;
-                if g.party[0].companions.len() >= crate::monsters::MAX_COMPANIONS {
+                if g.party[i].companions.len() >= crate::monsters::MAX_COMPANIONS {
                     break;
                 }
                 continue;

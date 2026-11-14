@@ -18,11 +18,11 @@ pub struct Companion {
     pub monster: usize,
     pub hp: i32,
     pub max_hp: i32,
-    /// Steps left before a bound companion breaks free (or a free one wanders off).
-    pub bound: u32,
-    /// The original's binding level (up to 12), raised by the bindsmen.
+    /// The original's binding level: bought ones 5 + level found, charmed ones the
+    /// spell's level, raised by the bindsmen (12) and bind spells; 100 bound for life;
+    /// below 0 joined of its own will.
     #[serde(default)]
-    pub bind: u8,
+    pub bind: i16,
 }
 
 pub const MAX_COMPANIONS: usize = 4;
@@ -80,7 +80,8 @@ pub(crate) fn turn_hostile(g: &mut Game, d: &GameData) {
     let Some(f) = g.fight.as_ref().filter(|f| f.peaceful) else {
         return;
     };
-    let Some(m) = f.alive().next().map(|fi| f.foes[fi].monster) else {
+    // A group with an open offer to join never turns (sub155A).
+    let Some(m) = f.alive().next().map(|fi| f.foes[fi].monster).filter(|_| f.offers.iter().all(|&o| o == 0)) else {
         return;
     };
     let base = match (d.monsters[m].w(31), g.party[0].alignment) {
@@ -529,15 +530,24 @@ fn monster_spell(g: &mut Game, d: &GameData, m: usize, j: usize) -> bool {
     true
 }
 
-/// Mage's passive (docs/balance.md): binds last longer and hold harder, with CHA.
-fn bind_strength(c: &Character) -> f32 {
+/// Mage's passive (docs/balance.md): binds hold harder and companions stay longer, with
+/// CHA; it divides the original's chances of breaking and leaving.
+fn bind_strength(c: &Character) -> f64 {
     let mage = if c.levels[8] > 0 { 1.5 } else { 1.0 };
-    mage * (1.0 + 0.04 * f32::from((c.stats[CHA] - 10).max(0)))
+    mage * (1.0 + 0.04 * f64::from((c.stats[CHA] - 10).max(0)))
 }
 
-/// Steps a binding level holds (a stand-in: the original's leaving rule is not read).
-pub(crate) fn bind_steps(c: &Character, bind: u8) -> u32 {
-    (30.0 * f32::from(bind) * bind_strength(c)) as u32
+/// A companion's chance in 200 of leaving a tick (fn0D78): ((24 ln(power + 1) -
+/// 2 CInt(4.5 |binding|) - 4 ln(best level / 10 + 1) - CHA / 2) / 2 + 15 x hurt) / 2,
+/// 0-90, and none bound for life.
+fn leave_chance(c: &Character, d: &GameData, comp: &Companion) -> f64 {
+    if comp.bind >= 100 {
+        return 0.0;
+    }
+    let top = f64::from(*c.levels.iter().max().unwrap_or(&1));
+    let x = 24.0 * (f64::from(d.monsters[comp.monster].power_level) + 1.0).ln() - 2.0 * (4.5 * f64::from(comp.bind.abs())).round_ties_even() - 4.0 * (top / 10.0 + 1.0).ln() - f64::from(c.stat(d, CHA)) / 2.0;
+    let hurt = f64::from(comp.max_hp - comp.hp) / f64::from(comp.max_hp.max(1));
+    ((x / 2.0 + 15.0 * hurt) / 2.0).clamp(0.0, 90.0)
 }
 
 impl Game {
@@ -545,44 +555,103 @@ impl Game {
     /// against the foe's defense, critical +4 and backstab +1; its master earns a
     /// quarter of the XP.
     pub(crate) fn companions_act(&mut self, d: &GameData, t: &Tuning) {
-        for k in 0..self.party[0].companions.len() {
+        for (i, k) in (0..self.party.len()).flat_map(|i| (0..self.party[i].companions.len()).map(move |k| (i, k))).collect::<Vec<_>>() {
             let Some(f) = self.fight.as_ref() else { return };
-            if f.peaceful || k >= self.party[0].companions.len() {
+            if f.peaceful {
                 return;
             }
+            let Some(comp) = self.party[i].companions.get(k) else { continue };
             let Some(fi) = f.pick(crate::ai::Target::Weakest) else {
                 return;
             };
-            let c = &d.monsters[self.party[0].companions[k].monster];
+            let c = &d.monsters[comp.monster];
             let foe = &d.monsters[f.foes[fi].monster];
             let mut mult = f64::from(c.single(46)).max(1.0) + knack_bonus(self, c, foe.power_level.max(0) as u32, 4.0);
             if foe.flags & 2 != 0 && c.flags & SEES_INVISIBLE == 0 {
                 mult /= 2.0;
             }
-            let dmg = swing(&mut self.party[0], i32::from(c.attack), i32::from(foe.defense), f64::from(c.power_level), i32::from(c.stats[0]), mult);
+            let dmg = swing(&mut self.party[i], i32::from(c.attack), i32::from(foe.defense), f64::from(c.power_level), i32::from(c.stats[0]), mult);
             if dmg > 0 {
                 let verb = format!("'s {} hits", c.name);
-                self.damage_foe(d, t, 0, fi, dmg, &verb, None, 0.25);
+                self.damage_foe(d, t, i, fi, dmg, &verb, None, 0.25);
             }
         }
     }
 
-    /// Each step a bound companion's hold weakens; an unhappy (hurt) one may leave.
-    pub(crate) fn companions_step(&mut self, d: &GameData) {
-        let lead = &mut self.party[0];
-        let mut gone = Vec::new();
-        for k in (0..lead.companions.len()).rev() {
-            let c = &mut lead.companions[k];
-            c.bound = c.bound.saturating_sub(1);
-            let unhappy = c.hp * 3 < c.max_hp;
-            if c.bound == 0 || (unhappy && lead.chance(0.02)) {
-                gone.push(lead.companions.remove(k).monster);
+    /// Each tick a companion's binding may break a level (sub0C00): a bound one at
+    /// max(1, 2 power / ln 3 - best level / ln 12 x |binding / 2|) in 200, one that came
+    /// of its own will drifts toward leaving at max(0.5, 15 x hurt) in 200. It leaves at
+    /// `leave_chance`, or when its binding reaches 0; a bound one leaving may turn on the
+    /// party (fn0B6C): always two alignments apart, an evil one 75%, a neutral one 15%.
+    pub(crate) fn companions_tick(&mut self, d: &GameData) {
+        for i in 0..self.party.len() {
+            for k in (0..self.party[i].companions.len()).rev() {
+                let m = &mut self.party[i];
+                let (comp, strength) = (m.companions[k].clone(), bind_strength(m));
+                if comp.hp <= 0 || comp.bind >= 100 {
+                    continue;
+                }
+                let mon = &d.monsters[comp.monster];
+                let top = f64::from(*m.levels.iter().max().unwrap_or(&1));
+                let hurt = f64::from(comp.max_hp - comp.hp) / f64::from(comp.max_hp.max(1));
+                let w = if comp.bind < 0 { (15.0 * hurt).max(0.5) } else { (2.0 * f64::from(mon.power_level) / 3f64.ln() - top / 12f64.ln() * (f64::from(comp.bind) / 2.0).abs()).max(1.0) };
+                let mut said = Vec::new();
+                if m.rnd() * 200.0 < w / strength {
+                    let c = &mut m.companions[k];
+                    c.bind += if c.bind > 0 { -1 } else { 1 };
+                    said.push(if c.bind >= 0 { 0x1a58_f464 } else { 0xd518_9349 });
+                }
+                let comp = m.companions[k].clone();
+                let gone = m.rnd() * 200.0 < leave_chance(m, d, &comp) / strength || comp.bind == 0;
+                let turns = gone && comp.bind > 0 && (mon.w(31).abs_diff(i16::from(m.alignment)) > 1 || mon.w(31) == 2 && m.rnd() * 100.0 < 75.0 || mon.w(31) == 1 && m.rnd() * 100.0 < 15.0);
+                if gone {
+                    m.companions.remove(k);
+                }
+                let who = format!("{} - {}", self.quoted(i), mon.name);
+                for id in said {
+                    self.say(format!("{who}{}", d.t(id)));
+                }
+                if turns && self.fight.as_ref().is_none_or(|f| f.foes.first().is_none_or(|x| d.monsters[x.monster].w(31).abs_diff(mon.w(31)) <= 1)) {
+                    // It joins the monsters, or starts a fight of its own.
+                    let (pos, n) = (self.pos(), self.party.len());
+                    let f = self.fight.get_or_insert_with(|| crate::combat::Fight { foes: Vec::new(), round: 0, order: None, back: pos, lair: false, peaceful: false, chest: None, defending: vec![false; n], gold: 0, opening: None, offers: Vec::new() });
+                    let group = f.foes.iter().map(|x| x.group + 1).max().unwrap_or(0);
+                    f.foes.push(crate::combat::Foe { monster: comp.monster, hp: comp.hp, max_hp: comp.max_hp, group });
+                    f.offers.push(0);
+                    f.peaceful = false;
+                    self.say(format!("{}{}", mon.name, d.t(0xd27f_f6a0)));
+                } else if gone {
+                    let left = format!("{}{}", mon.name, d.t(0x8af1_b775));
+                    let line = if self.party.len() == 1 { left } else { format!("{}{}{left}", self.quoted(i), d.t(0x8e06_2137)) };
+                    self.say(line);
+                }
             }
         }
-        for m in gone {
-            let left = format!("{}{}", d.monsters[m].name, d.t(0x8af1_b775));
-            let line = if self.party.len() == 1 { left } else { format!("{}{}{left}", self.quoted(0), d.t(0x8e06_2137)) };
-            self.say(line);
+    }
+
+    /// Takes up a peaceful group's offer to join (fn14CB, key J): those that offered come
+    /// along of their own will (binding -10), as room allows.
+    pub fn accept_offer(&mut self, d: &GameData) {
+        let Some(f) = self.fight.as_mut().filter(|f| f.peaceful) else { return };
+        let mut joined = Vec::new();
+        for g in 0..f.offers.len() {
+            for _ in 0..f.offers[g] {
+                let Some(fi) = f.front(g as u8) else { break };
+                if self.party[0].companions.len() + joined.len() >= MAX_COMPANIONS {
+                    break;
+                }
+                let foe = &mut f.foes[fi];
+                joined.push(Companion { monster: foe.monster, hp: foe.hp, max_hp: foe.max_hp, bind: -10 });
+                foe.hp = 0;
+            }
+            f.offers[g] = 0;
+        }
+        if f.over() {
+            self.fight = None;
+        }
+        for c in joined {
+            self.say(format!("The {} joins you as a companion!", d.monsters[c.monster].name));
+            self.party[0].companions.push(c);
         }
     }
 }
@@ -633,9 +702,8 @@ impl Game {
         }
         lead.pay(price);
         let hp = i32::from(d.monsters[m].hp.max(1));
-        let bind = (5 + d.monsters[m].level).clamp(1, 10) as u8;
-        let bound = bind_steps(lead, bind);
-        lead.companions.push(Companion { monster: m, hp, max_hp: hp, bound, bind });
+        let bind = (5 + d.monsters[m].level).clamp(1, 10);
+        lead.companions.push(Companion { monster: m, hp, max_hp: hp, bind });
         if d.monsters[m].level > 0 {
             self.store.companions[m] -= 1;
         }
@@ -659,18 +727,19 @@ impl Game {
     /// The bindsmen raise the binding level by 4 (12 at most) for
     /// power level x 1237 x new level x old level / 4: the new level and the price, or
     /// the original's refusal.
-    pub fn rebind_offer(&self, d: &GameData, k: usize) -> Result<(u8, u64), String> {
+    pub fn rebind_offer(&self, d: &GameData, k: usize) -> Result<(i16, u64), String> {
         let c = &self.party[0].companions[k];
         let b = c.bind.max(1);
-        if b >= 12 {
+        // Nor will they bind one that joined of its own will.
+        if b >= 12 || c.bind < 0 {
             return Err(d.t(0xf1e5_a47f).into());
         }
         let new = (b + 4).min(12);
         Ok((new, (f64::from(d.monsters[c.monster].power_level) * 1237.0 * f64::from(new) * f64::from(b) / 4.0).round_ties_even() as u64))
     }
 
-    /// Binds companion k tighter and renews its hold, once the player has agreed to the
-    /// price; the refusal is a message box's text ("Bind Companion").
+    /// Binds companion k tighter, once the player has agreed to the price; the refusal is
+    /// a message box's text ("Bind Companion").
     pub fn rebind(&mut self, d: &GameData, k: usize) -> Result<(), String> {
         let (new, price) = self.rebind_offer(d, k)?;
         let lead = &mut self.party[0];
@@ -678,9 +747,7 @@ impl Game {
             return Err(d.t(0x22bd_be43).into());
         }
         lead.pay(price);
-        let bound = bind_steps(lead, new);
-        let c = &mut lead.companions[k];
-        (c.bind, c.bound, c.hp) = (new, c.bound.max(bound), c.max_hp);
+        lead.companions[k].bind = new;
         Ok(())
     }
 }

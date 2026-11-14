@@ -1165,7 +1165,6 @@ impl Game {
             }
         }
         self.ailments(data);
-        self.companions_step(data);
     }
 
     /// One tick of the original's ailment timer (timAilment_Timer): a combat round in a
@@ -1212,6 +1211,7 @@ impl Game {
                 hurt.push((i, -1));
             }
         }
+        self.companions_tick(data);
         for (i, item) in lost {
             let (it, gone) = (&data.items[item].name, data.t(0xc7c7_7f7d));
             let (you, named) = (format!("{}{it}{gone}", data.t(0xd1a8_7aa4)), format!("{}{}{it}{gone}", self.quoted(i), data.t(0x07b6_f246)));
@@ -1889,6 +1889,28 @@ mod tests {
         g.shelve(&d);
         g.enter_room(&d, &t, area as i16, false, g.pos());
         assert_eq!(g.fight.as_ref().map(|f| f.foes[0].hp), Some(1), "the wounded monster is still there");
+    }
+
+    /// sub0C00/fn0D78: bindings break and companions leave in time; a peaceful group's
+    /// offer to join brings them along at binding -10.
+    #[test]
+    fn companions_as_the_original() {
+        let d = data();
+        let mut g = Game::new(hero(&d, "Tamer", 0, 1, 1, 5));
+        g.enter_dungeon(&d).unwrap();
+        let orc = d.monsters.iter().position(|m| m.name == "Orc").unwrap();
+        g.party[0].companions.push(crate::monsters::Companion { monster: orc, hp: 20, max_hp: 20, bind: 3 });
+        let mut ticks = 0;
+        while !g.party[0].companions.is_empty() && ticks < 20_000 {
+            g.ailments(&d);
+            ticks += 1;
+        }
+        assert!(g.party[0].companions.is_empty(), "a bound Orc stays for ever");
+        let foes = (0..3).map(|_| crate::combat::Foe { monster: orc, hp: 9, max_hp: 9, group: 0 }).collect();
+        g.fight = Some(crate::combat::Fight { foes, round: 0, order: None, back: g.pos(), lair: false, peaceful: true, chest: None, defending: vec![false], gold: 0, opening: None, offers: vec![2] });
+        g.accept_offer(&d);
+        assert_eq!(g.party[0].companions.iter().map(|c| c.bind).collect::<Vec<_>>(), vec![-10, -10]);
+        assert_eq!(g.fight.as_ref().map(|f| f.alive().count()), Some(1));
     }
 
     /// Water takes F hits a tick from each member not levitating; a pit up to

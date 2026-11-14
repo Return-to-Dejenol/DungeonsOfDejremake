@@ -158,7 +158,8 @@ are listed at the end. Notation:
   - A companion's value is (500 att + 500 def + 250 hits) × ln(STR + DEX) × ln(level + 1), plus its specials, spells and resistances.
   - It sells for 1.5 × value / (ln s + 1.15) and is bought back at 0.9 × value / (s + 1.15).
   - Bound companions start at binding level 5 + level (10 at most).
-  - The bindsmen add 4 levels (12 at most) for power level × 1237 × new level × old level / 4.
+  - The bindsmen add 4 levels (12 at most) for power level × 1237 × new level × old level / 4; they won't bind one that joined of its own will, and don't heal.
+- **Companions** (sub0C00, fn0D78, fn0B6C): each member keeps up to four. Each tick a bound companion breaks a level of binding at max(1, 2 × power / ln 3 − best level / ln 12 × |binding / 2|) in 200; one that joined of its own will (binding −10) drifts toward 0 at max(0.5, 15 × hurt) in 200. It leaves at ((24 ln(power + 1) − 2 CInt(4.5 |binding|) − 4 ln(best level / 10 + 1) − CHA / 2) / 2 + 15 × hurt) / 2 in 200 (0-90), or when its binding reaches 0; bound for life (100) it never leaves. A bound one that leaves turns on the party two alignments apart, 75% if evil, 15% if neutral, joining the monsters (unless they are two alignments from it) or starting a fight. A peaceful group's offer to join is taken with J; while it stands the group doesn't turn. The Fear trap scares off all but companions bound for life.
 
 **Original bugs the remake fixes:**
 1. The player's hit roll passes defense 0 (players hit 97%); the monster's defense is used.
@@ -331,7 +332,7 @@ behaviour is a known gap, not a choice.
   complications and CON loss; a member raised in town gets the window's +10.
 - **Stand-ins replaced by the original rules:** paralysis wear-off (ported, and paralysis ends
   with the fight), poison and disease ticking in fights (ported), guild quests (ported), pits,
-  chutes, water and quicksand (ported), companion join offers, charm (ported) and binding, death from
+  chutes, water and quicksand (ported), companion join offers, charm and binding (ported), death from
   old age (ported).
 - **Theft and monster spells (ported):** match the original, including theft's gold rule
   and monster spells hitting the target and its own companions only.
@@ -383,9 +384,9 @@ can be changed in `patches/modern.toml` or here.
   Experience potions cost 7,500 (Greater: drop only, 30,000 value); a found item is an
   experience potion 4% of the time (Greater 30% of those, floor 5+).
 - **Charm of Experience**: 60 SP, needs INT and WIS 14.
-- **Companions**: up to four. A bind lasts 30 steps x binding level x strength (Mage
-  members 1.5x; +4% per CHA point above 10; the original's leaving rule is to be ported);
-  badly hurt companions may wander off.
+- **Companions**: the original's binding and leaving ("Companions" above); the Mage passive
+  divides a companion's chances of breaking a level and of leaving by its master's
+  strength (Mage members 1.5x; +4% per CHA point above 10).
 - **City**: the bank pays fees when the purse runs short (as the original).
 - The Teleporter trap moves the whole party, and the container is lost.
 - **Squares**: the original's pits, chutes, water and quicksand ("Squares" in Original

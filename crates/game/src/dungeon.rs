@@ -20,7 +20,7 @@ impl App {
     pub(crate) fn dungeon(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData, t: &Tuning) {
         const F: &str = "frmDungeonMain";
         let typing = ctx.egui_wants_keyboard_input() || self.dialog.is_some();
-        let keys = ctx.input(|i| [Key::ArrowUp, Key::ArrowLeft, Key::ArrowRight, Key::ArrowDown, Key::T, Key::F, Key::D, Key::R, Key::Space, Key::A, Key::O].map(|k| i.key_pressed(k) && !typing));
+        let keys = ctx.input(|i| [Key::ArrowUp, Key::ArrowLeft, Key::ArrowRight, Key::ArrowDown, Key::T, Key::F, Key::D, Key::R, Key::Space, Key::A, Key::O, Key::J].map(|k| i.key_pressed(k) && !typing));
         let ev = {
             let g = self.game.as_ref().unwrap();
             let p = g.pos();
@@ -145,6 +145,10 @@ impl App {
                     f.order = order;
                 }
             }
+        }
+        // J takes up a peaceful group's offer to join.
+        if keys[11] {
+            self.game.as_mut().unwrap().accept_offer(d);
         }
         if keys[8] {
             self.paused = !self.paused;

@@ -249,7 +249,7 @@ fn spring(g: &mut Game, d: &GameData, t: &Tuning, who: usize, c: &Chest) -> bool
         }
         Trap::Blackout => g.party[who].buffs = Default::default(),
         Trap::Fear => {
-            g.party[who].companions.retain(|c| c.bind >= 12);
+            g.party[who].companions.retain(|c| c.bind >= 100);
             g.say(d.t(0xca8d_b82b));
         }
         Trap::Withering => g.party[who].age_days += 28,
