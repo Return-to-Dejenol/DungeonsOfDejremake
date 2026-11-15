@@ -5,7 +5,7 @@ use ddj_rules::{
     Tuning,
     game::{CONGRATULATIONS, Life},
     magic, monsters,
-    mdr::GameData,
+    mdr::{GameData, Words},
 };
 use eframe::egui::{self, Color32, Key};
 
@@ -88,9 +88,15 @@ impl App {
         let sel = self.sel.min(self.game.as_ref().unwrap().party.len() - 1);
         let g = self.game.as_mut().unwrap();
         let search = desk.state(F, "txtSearch").text.to_lowercase();
-        // The alignment tabs (cmdAlign: none, good, neutral, evil) pick the shelf.
-        let al = desk.state(F, "align").sel.unwrap_or(0).min(3) as u8;
-        let list: Vec<usize> = g.stock(d).listed(d, al).into_iter().filter(|&i| d.items[i].name.to_lowercase().contains(&search)).collect();
+        // Every item in stock, in the file's order, with its count in each alignment
+        // (none, good, neutral, evil); one in more than one alignment asks which
+        // (elaItem_Click's "Select Alignment").
+        g.stock(d);
+        let stock: Vec<[u8; 4]> = (0..d.items.len()).map(|i| [0u8, 1, 2, 3].map(|a| g.store.count(i, a))).collect();
+        let counts = |i: usize| stock[i];
+        let list: Vec<usize> = (0..d.items.len()).filter(|&i| counts(i).iter().any(|&n| n > 0) && d.items[i].name.to_lowercase().contains(&search)).collect();
+        let choosing = desk.state(F, "choose").sel.is_some();
+        let al = desk.state(F, "align").sel.map(|a| a.min(3) as u8);
         let rows = 10usize;
         let top = desk.state(F, "vsbItems").top.min(list.len().saturating_sub(rows));
         let picked = desk.state(F, "buy").sel.filter(|&i| list.contains(&i));
@@ -106,25 +112,38 @@ impl App {
             let (k, ki) = (format!("elaItem({r})"), format!("elaItemInfo({r})"));
             v.scroll(&k, "vsbItems", row0[3] as f32, list.len().saturating_sub(rows)).scroll(&ki, "vsbItems", row0[3] as f32, list.len().saturating_sub(rows));
             let usable = item.is_some_and(|i| d.items[i].guilds & (1 << g.party[sel].guild) != 0);
-            v.text(&k, item.map_or(String::new(), |i| d.items[i].name.clone())).fore(&k, if usable { Color32::BLACK } else { Color32::from_gray(128) });
-            let n = item.map(|i| g.store.count(i, al));
-            let unlimited = n.is_some_and(|n| n >= ddj_rules::store::UNLIMITED);
-            v.text(&ki, match (item, n) {
-                (Some(i), Some(_)) if unlimited => crate::stats::commas(g.buy_price(d, sel, i, al)),
-                (_, Some(n)) => n.to_string(),
-                _ => String::new(),
+            // " Name [charges]"; the counts "u g n e" (9 at most), or the price of an
+            // unaligned store-only item (vsbItems_Change).
+            let name = item.map_or(String::new(), |i| match d.items[i].w(13) {
+                c if c > 0 => format!(" {} [{c}]", d.items[i].name),
+                _ => format!(" {}", d.items[i].name),
             });
-            if unlimited {
-                v.bold(&k).bold(&ki);
-            }
+            v.text(&k, name).fore(&k, if usable { Color32::BLACK } else { Color32::from_gray(128) });
+            v.text(&ki, item.map_or(String::new(), |i| {
+                let n = counts(i);
+                if d.items[i].level == 0 && n[0] > 0 { commas(u64::from(d.items[i].price)) } else { n.map(|n| n.min(9).to_string()).join(" ") }
+            }));
             if item.is_some() && item == picked {
                 v.back(&k, SEL_BACK).fore(&k, Color32::WHITE);
             }
         }
-        v.text("Label9(1)", "Stock");
-        v.text("elaSelectedItem", picked.map_or(String::new(), |i| d.items[i].name.clone()));
-        v.text("elaSelectedItemCost", picked.map_or(String::new(), |i| g.buy_price(d, sel, i, al).to_string()));
-        v.enable("cmdBuy", picked.is_some()).enable("cmdInfo", picked.is_some());
+        if list.is_empty() {
+            v.text("elaItem(0)", d.t(0xefe0_4f7e));
+        }
+        v.show("elaAlignments", choosing);
+        if let Some(i) = desk.state(F, "choose").sel {
+            for a in 0..4u8 {
+                v.enable(&format!("cmdAlign({a})"), g.store.count(i, a) > 0);
+            }
+        }
+        let bought = picked.zip(al);
+        v.text("elaSelectedItem", picked.map_or(String::new(), |i| format!(" {}", d.items[i].name)));
+        if let Some((i, a)) = bought {
+            let n = g.store.count(i, a).min(9);
+            v.text("lblCost", format!("{n}{}{}", d.t([0x6a77_18bd, 0x7e99_ca7b, 0x82af_9716, 0x8a9e_5a8d][usize::from(a)]), d.t(0x6048_43a6)));
+            v.text("elaSelectedItemCost", format!(" {}", commas(g.buy_price(d, sel, i, a))));
+        }
+        v.enable("cmdBuy", bought.is_some() && !choosing).enable("cmdInfo", picked.is_some() && !choosing).enable("cmdExit", !choosing);
         // The items dropped on the Uncurse and Identify boxes (slots in the member's pack).
         let unc = desk.state(F, "uncurse").sel.filter(|&s| s < g.party[sel].items.len());
         let idd = desk.state(F, "id").sel.filter(|&s| s < g.party[sel].items.len());
@@ -140,11 +159,15 @@ impl App {
         let comb = desk.state(F, "combine").sel.filter(|&s| s < g.party[sel].items.len());
         v.text("txtCombine", comb.map_or(String::new(), |s| magic::item_name(d, &g.party[sel].items[s]))).enable("cmdCommand(0)", comb.is_some());
         let ev = desk.window(ctx, F, v, false);
-        if let Some(a) = ev.index("cmdAlign") {
+        if let Some(a) = ev.index("cmdAlign").filter(|_| choosing) {
             desk.state(F, "align").sel = Some(usize::from(a));
+            desk.state(F, "choose").sel = None;
         }
-        if let Some(r) = ev.index("elaItem").or(ev.index("elaItemInfo")) {
-            desk.state(F, "buy").sel = list.get(top + usize::from(r)).copied();
+        if let Some(i) = ev.index("elaItem").or(ev.index("elaItemInfo")).and_then(|r| list.get(top + usize::from(r)).copied()).filter(|_| !choosing) {
+            let have: Vec<usize> = (0..4).filter(|&a| counts(i)[a] > 0).collect();
+            desk.state(F, "buy").sel = Some(i);
+            desk.state(F, "align").sel = (have.len() == 1).then(|| have[0]);
+            desk.state(F, "choose").sel = (have.len() > 1).then_some(i);
         }
         if let Some((k, Drag(1, m, slot))) = ev.dropped.clone()
             && m == sel
@@ -160,7 +183,7 @@ impl App {
         if ev.click("cmdBuy")
             && let Some(i) = picked
         {
-            msg = answer(&mut self.boxes, d, g.buy(d, sel, i, al));
+            msg = answer(&mut self.boxes, d, g.buy(d, sel, i, al.unwrap_or(0)));
         }
         if let Some(a) = ev.index("cmdRealign")
             && let Some(s) = idd
@@ -170,8 +193,7 @@ impl App {
         if ev.click("cmdInfo")
             && let Some(i) = picked
         {
-            let it = &d.items[i];
-            msg = format!("{}: attack {}, defense {}, level {}.", it.name, it.attack, it.defense, it.level);
+            App::show_info(&mut self.info, desk, i, al.unwrap_or(0), 0);
         }
         if ev.click("cmdUncurse")
             && let Some(s) = unc
@@ -251,15 +273,33 @@ impl App {
         let (need, gold) = (c.xp_needed(d, t), ddj_rules::Tuning::level_gold(c.level(), d.guilds[c.guild].gold_factor));
         let ready = c.xp[c.guild] >= need && c.gold + c.bank >= gold;
         v.enable("cmdMake", visit == c.guild && ready).enable("cmdInfo", visit == c.guild).enable("cmdJoin", visit != c.guild && !refused);
-        v.enable("cmdLog", false).enable("cmdLibrary", false);
         let ev = desk.window(ctx, F, v, false);
         if ev.click("cmdVisit") || ev.double.as_deref() == Some("lstGuilds") {
             desk.state(F, "visit").sel = desk.state(F, "lstGuilds").sel.and_then(|i| shown.get(i).copied());
         }
         let mut msg = String::new();
+        if ev.click("cmdLog") {
+            self.dialog = Some(Dialog::GuildLog(visit));
+        }
+        if ev.click("cmdLibrary") {
+            self.dialog = Some(Dialog::Library(None));
+        }
         if ev.click("cmdMake") {
+            let quest = (g.party[sel].quest, g.party[sel].quest_item);
             match g.party[sel].make_level(d, t) {
                 Ok(lines) => {
+                    // A new quest goes in the guild log (cmdMake_Click).
+                    let c = &g.party[sel];
+                    let set = match (c.quest, c.quest_item) {
+                        q if q == quest => None,
+                        (_, Some(it)) if Some(it) != quest.1 => Some(format!("\"{}\"{}{}.", c.name, d.t(0x3def_0bcc), d.items[it].name)),
+                        (Some(m), _) => Some(format!("\"{}\"{}{}.", c.name, d.t(0xdbec_4d86), d.monsters[m].name)),
+                        _ => None,
+                    };
+                    if let Some(line) = set {
+                        let guild = c.guild;
+                        g.hall.note(guild, line);
+                    }
                     let level = format!("{}\n{} {}!", d.t(CONGRATULATIONS), d.t(0x8061_d5d4), g.party[sel].level());
                     self.boxes.push((d.t(0xe241_4a85).into(), level));
                     g.log.extend(lines);
@@ -273,7 +313,11 @@ impl App {
         let c = &mut g.party[sel];
         if ev.click("cmdJoin") && c.levels[visit] > 0 {
             match c.join(d, visit) {
-                Ok(s) => msg = s,
+                Ok(s) => {
+                    msg = s;
+                    let line = format!("\"{}\"{}", c.name, d.t(0x88f9_b2cb));
+                    g.hall.note(visit, line);
+                }
                 Err(e) => self.boxes.push((d.t(0x8b3c_5ec6).into(), e)),
             }
         } else if ev.click("cmdJoin") {
@@ -320,8 +364,18 @@ impl App {
         let mut v = View::default();
         // The bank's items (lstItems): drop a pack item on it to bank it, pick one to take it back.
         let kept: Vec<String> = c.vault.iter().map(|h| magic::item_name(d, h)).collect();
-        v.text("lblStatus", format!("You have {} gold on hand and {} in the bank.", c.gold, c.bank)).items("lstItems", kept).enable("cmdInfo", false);
+        // A click picks one for Info (lstItems_Click); dragged to the pack, it comes back.
+        let picked = desk.state(F, "lstItems").sel.filter(|&k| k < c.vault.len());
+        v.text("lblStatus", format!("You have {} gold on hand and {} in the bank.", c.gold, c.bank)).items("lstItems", kept).enable("cmdInfo", picked.is_some());
+        if let Some(k) = picked {
+            v.drag("lstItems", Drag(6, sel, k));
+        }
         let ev = desk.window(ctx, F, v, false);
+        if ev.click("cmdInfo")
+            && let Some(h) = picked.and_then(|k| g.party[sel].vault.get(k))
+        {
+            App::show_info(&mut self.info, desk, h.item, h.align, h.id);
+        }
         if let Some((k, Drag(1, m, slot))) = ev.dropped.clone()
             && m == sel
             && k == "lstItems"
@@ -329,12 +383,7 @@ impl App {
         {
             self.boxes.push((String::new(), e));
         }
-        if let Some(k) = desk.state(F, "lstItems").sel.take()
-            && k < g.party[sel].vault.len()
-            && let Err(e) = g.party[sel].unstash(d, k)
-        {
-            self.boxes.push((String::new(), e));
-        }
+
         let enter = ctx.input(|i| i.key_pressed(Key::Enter));
         let amount = |desk: &mut Desk, k: &str| desk.state(F, k).text.trim().replace(',', "").parse::<u64>().ok();
         let c = &mut g.party[sel];
@@ -398,19 +447,69 @@ impl App {
                 Err(e) => self.boxes.push((d.t(0xa003_c859).into(), e)),
             }
         }
-        if ev.click("cmdCommand(0)")
-            && let Some(i) = in_morgue
-        {
-            let q = format!("{}{}{}{}.\n{}", d.t(0x659b_51d7), g.party[i].name, d.t(0x9ef2_f919), commas(g.raise_cost(i)), d.t(0x954a_4cca));
-            self.dialog = Some(Dialog::Confirm(q, Deed::Raise(i)));
-        }
-        if ev.click("cmdCommand(3)")
-            && let Some(i) = lost
-        {
-            let q = format!("{}{}{}{}.\n{}", d.t(0xe5ec_e427), commas(g.rescue_cost(i)), d.t(0xc3df_d96b), g.party[i].name, d.t(0x12bc_468a));
-            self.dialog = Some(Dialog::Confirm(q, Deed::Rescue(i)));
+        // Raise and the rescue ask who first (fn16A0, "Character's Name?").
+        for b in [0, 3] {
+            if ev.click(&format!("cmdCommand({b})")) {
+                desk.st.retain(|k, _| !k.starts_with("frmInteract."));
+                self.dialog = Some(Dialog::MorgueWho(b));
+            }
         }
         ev.click("cmdExit") || ev.closed
+    }
+
+    /// The Morgue's "Character's Name?" (RAISE CHARACTER, FIND CHARACTER): those in the
+    /// morgue, or those lying in the dungeon.
+    pub(crate) fn morgue_who(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData, button: u16) -> bool {
+        let Some(g) = self.game.as_mut() else { return true };
+        let who: Vec<usize> = (0..g.party.len()).filter(|&i| if button == 0 { g.party[i].life == Life::InMorgue } else { matches!(g.party[i].life, Life::Dead(_)) }).collect();
+        let names: Vec<String> = who.iter().map(|&i| g.party[i].name.clone()).collect();
+        let mut v = View::default();
+        v.caption = Some(d.t(if button == 0 { 0x80cc_be6c } else { 0x44b0_2db9 }).into());
+        v.text("lblQuestion", d.t(0x2113_adde)).show("txtQuestion", false).show("cmbCharacter", true).items("cmbCharacter", names);
+        let ev = desk.window(ctx, "frmInteract", v, true);
+        if ev.click("cmdOK")
+            && let Some(i) = desk.state("frmInteract", "cmbCharacter").sel.and_then(|k| who.get(k)).copied()
+        {
+            desk.st.retain(|k, _| !k.starts_with("frmInteract."));
+            if button == 3 {
+                self.dialog = Some(Dialog::MorgueWhere(i));
+            } else if g.party[i].rocked {
+                self.boxes.push((d.t(0x6255_8b51).into(), d.t(0x6e58_775c).into()));
+            } else {
+                let q = format!("{}{}{}{}.\n{}", d.t(0x659b_51d7), g.party[i].name, d.t(0x9ef2_f919), commas(g.raise_cost(i)), d.t(0x954a_4cca));
+                self.dialog = Some(Dialog::Confirm(q, Deed::Raise(i)));
+            }
+            return false;
+        }
+        ev.click("cmdOK") || ev.click("cmdCancel") || ev.closed
+    }
+
+    /// The rescue's "Last known coords?", typed "15,5,3" as the original asked, then its
+    /// cost for that level.
+    pub(crate) fn morgue_where(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData, i: usize) -> bool {
+        let Some(g) = self.game.as_mut() else { return true };
+        let mut v = View::default();
+        v.caption = Some(d.t(0x691f_7efb).into());
+        v.text("lblQuestion", format!("{}\n{}\"{}\"{}", d.t(0x7c8e_7345), d.t(0x1754_90bd), d.t(0x2077_71a5), d.t(0x8483_7b63)));
+        let ev = desk.window(ctx, "frmInteract", v, true);
+        if !(ev.click("cmdOK") || ctx.input(|k| k.key_pressed(Key::Enter))) {
+            return ev.click("cmdCancel") || ev.closed;
+        }
+        let typed = std::mem::take(&mut desk.state("frmInteract", "txtQuestion").text);
+        if matches!(typed.trim(), "" | "0" | "-1") {
+            return true;
+        }
+        let n: Vec<i32> = typed.split(',').map(|p| p.trim().parse().unwrap_or(0)).collect();
+        if n.len() != 3 {
+            self.boxes.push((d.t(0x0c61_2df7).into(), d.t(0x345b_c043).into()));
+        } else if n.iter().any(|&v| v < 1) || n[2] > 15 {
+            self.boxes.push((d.t(0x6255_8b51).into(), d.t(0xff32_a28a).into()));
+        } else {
+            let q = format!("{}{}{}{}.\n{}", d.t(0xe5ec_e427), commas(ddj_rules::game::Game::rescue_cost(n[2])), d.t(0xc3df_d96b), g.party[i].name, d.t(0x12bc_468a));
+            self.dialog = Some(Dialog::Confirm(q, Deed::Rescue(i, (n[0], n[1], n[2]))));
+            return false;
+        }
+        true
     }
 
     /// Confinement & Holding: buy a creature from the list; drop a companion from Objects
@@ -419,7 +518,11 @@ impl App {
         const F: &str = "frmCityCStore";
         let g = self.game.as_mut().unwrap();
         let search = desk.state(F, "txtSearch").text.to_lowercase();
-        let list: Vec<(usize, u8)> = (0..d.monsters.len()).filter_map(|m| g.store.companions.get(m).filter(|&&n| n > 0).map(|&n| (m, n))).filter(|(m, _)| d.monsters[*m].name.to_lowercase().contains(&search)).collect();
+        // Each creature in stock with its count per alignment (good, neutral, evil); one in
+        // more than one alignment asks which (FRMCITYC's "Select Alignment").
+        let list: Vec<(usize, [u8; 3])> = (0..d.monsters.len()).filter_map(|m| g.store.companions.get(m).filter(|n| n.iter().any(|&x| x > 0)).map(|&n| (m, n))).filter(|(m, _)| d.monsters[*m].name.to_lowercase().contains(&search)).collect();
+        let choosing = desk.state(F, "choose").sel.is_some();
+        let al = desk.state(F, "align").sel.map(|a| a.min(2));
         let rows = 9usize;
         let top = desk.state(F, "vsbComps").top.min(list.len().saturating_sub(rows));
         let picked = desk.state(F, "buy").sel.and_then(|m| list.iter().find(|x| x.0 == m).copied());
@@ -433,15 +536,26 @@ impl App {
             let it = list.get(top + r);
             let k = format!("elaComp({r})");
             v.scroll(&k, "vsbComps", row0[3] as f32, list.len().saturating_sub(rows));
-            v.text(&k, it.map_or(String::new(), |(m, _)| d.monsters[*m].name.clone())).text(&format!("elaCompInfo({r})"), it.map_or(String::new(), |(_, n)| n.to_string()));
+            // A creature of level 0 shows "PRICE", the others "g n e" (9 at most).
+            let info = it.map_or(String::new(), |(m, n)| if d.monsters[*m].level == 0 { d.t(0xdb2f_fbca).into() } else { n.map(|x| x.min(9).to_string()).join(" ") });
+            v.text(&k, it.map_or(String::new(), |(m, _)| format!(" {}", d.monsters[*m].name))).text(&format!("elaCompInfo({r})"), info);
             if it.is_some() && it.map(|x| x.0) == picked.map(|x| x.0) {
                 v.back(&k, SEL_BACK).fore(&k, Color32::WHITE);
             }
         }
-        v.text("lblLabel(4)", "Stock");
+        v.show("elaAlignments", choosing);
+        if let Some(m) = desk.state(F, "choose").sel {
+            for a in 0..3 {
+                v.enable(&format!("cmdAlign({a})"), g.store.companions[m][a] > 0);
+            }
+        }
+        let bought = picked.zip(al);
         v.text("lblSelectedComp", picked.map_or(String::new(), |(m, _)| d.monsters[m].name.clone()));
-        v.text("lblSelectedCompCost", picked.map_or(String::new(), |(m, n)| monsters::companion_buy_price(d, m, n).to_string()));
-        v.enable("cmdBuy", picked.is_some()).enable("cmdInfo", picked.is_some());
+        if let Some(((m, n), a)) = bought {
+            v.text("lblCost", format!("{}{}{}", n[a].min(9), d.t([0x7e99_ca7b, 0x82af_9716, 0x8a9e_5a8d][a]), d.t(0x6048_43a6)));
+            v.text("lblSelectedCompCost", commas(monsters::companion_buy_price(d, m, n[a])));
+        }
+        v.enable("cmdBuy", bought.is_some() && !choosing).enable("cmdInfo", picked.is_some() && !choosing).enable("cmdExit", !choosing);
         let comps = &g.party[0].companions;
         let bind = desk.state(F, "bind").sel.filter(|&k| k < comps.len());
         let sell = desk.state(F, "sell").sel.filter(|&k| k < comps.len());
@@ -452,8 +566,15 @@ impl App {
         v.text("lblIDCost", sell.filter(|&k| comps[k].id > 0).map_or(String::new(), |k| commas(g.companion_id_price(d, k))));
         v.text("lblIDLevel", sell.map_or(String::new(), |k| comps[k].id.to_string())).enable("cmdID", sell.is_some_and(|k| comps[k].id > 0));
         let ev = desk.window(ctx, F, v, false);
-        if let Some(r) = ev.index("elaComp").or(ev.index("elaCompInfo")) {
-            desk.state(F, "buy").sel = list.get(top + usize::from(r)).map(|x| x.0);
+        if let Some(a) = ev.index("cmdAlign").filter(|_| choosing) {
+            desk.state(F, "align").sel = Some(usize::from(a));
+            desk.state(F, "choose").sel = None;
+        }
+        if let Some((m, n)) = ev.index("elaComp").or(ev.index("elaCompInfo")).and_then(|r| list.get(top + usize::from(r)).copied()).filter(|_| !choosing) {
+            let have: Vec<usize> = (0..3).filter(|&a| n[a] > 0).collect();
+            desk.state(F, "buy").sel = Some(m);
+            desk.state(F, "align").sel = (have.len() == 1).then(|| have[0]);
+            desk.state(F, "choose").sel = (have.len() > 1).then_some(m);
         }
         if let Some((k, Drag(2, 0, comp))) = ev.dropped.clone() {
             match k.as_str() {
@@ -466,7 +587,7 @@ impl App {
         if ev.click("cmdBuy")
             && let Some((m, _)) = picked
         {
-            msg = answer(&mut self.boxes, d, g.buy_companion(d, m));
+            msg = answer(&mut self.boxes, d, g.buy_companion(d, m, al.unwrap_or(0)));
         }
         if ev.click("cmdInfo")
             && let Some((m, _)) = picked

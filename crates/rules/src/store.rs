@@ -24,8 +24,9 @@ pub struct Store {
     /// Count per item (index into `GameData::items`) and alignment (none, good, neutral,
     /// evil), as MORDOR.EXE keeps it.
     pub items: Vec<[u8; 4]>,
-    /// Count per monster (index into `GameData::monsters`).
-    pub companions: Vec<u8>,
+    /// Count per monster (index into `GameData::monsters`) and alignment (good, neutral,
+    /// evil), as FRMCITYC keeps it.
+    pub companions: Vec<[u8; 3]>,
     /// The deepest floor reached: what can appear on the shelves.
     pub deepest: usize,
     /// When it was last saved (Unix seconds): cloud saves keep the newer store.
@@ -51,20 +52,30 @@ impl Store {
                 }
             })
             .collect();
-        let mut companions = vec![0; d.monsters.len()];
+        let mut companions = vec![[0; 3]; d.monsters.len()];
         for (kind, n) in [("Humanoid", 2), ("Animal", 2), ("Insect", 2), ("Thief", 2), ("Clean-Up", 1), ("Undead", 1)] {
             let Some(k) = d.monster_types.iter().position(|t| t.starts_with(kind)) else {
                 continue;
             };
             for m in (1..d.monsters.len()).filter(|&m| d.monsters[m].kind as usize == k).take(n) {
-                companions[m] = 2;
+                companions[m][own(d, m)] = 2;
             }
         }
         Self { items, companions, deepest: 1, saved: 0 }
     }
 
     pub fn load(dir: &Path, d: &GameData) -> Self {
-        let s: Option<Self> = fs::read(dir.join(FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        let mut v: Option<serde_json::Value> = fs::read(dir.join(FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
+        // Before 2026-11-15 Confinement kept one count per monster: it goes to the
+        // monster's own alignment.
+        if let Some(c) = v.as_mut().and_then(|v| v.get_mut("companions")).and_then(|c| c.as_array_mut()) {
+            for (m, n) in c.iter_mut().enumerate().filter(|(_, n)| n.is_u64()) {
+                let mut a = [0u64; 3];
+                a[d.monsters.get(m).map_or(1, |_| own(d, m))] = n.as_u64().unwrap_or(0);
+                *n = serde_json::json!(a);
+            }
+        }
+        let s: Option<Self> = v.and_then(|v| serde_json::from_value(v).ok());
         s.filter(|s| s.items.len() == d.items.len() && s.companions.len() == d.monsters.len()).unwrap_or_else(|| Self::fresh(d))
     }
 
@@ -115,8 +126,10 @@ impl Store {
     /// store and Confinement each run events while d100 <= days (50 at most), 60%
     /// bringing one (retried until a fit is found) and 40% selling one off (up to 100
     /// tries for one in stock). Deeper floors reached bring deeper finds, the shallow
-    /// ones likelier; an item comes in an alignment its mask allows.
-    pub fn restock(&mut self, d: &GameData, rng: &mut Character, days: u32) {
+    /// ones likelier; an item comes in an alignment its mask allows. What came in: the
+    /// items, then the monsters.
+    pub fn restock(&mut self, d: &GameData, rng: &mut Character, days: u32) -> (Vec<usize>, Vec<usize>) {
+        let (mut new_items, mut new_monsters) = (Vec::new(), Vec::new());
         let p = f64::from(days.clamp(1, 50));
         let deep = self.deepest.clamp(1, 14) as i32;
         let level = |rng: &mut Character| {
@@ -133,6 +146,9 @@ impl Store {
                 let al = if add { usize::from(magic::roll_align(rng, d, i)) } else { (0..4).find(|&a| (1..UNLIMITED).contains(&self.items[i][a])).unwrap_or(4) };
                 if al < 4 {
                     let n = &mut self.items[i][al];
+                    if add && *n < 9 {
+                        new_items.push(i);
+                    }
                     if add { *n = (*n + 1).min(9) } else { *n -= 1 }
                     break;
                 }
@@ -145,14 +161,30 @@ impl Store {
                 let monsters: Vec<(usize, i16)> =
                     (0..d.monsters.len()).filter(|&m| d.monsters[m].kind == kind && (1..=level).contains(&d.monsters[m].level)).map(|m| (m, d.monsters[m].weight)).collect();
                 let Some(m) = weighted(rng, &monsters) else { continue };
-                let n = &mut self.companions[m];
-                if add || *n > 0 {
-                    if add { *n = (*n + 1).min(9) } else { *n -= 1 }
+                // New stock comes in the monster's own alignment; it goes from one
+                // alignment that has some.
+                let have: Vec<usize> = (0..3).filter(|&a| self.companions[m][a] > 0).collect();
+                if add {
+                    let n = &mut self.companions[m][own(d, m)];
+                    if *n < 9 {
+                        new_monsters.push(m);
+                    }
+                    *n = (*n + 1).min(9);
+                    break;
+                }
+                if !have.is_empty() {
+                    self.companions[m][have[rng.roll(have.len() as u32) as usize]] -= 1;
                     break;
                 }
             }
         }
+        (new_items, new_monsters)
     }
+}
+
+/// A monster's own alignment (w31: 0 good, 1 neutral, 2 evil).
+fn own(d: &GameData, m: usize) -> usize {
+    d.monsters[m].w(31).clamp(0, 2) as usize
 }
 
 /// A pick weighted by the table's rarity weights.

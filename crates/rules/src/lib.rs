@@ -8,6 +8,7 @@ pub mod automap;
 pub mod combat;
 pub mod game;
 pub mod hall;
+pub mod library;
 pub mod magic;
 pub mod mdata4;
 pub mod mdr;

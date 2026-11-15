@@ -53,6 +53,9 @@ pub struct Chest {
     pub level: i16,
     /// The group's gold, set when the fight ends.
     pub gold: u64,
+    /// Its group passed for another monster when the fight ended: its items are from an
+    /// unknown monster in the Library (monOpenChest).
+    pub disguised: bool,
 }
 
 /// The container an encounter's monster leaves (MORDOR.EXE): one d99 roll against its
@@ -82,7 +85,7 @@ pub fn chest_for(g: &mut Game, d: &GameData, m: usize, lair: bool) -> Option<Che
     }
     let lock = Tuning::load(&[]).map(|t| t.magic_lock_chance(floor)).unwrap_or(0.0);
     let magic_lock = sq & (square::ANTI_MAGIC | square::EXTINGUISH) == 0 && r.chance(lock);
-    let mut c = Chest { chest, trap, guess: trap, sure: 1, magic_lock, unlocked: false, monster: m, level: mon.level.max(1), gold: 0 };
+    let mut c = Chest { chest, trap, guess: trap, sure: 1, magic_lock, unlocked: false, monster: m, level: mon.level.max(1), gold: 0, disguised: false };
     examine(&mut g.party[0], d, &mut c, floor);
     Some(c)
 }
@@ -273,7 +276,8 @@ fn loot(g: &mut Game, d: &GameData, c: &Chest) {
     }
     while r <= chance && chance > 0 {
         let item = random_item(&mut g.party[0], d, c.monster, c.chest);
-        g.give(d, item, c.chest);
+        let disguised = g.fight.as_ref().map_or(c.disguised, |f| f.shown.first().is_some_and(|s| s.as_m != c.monster));
+        g.give(d, item, c.chest, (!disguised).then_some(c.monster));
         r = g.party[0].d100();
         chance = (f64::from(mon.item_chance) / 10.0).round_ties_even() as i32;
     }

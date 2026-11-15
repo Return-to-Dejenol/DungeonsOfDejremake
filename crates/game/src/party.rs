@@ -240,7 +240,13 @@ impl App {
         if ev.click("cmdOK")
             && let Some(n) = desk.state("frmInteract", "cmbCharacter").sel.and_then(|i| names.get(i)).cloned()
         {
-            let msg = load(&n).map_err(|e| e.to_string()).and_then(|c: Character| g.add_ally(d, c)).err().unwrap_or_default();
+            // One with a password asks it first ("Ask to Join"); a Hidden one refuses.
+            if load(&n).is_ok_and(|c| !c.password.trim().is_empty()) {
+                desk.st.retain(|k, _| !k.starts_with("frmInteract."));
+                self.dialog = Some(crate::Dialog::Pass(crate::Pass::Check(n, 1)));
+                return true;
+            }
+            let msg = load(&n).map_err(|e| e.to_string()).and_then(|c: Character| if c.panel.hide { Err(format!("\"{}\"{}", c.name, d.t(0x83d1_afb4))) } else { g.add_ally(d, c) }).err().unwrap_or_default();
             desk.state("frmInteract", "cmbCharacter").sel = None;
             self.say(msg);
             self.persist();

@@ -83,17 +83,25 @@ Taken while building; reviewed at play-test.
 - **AutoMap** (frmAutoMap, 2026-11-14): MG11.DLL's PICS symbols for each flag the
   character has worked out (balance.md), at the original's 14-pixel step on gray, visited
   squares black, the facing cursor; centred on the party, or on the map's middle with no
-  cursor while lost (the level shown is then the last one known). The cursor doesn't
-  blink, and the hidden level scroll bar can't show other levels.
+  cursor while lost (the level shown is then the last one known); the cursor blinks every
+  half second. As the original at its default size, only the maze shows. Not matched yet:
+  the full-size window (level scroll bar, "Level N of M", the info line, numbered edges).
 - **Party order**: the Party window's < and > show the previous or next member, and Up
   and Down move the shown member among the followers (not in a fight), between Options
   and a narrower Leave.
 - **Adding an ally**: the toolbar's add-character button ('A' in the original) opens the
   original's "Pickup Character" window with the saved characters.
 - **The Seer**: its Character/Monster/Item buttons ask through the same window.
-- **Morgue costs**: asked in a message box before raising or hiring rescuers.
-- **Store stock**: the column the original headed "U G N E" shows the shared stock
-  count, headed "Stock"; Confinement's likewise.
+- **Morgue** (2026-11-15, as FRMMORG): Raise and the rescue ask "Character's Name?"
+  (RAISE CHARACTER, FIND CHARACTER) among those in the morgue or lying in the dungeon;
+  the rescue then asks the last known coordinates, typed "15,5,3", and costs by that
+  level; the original's questions, refusals and "Character taken care of!".
+- **Store** (2026-11-15, as FRMCTYS): every item in stock in the file's order, " Name
+  [charges]", its counts under "U G N E" (9 at most) or a store-only item's price; an
+  item in more than one alignment brings up "Select Alignment", and the cost reads
+  "1(g) Cost". Confinement likewise (FRMCITYC): counts under "G N E", "PRICE" for a
+  creature of level 0; its stock is kept per alignment, a creature's own alignment for
+  new stock, the sold companion's for a sale.
 - **Items to services**: drag an item from Objects & Spells onto the store's Uncurse or
   Identify box (or a companion onto Confinement's Bind or Sell box), as in the original.
 - **HelpLesson**: MORDOR.HLP (imported; else the bundled shareware's) in a Windows Help
@@ -126,21 +134,64 @@ Taken while building; reviewed at play-test.
   monster plurals (fn0E23), "Character 2 of 3", the Hall of Records' words and its
   holders, the creation and delete boxes, the main window's lines.
 - **Not matched yet**, where the remake's rules differ: the Seer's per-target fees and
-  its asking first, rescue by coordinates, raising when the dead character is run, Exit
+  its asking first, raising when the dead character is run, Exit
   from anywhere, level titles in lblGuildInfo, the character list's level, guild and
   status, item alignment markers, "points left" at creation, the spell verbs by kind
   ("Fried", "Froze"), the guild log, and the bank's item slots.
 
+## Ported from the stubs (2026-11-15, owner: everything but carrying)
+
+- **Options** (frmOptions; options.json beside the saves, MORDOR.INI's [Loading
+  Information], the boxes unchecked and both volumes full at first): No 3-D draws sunken
+  edges flat; No Music, No Sound FX and the two volume sliders; No StretchBlt shows the
+  maze at its own 100 x 100; Use Sound Canvas MIDI picks the SC songs, checked at first
+  (owner, 2026-11-15: the richer sound; the original started unchecked), else the plain
+  .MID files; No Msg. Ding (MESSAGE.WAV for each Messages
+  line); No Load Automap; No Toolbar; No Party Sound (only the controlled character's
+  sounds); No HELP Sound (HELP.WAV with "Help! My hits are 7/80!"); No Autosave (the
+  dungeon's saves wait for the city); No Automap Cursor Blink. The font buttons and
+  Default stay grey: the remake's fonts are fixed. Backup/Restore are Cloud Saves.
+- **Control Panel** (toolbar F10): Auto Change Lev (the AutoMap turns to the party's
+  level, else stays), Hide ("..." is Hidden! to Pickup Character), Preload Char. (the
+  menu starts with the character loaded), No Perception Msgs. (no Perceive Ahead or
+  perceiving squares unasked); Game Options...; Window Control's Reset and Show, and
+  Adjust to Display as Reset (the remake always fits the desktop).
+- **Buffers 1-10**: an item or a spell dropped on the Buffers tab from Objects & Spells;
+  the dungeon's buttons use it, cast it, or make it the fight's next action. An item
+  slot follows its item when the pack moves (the remake's pack closes up).
+- **Give** (toolbar G): to whom, how much gold, which item number, with the original's
+  boxes and lines. **The resistance bar** (the toolbar's last button, Z).
+- **Passwords**: asked at creation (twice; a blank one asks NO PASSWORD, after "You
+  still have points left"), when loading or adding a character, and by Change Password.
+- **Exchange Items** (frmExchange): with another saved character at the same place;
+  items dragged onto the other's swap (not guild-issued, not worn), gold dragged to the
+  other's gold asks how much. Save Exchange saves both; Cancel discards both (the
+  original saved the other character anyway, which could lose or copy items).
+- **Item Info**: Objects & Spells, the store and the bank print the item on the Misc tab
+  as the original's grid (name, A/D, class, Req, Mod, use, hands, spell, guilds and their
+  levels, abilities and resistances, ID Lev), as far as it is identified. The bank's
+  list now picks an item (for Info) and an item dragged to the pack comes back, as the
+  original's.
+- **Guild Log** (frmGuildLog, in hall.json): the original's entries (appointments,
+  deepest level, deaths, raises, records, joining, quests and forfeits, Guildmasters and
+  Crests, Asmodeus); newest first with "TODAY:" or "N DAYS AGO:"; Clean Guild Log past 50
+  entries a guild, optionally into GUILDLOG.TXT. The level-title entry waits for level
+  titles.
+- **Library** (frmLibrary, saves/library.json, shared): monsters and items recorded as the
+  original records them (sighted groups not disguised, deaths, loot and its monster,
+  store identifies, uncurses and restocks), started with the original's ten monsters and
+  cheap items; the original's pages, the portrait (Asmodeus's face), search, and the
+  entry count. Not hooked yet: re-identifying an item given, taken from the bank or
+  known better at a new level.
+
 ## Not done yet
 
-- Buffers 1-10 and Pickup/Drop look as in the original but only say they aren't in the
-  remake yet; Give, Carry, Combine, Realign, the
-  Library, the Guild Log, Exchange Items, Change Password and the Control Panel are
-  disabled.
+- Pickup/Drop, Carry and the toolbar's Leave (carrying characters) stay off: the owner
+  left carrying out. The toolbar's fifth button pools gold (the original's P picked up a
+  character; pooling was Alt+P).
 - The spell list's type filter only offers "All"; the Look tab is sparse.
 - Window positions are not saved per character as the original saved them.
-- Not matched yet: the store's inner sunken list boxes, its item order and per-alignment
-  stock ("0 0 1 0"); Windows 95 title bars are drawn from memory
+- Not matched yet: the store's inner sunken list boxes; Windows 95 title bars are drawn from memory
   (the comparison host draws Windows 11 ones).
 
 ## Checked against the original (2026-11-04)

@@ -321,7 +321,19 @@ behaviour is a known gap, not a choice.
   floor-1 starter rule, half to all of the group size, lairs giving their monster 75% of
   the time with followers. Rooms keep their monsters, wounded, until killed and refill
   over time; monsters get a free attack on entering their room, and leaving is capped at
-  98%. The remake's 60% chance per room is dropped.
+  98%. The remake's 60% chance per room is dropped. Since 2026-11-15 the picker is
+  MONGEN line for line (owner: pickers replicate the source too): monster 0, the file's
+  "GOBLIE" template, never comes; the type pick's running sum counts the first type
+  twice; an empty window widens to 3 levels at most, then the pick starts over; a fixed
+  follower (w49 3-6, 8+) keeps the last picked monster's rules for every group; followers
+  are picked from the top of their window down, never the first monster, retrying a
+  wrong kin (kin dropped after 150 tries, the encounter after 300); and a follower with
+  nothing to pick starts the whole encounter over. Disguises (MONGEN's seen-as, owner:
+  they stay): a group can pass for another monster of its kin and type near it in the
+  file, more likely against a weak ID skill (the leader's skill against ln(power) x
+  (level + 1)); on a fog square only its type is known. Its name and picture are what it
+  passes for until, each round, a member sees through it (timAilment's ID rolls) and
+  says "...properly identified the monster(s) in group N as ...".
 - **Spell learning (ported):** match the original. A guild teaches a spell up to its class cap,
   when CInt(level x rate) <= Int(L/2 + 0.5), and spell power is Int(L/2 + 0.5).
 - **Casting in combat (ported):** match the original. Heals, cures, raises and buffs only with no
@@ -358,6 +370,10 @@ behaviour is a known gap, not a choice.
   decision first.
 - **Teleport and Displacement (ported, owner's choice 2026-11-14):** the original's offsets,
   picked with - and + buttons instead of typed.
+- **Help! and Give (ported 2026-11-15):** in a party, a member below 10 hits or at a tenth
+  of them calls "Help! My hits are 7/80!" each tick and after a monster's attack. Give
+  moves gold, then an item (not guild-issued or worn), which the receiver may know
+  better (sub145F).
 - **The AutoMap, perception and being lost (ported, owner's choice 2026-11-14):** the map
   holds what the character playing has worked out of each square, not the squares seen
   (sub0835). Entering a square records its walls and doors (not in fog), pits, stairs,
@@ -374,7 +390,7 @@ behaviour is a known gap, not a choice.
   of direction; a teleporter, chute or teleport trap landing on a square not on the map
   leaves the party completely lost. While lost nothing goes on the map and the Dungeon
   window says "(Lost on N)" or "(Lost)" and "?" for the direction; each step may bring
-  back the level (ln(P)²/15 %), the direction (/20) or everything (/25), and a visited
+  back the level (ln(P)Â²/15 %), the direction (/20) or everything (/25), and a visited
   square ends it. The level and direction spells end their part. Saves from before
   version 5 keep their seen squares as visited, with what entering them shows.
 

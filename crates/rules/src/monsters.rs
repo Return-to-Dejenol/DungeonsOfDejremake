@@ -42,8 +42,15 @@ impl Companion {
 /// CInt((30 + level found) x ln((power + 5) / 10 + 1)); 0 within it, 1 short, 2 by 5,
 /// 3 by 15.
 pub fn companion_id(c: &Character, d: &GameData, m: usize) -> u8 {
+    id_level(c, d, m, false)
+}
+
+/// fn121C: a sighting recorded in the Library (its last argument False) makes the
+/// monster CInt(1.5 x) as hard to know.
+pub fn id_level(c: &Character, d: &GameData, m: usize, sighting: bool) -> u8 {
     let mon = &d.monsters[m];
-    let x = crate::treasure::id_skill(c, d) - ((30.0 + f64::from(mon.level)) * ((f64::from(mon.power_level) + 5.0) / 10.0 + 1.0).ln()).round_ties_even();
+    let hard = ((30.0 + f64::from(mon.level)) * ((f64::from(mon.power_level) + 5.0) / 10.0 + 1.0).ln()).round_ties_even();
+    let x = crate::treasure::id_skill(c, d) - if sighting { (hard * 1.5).round_ties_even() } else { hard };
     match x {
         x if x >= 0.0 => 0,
         x if x > -5.0 => 1,
@@ -170,8 +177,11 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning, group: u8, at: Option<usiz
     let m = f.foes[first].monster;
     let mon = &d.monsters[m];
     let opener = f.opening.map(|(j, _)| j);
+    // A group passing for another monster isn't recorded in the Library (sub06FE).
+    let rec = f.shown.get(usize::from(group)).is_none_or(|s| s.as_m == m).then_some(m);
     let defending = f.defending.clone();
     let Some(j) = at.or_else(|| target(g)) else { return };
+    let (one, many) = (g.group_name(d, group, 1, j), g.group_name(d, group, awake.len(), j));
     let (lcur, top) = (g.party[j].level(), *g.party[j].levels.iter().max().unwrap_or(&1));
     if mon.specials & (FIRE_BREATH | COLD_BREATH) != 0 && g.party[j].d100() <= odds(top, mon.power_level, 80) {
         let (slot, kind) = if mon.specials & FIRE_BREATH != 0 { (FIRE, "fire") } else { (COLD, "frost") };
@@ -186,20 +196,20 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning, group: u8, at: Option<usiz
             companion_hurt(g, d, j, k, dmg);
         }
         let dmg = reduce(dmg, resist(&g.party[j], d, slot));
-        struck(g, j, format!("{} {dmg}!", d.t(0xa542_e4fe)), format!("The {} breathes {kind}!", mon.name));
+        struck(g, j, format!("{} {dmg}!", d.t(0xa542_e4fe)), format!("The {one} breathes {kind}!"));
         let at = g.log.len();
         if hurt(g, d, j, dmg) {
-            return killed(g, d, j, m, [0x5aa0_d43c, 0xa36b_ecb9], at);
+            return killed(g, d, j, &one, [0x5aa0_d43c, 0xa36b_ecb9], at, rec);
         }
     }
     if mon.specials & ACID != 0 && g.party[j].d100() <= odds(lcur, mon.power_level, 90) {
         let dmg = (f64::from(element_hit(&mut g.party[j], f64::from(mon.power_level) + 1.0, f64::from(lcur), 10.0, false)) * 0.7).round_ties_even() as i32;
         let dmg = reduce(dmg, resist(&g.party[j], d, ACID_RES));
         let name = g.party[j].name.clone();
-        struck(g, j, format!("{} {dmg}!", d.t(0xbe84_f489)), format!("The {}'s acid burns {name} for {dmg}!", mon.name));
+        struck(g, j, format!("{} {dmg}!", d.t(0xbe84_f489)), format!("The {one}'s acid burns {name} for {dmg}!"));
         let at = g.log.len();
         if hurt(g, d, j, dmg) {
-            return killed(g, d, j, m, [0x8820_ae91, 0x719d_9180], at);
+            return killed(g, d, j, &one, [0x8820_ae91, 0x719d_9180], at, rec);
         }
     }
     let (mut total, mut last_hit, mut bruised) = (0, false, Vec::new());
@@ -207,7 +217,7 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning, group: u8, at: Option<usiz
         if g.fight.is_none() || !g.party[j].alive() {
             return;
         }
-        if mon.spells != 0 && monster_spell(g, d, m, j) {
+        if mon.spells != 0 && monster_spell(g, d, m, j, &one) {
             return;
         }
         let comps: Vec<usize> = (0..g.party[j].companions.len()).filter(|&k| g.party[j].companions[k].hp > 0).collect();
@@ -244,21 +254,21 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning, group: u8, at: Option<usiz
     let name = g.party[j].name.clone();
     if total > 0 {
         // MONSMOD: "2 Zombies hit for 13!"
-        let you = format!("{} {}{} {total}!", awake.len(), plural(d, m, awake.len(), g.party[j].sees_invisible(d)), d.t(0x0354_4daf));
-        struck(g, j, you, format!("The {}{} hit {name} for {total}.", mon.name, if awake.len() > 1 { "s" } else { "" }));
+        let you = format!("{} {many}{} {total}!", awake.len(), d.t(0x0354_4daf));
+        struck(g, j, you, format!("The {many} hit {name} for {total}."));
         let at = g.log.len();
         if hurt(g, d, j, total) {
-            return killed(g, d, j, m, [0xe5d9_a378, 0xf5fc_efbb], at);
+            return killed(g, d, j, &one, [0xe5d9_a378, 0xf5fc_efbb], at, rec);
         }
         if last_hit {
             specials(g, d, m, j);
         }
         if mon.specials & STONE != 0 && g.party[j].alive() {
-            stone(g, d, m, j);
+            stone(g, d, m, j, &one, rec);
         }
     } else {
         let you = d.t(if awake.len() > 1 { 0xe339_1a5f } else { 0x2f02_d448 }).into();
-        struck(g, j, you, format!("The {} miss {name}.", mon.name));
+        struck(g, j, you, format!("The {many} miss {name}."));
     }
     // Companions that were hit can be electrocuted and stoned too (sub0E85).
     bruised.dedup();
@@ -281,12 +291,13 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning, group: u8, at: Option<usiz
         struck(g, j, format!("{} {dmg}!", d.t(0xb9b9_e791)), format!("{name} is electrocuted for {dmg}!"));
         let at = g.log.len();
         if hurt(g, d, j, dmg) {
-            return killed(g, d, j, m, [0xd1fc_f90f, 0x0bc6_8c42], at);
+            return killed(g, d, j, &one, [0xd1fc_f90f, 0x0bc6_8c42], at, rec);
         }
     }
     if g.party[j].alive() {
-        thieves(g, d, m, j, total);
+        thieves(g, d, m, j, total, &one);
     }
+    g.help_cry(d, j);
 }
 
 /// A monster's critical hit (+`crit`: 2, or 4 for a companion) and backstab (+1) to its
@@ -324,9 +335,12 @@ fn struck(g: &mut Game, j: usize, you: String, line: String) {
 }
 
 /// Member j was killed by monster m: the original's words, "You" and named, in
-/// Messages at `at`, before the death's own lines.
-fn killed(g: &mut Game, d: &GameData, j: usize, m: usize, words: [u32; 2], at: usize) {
-    let mon = plural(d, m, 1, true);
+/// Messages at `at`, before the death's own lines; the Library counts the death of
+/// monster `rec` (sub06FE).
+fn killed(g: &mut Game, d: &GameData, j: usize, mon: &str, words: [u32; 2], at: usize, rec: Option<usize>) {
+    if let Some(m) = rec {
+        g.record_monster(d, m, Some(j), None, None, true);
+    }
     let named = format!("{}{}{mon}.", g.quoted(j), d.t(words[1]));
     g.tell(j, MONSTER_HIT, format!("{}{mon}.", d.t(words[0])), Some(named));
     if let Some(line) = g.log.pop() {
@@ -337,11 +351,18 @@ fn killed(g: &mut Game, d: &GameData, j: usize, m: usize, words: [u32; 2], at: u
 /// A monster's name for `n` of them, by MORDOR.EXE's rules (fn0E23): "Dwarves",
 /// "Men", "Harpies"; an invisible one is an "Unseen Monster" to those who can't see it.
 pub fn plural(d: &GameData, m: usize, n: usize, see: bool) -> String {
+    plural_as(d, m, crate::combat::Shown { as_m: m, typed: false }, n, see)
+}
+
+/// Monster m's name as its group looks: the monster it passes for, or its type's name
+/// while only that is known (fn0E23).
+pub fn plural_as(d: &GameData, m: usize, shown: crate::combat::Shown, n: usize, see: bool) -> String {
     let mon = &d.monsters[m];
     if mon.flags & 2 != 0 && !see {
         return d.t(if n > 1 { 0xc6ce_40d0 } else { 0xb6d8_7d83 }).into();
     }
-    let s = mon.name.as_str();
+    let name = if shown.typed { d.monster_types.get(mon.kind as usize).cloned().unwrap_or_default() } else { d.monsters[shown.as_m].name.clone() };
+    let s = name.as_str();
     let cut = |k: usize, add: &str| format!("{}{add}", &s[..s.len() - k]);
     let end = |e: &str| s.ends_with(e);
     if n <= 1 || ["sae", "lex", "ish", "asu", "shi", "toa", "ngi", "ubi", "kul", "yr", "ee"].iter().any(|e| end(e)) {
@@ -442,24 +463,26 @@ fn specials(g: &mut Game, d: &GameData, m: usize, j: usize) {
 }
 
 /// Stoning: past the stone resistance, CON x ln CON / ln 2.5 - level (95 at most) saves.
-fn stone(g: &mut Game, d: &GameData, m: usize, j: usize) {
+fn stone(g: &mut Game, d: &GameData, m: usize, j: usize, mon: &str, rec: Option<usize>) {
     let c = &mut g.party[j];
     let v = f64::from(c.stats[CON].max(1));
     let save = (v * v.ln() / 2.5f64.ln() - f64::from(d.monsters[m].level)).min(95.0);
     if c.d100() > resist(c, d, STONE_RES) && f64::from(c.d100()) > save {
         c.status.stoned = true;
-        let mon = &d.monsters[m].name;
         if j == 0 {
             g.said[MONSTER_HIT] = d.t(0x3779_4ba3).into();
         }
         let line = if g.party.len() == 1 { format!("{}{mon}.", d.t(0xf10a_9c09)) } else { format!("{}{}{mon}.", g.quoted(j), d.t(0x23da_6f44)) };
         g.say(line);
+        if let Some(m) = rec {
+            g.record_monster(d, m, Some(j), None, None, true);
+        }
     }
 }
 
 /// Item destruction and theft need no hit (MORDOR.EXE). DEX protects items; the
 /// victim's thieving and wounds protect its purse.
-fn thieves(g: &mut Game, d: &GameData, m: usize, j: usize, dmg: i32) {
+fn thieves(g: &mut Game, d: &GameData, m: usize, j: usize, dmg: i32, shown: &str) {
     let mon = &d.monsters[m];
     let name = g.party[j].name.clone();
     let floor = g.pos().floor as f64;
@@ -471,7 +494,7 @@ fn thieves(g: &mut Game, d: &GameData, m: usize, j: usize, dmg: i32) {
         let it = &d.items[c.items[s].item];
         if c.d100() > protect && it.level - 2 <= mon.level && !(500..512).contains(&it.w(10)) && c.items[s].item != crate::game::HANDS {
             let h = c.items.remove(s);
-            let gone = format!("{}{}{}{}", mon.name, d.t(0x8e06_2137), d.items[h.item].name, d.t(0xdd34_21c9));
+            let gone = format!("{shown}{}{}{}", d.t(0x8e06_2137), d.items[h.item].name, d.t(0xdd34_21c9));
             let line = if g.party.len() == 1 { gone } else { format!("{name}{}{gone}", d.t(0x89d0_00f1)) };
             g.say(line);
         }
@@ -502,7 +525,7 @@ fn thieves(g: &mut Game, d: &GameData, m: usize, j: usize, dmg: i32) {
     let item = x <= 10.0 && s < c.items.len() && !c.items[s].equipped && c.items[s].item != crate::game::HANDS;
     if item {
         let h = c.items.remove(s);
-        g.say(format!("{}{}\"{}{}{}{name}!\"", mon.name, d.t(0x8e06_2137), d.t(0x6702_d10c), d.items[h.item].name, d.t(0x89d0_00f1)));
+        g.say(format!("{shown}{}\"{}{}{}{name}!\"", d.t(0x8e06_2137), d.t(0x6702_d10c), d.items[h.item].name, d.t(0x89d0_00f1)));
     }
     let runs = item || took > 0 && g.party[j].d100() > 30;
     for you in said {
@@ -523,7 +546,7 @@ fn thieves(g: &mut Game, d: &GameData, m: usize, j: usize, dmg: i32) {
 /// A monster spell instead of an attack, as MORDOR.EXE's casters: one of its classes,
 /// at a level near the monster's, damage by caster level (power level / 4) less the
 /// matching resistance (and WIS, the remake's passive). False if it doesn't cast.
-fn monster_spell(g: &mut Game, d: &GameData, m: usize, j: usize) -> bool {
+fn monster_spell(g: &mut Game, d: &GameData, m: usize, j: usize, shown: &str) -> bool {
     let mon = &d.monsters[m];
     let sq = g.floor(d).map_or(0, |f| f.square(g.pos().x, g.pos().y).flags);
     if sq & (square::ANTI_MAGIC | square::EXTINGUISH) != 0 {
@@ -544,7 +567,7 @@ fn monster_spell(g: &mut Game, d: &GameData, m: usize, j: usize) -> bool {
     };
     let sp = &d.spells[s];
     let l = (f64::from(mon.power_level) / 4.0).floor();
-    g.say(format!("The {} casts {}!", mon.name, sp.name));
+    g.say(format!("The {shown} casts {}!", sp.name));
     // The target, then its own companions, up to w6 (4 at most) of them, each with its
     // own roll (fn0FF5); a kill spell (effect 100) counts only if it kills.
     let slot = usize::try_from(sp.resist).unwrap_or(99);
@@ -761,7 +784,7 @@ impl Game {
                 if turns && self.fight.as_ref().is_none_or(|f| f.foes.first().is_none_or(|x| d.monsters[x.monster].w(31).abs_diff(al) <= 1)) {
                     // It joins the monsters, or starts a fight of its own.
                     let (pos, n) = (self.pos(), self.party.len());
-                    let f = self.fight.get_or_insert_with(|| crate::combat::Fight { foes: Vec::new(), round: 0, order: None, back: pos, lair: false, peaceful: false, chest: None, defending: vec![false; n], gold: 0, opening: None, offers: Vec::new() });
+                    let f = self.fight.get_or_insert_with(|| crate::combat::Fight { shown: Vec::new(), foes: Vec::new(), round: 0, order: None, back: pos, lair: false, peaceful: false, chest: None, defending: vec![false; n], gold: 0, opening: None, offers: Vec::new() });
                     let group = f.foes.iter().map(|x| x.group + 1).max().unwrap_or(0);
                     f.foes.push(crate::combat::Foe { monster: comp.monster, hp: comp.hp, max_hp: comp.max_hp, group });
                     f.offers.push(0);
@@ -833,9 +856,11 @@ pub fn companion_buy_price(d: &GameData, m: usize, s: u8) -> u64 {
 impl Game {
     /// Holding & Confinement (FRMCITYC) in the original's words: Ok is the Messages
     /// line, Err a message box (title's text id, text).
-    pub fn buy_companion(&mut self, d: &GameData, m: usize) -> Result<String, (u32, String)> {
+    /// The buyer picks one of the alignments in stock, `al` (0 good, 1 neutral, 2 evil).
+    pub fn buy_companion(&mut self, d: &GameData, m: usize, al: usize) -> Result<String, (u32, String)> {
         const BUY: u32 = 0x802c_c741;
-        let s = self.store.companions.get(m).copied().unwrap_or(0);
+        let al = al.min(2);
+        let s = self.store.companions.get(m).map_or(0, |n| n[al]);
         if s == 0 {
             return Err((BUY, "None left.".into()));
         }
@@ -850,9 +875,9 @@ impl Game {
         lead.pay(price);
         let hp = i32::from(d.monsters[m].hp.max(1));
         let bind = (5 + d.monsters[m].level).clamp(1, 10);
-        lead.companions.push(Companion { monster: m, hp, max_hp: hp, bind, id: 0, align: None });
+        lead.companions.push(Companion { monster: m, hp, max_hp: hp, bind, id: 0, align: Some(al as i16) });
         if d.monsters[m].level > 0 {
-            self.store.companions[m] -= 1;
+            self.store.companions[m][al] -= 1;
         }
         Ok(format!("{}{}{}{}.", d.t(0x582d_1544), lead.companions.len(), d.t(0xfa28_fdd2), d.monsters[m].name))
     }
@@ -861,7 +886,12 @@ impl Game {
     /// / (its identification level + 1).
     pub fn companion_sell_price(&self, d: &GameData, k: usize) -> u64 {
         let c = &self.party[0].companions[k];
-        let s = self.store.companions.get(c.monster).copied().unwrap_or(0);
+        // The count in its alignment, 1 when only others have some (fn33FA).
+        let n = self.store.companions.get(c.monster).copied().unwrap_or_default();
+        let s = match n[c.alignment(d).clamp(0, 2) as usize] {
+            0 if n.iter().any(|&x| x > 0) => 1,
+            s => s,
+        };
         crate::store::cha_sell(&self.party[0], d, (0.9 * companion_value(d, c.monster) / (f64::from(s.min(9)) + 1.15) / (f64::from(c.id) + 1.0)).round_ties_even() as u64)
     }
 
@@ -872,7 +902,7 @@ impl Game {
         if c.id == 0 {
             return 0;
         }
-        let s = f64::from(self.store.companions.get(c.monster).copied().unwrap_or(0).min(9));
+        let s = f64::from(self.store.companions.get(c.monster).map_or(0, |n| n[c.alignment(d).clamp(0, 2) as usize]).min(9));
         (0.13 * companion_value(d, c.monster) / ((s / 2.0 + 1.0) * 0.9) / f64::from(c.id) + 1.0).round_ties_even() as u64
     }
 
@@ -898,6 +928,8 @@ impl Game {
         }
         lead.pay(cost);
         lead.companions[k].id = lead.companions[k].id.saturating_sub(1);
+        let (m, id) = (lead.companions[k].monster, lead.companions[k].id);
+        self.record_monster(d, m, Some(0), Some(id), None, false);
         Ok(String::new())
     }
 
@@ -907,7 +939,7 @@ impl Game {
         let lead = &mut self.party[0];
         let c = lead.companions.remove(k);
         lead.gold += price;
-        if let Some(n) = self.store.companions.get_mut(c.monster)
+        if let Some(n) = self.store.companions.get_mut(c.monster).map(|n| &mut n[c.alignment(d).clamp(0, 2) as usize])
             && *n < 9
             && d.monsters[c.monster].level > 0
         {

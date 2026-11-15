@@ -134,6 +134,47 @@ pub struct Buffs {
     pub invisible: bool,
 }
 
+/// A number with thousands separators, as the original shows gold and experience.
+pub fn commas(n: impl std::fmt::Display) -> String {
+    let s = n.to_string();
+    let (sign, digits) = s.split_at(usize::from(s.starts_with('-')));
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    format!("{sign}{out}")
+}
+
+/// A quick slot (the record's @2847 buffers): an item carried, by its kind, or a spell.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Buf {
+    Item(usize),
+    Spell(usize),
+}
+
+/// The Control Panel's character options (the record's @2335 flags).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Panel {
+    /// Auto Change Lev: the AutoMap turns to the party's level.
+    pub auto_level: bool,
+    /// Hide: others can't add this character to their party.
+    pub hide: bool,
+    /// Preload Char.: the game starts with this character loaded.
+    pub preload: bool,
+    /// No Perception Msgs.: no Perceive Ahead, and no perceiving squares unasked.
+    pub no_perception: bool,
+}
+
+impl Default for Panel {
+    fn default() -> Self {
+        Self { auto_level: true, hide: false, preload: false, no_perception: false }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Character {
     pub version: u32,
@@ -168,6 +209,17 @@ pub struct Character {
     /// and `automap::VISITED`.
     #[serde(default)]
     pub map: Vec<Vec<u32>>,
+    #[serde(default)]
+    pub panel: Panel,
+    /// The password asked before loading or adding the character (blank: none).
+    #[serde(default)]
+    pub password: String,
+    /// The deepest level this character has reached (its AutoMap file's header).
+    #[serde(default)]
+    pub deepest: usize,
+    /// Buffers 1-10, set on the character window's Buffers tab.
+    #[serde(default)]
+    pub buffers: [Option<Buf>; 10],
     pub kills: u32,
     /// Combat rules for when this character is AI-controlled, first match wins.
     #[serde(default)]
@@ -280,6 +332,10 @@ impl Character {
             buffs: Buffs::default(),
             seen: Vec::new(),
             map: Vec::new(),
+            panel: Panel::default(),
+            buffers: [None; 10],
+            deepest: 0,
+            password: String::new(),
             kills: 0,
             macros: ai::preset(ai::Role::Fighter, |_| None),
             companions: Vec::new(),
@@ -630,7 +686,7 @@ impl Character {
     fn quest_pick_monster(&mut self, data: &GameData, q: i16) -> Option<usize> {
         for _ in 0..1000 {
             let k = self.roll(data.monster_types.len() as u32) as i16;
-            let mut of: Vec<usize> = (0..data.monsters.len()).filter(|&m| data.monsters[m].kind == k).collect();
+            let mut of: Vec<usize> = (1..data.monsters.len()).filter(|&m| data.monsters[m].kind == k).collect();
             of.sort_by_key(|&m| data.monsters[m].level);
             let Some(end) = of.iter().rposition(|&m| data.monsters[m].level <= q) else { continue };
             let start = if self.rnd() * 100.0 < 40.0 { 0 } else { of.iter().position(|&m| data.monsters[m].level >= q).unwrap_or(0).min(end) };
@@ -762,7 +818,7 @@ impl Character {
             return refuse(0xb9a9_fca7);
         }
         let can = |g: usize| it.guilds & (1 << g) != 0;
-        let need = |g: usize| ((f64::from(data.guilds[g].single(112)) * 3.97 * f64::from(it.w(17))).round_ties_even() as u32).max(1);
+        let need = |g: usize| crate::magic::guild_need(data, self.items[slot].item, g);
         let joined: Vec<usize> = (0..self.levels.len()).filter(|&g| self.levels[g] > 0 && can(g)).collect();
         if it.w(42) == 0 {
             if joined.is_empty() {
@@ -938,7 +994,7 @@ pub(crate) fn complications(data: &GameData, c: &mut Character) -> Option<u32> {
 /// Names of the characters saved in `dir`.
 pub fn saved(dir: &Path) -> Vec<String> {
     let mut v: Vec<String> = fs::read_dir(dir)
-        .map(|d| d.iter().filter_map(|p| p.file_name()?.to_str()?.strip_suffix(".json").filter(|n| !["store", "hall"].contains(n)).map(str::to_owned)).collect())
+        .map(|d| d.iter().filter_map(|p| p.file_name()?.to_str()?.strip_suffix(".json").filter(|n| !["store", "hall", "library"].contains(n)).map(str::to_owned)).collect())
         .unwrap_or_default();
     v.sort();
     v
@@ -961,6 +1017,8 @@ pub struct Game {
     pub store: Store,
     /// The Hall of Records (saves/hall.json).
     pub hall: Hall,
+    /// The Library (saves/library.json).
+    pub library: crate::library::Library,
     /// What the dungeon window's labels say about the controlled character: its own
     /// action (CHAR_HIT), what hit it (MONSTER_HIT) and its square (SQUARE).
     pub said: [String; 3],
@@ -981,7 +1039,7 @@ pub const SQUARE: usize = 2;
 
 impl Game {
     pub fn new(lead: Character) -> Self {
-        Self { party: vec![lead], fight: None, chest: None, rooms: Default::default(), ticks: 0, log: Vec::new(), store: Store::default(), hall: Hall::default(), said: Default::default(), boxes: Vec::new(), teleport_pending: None, lost: Default::default() }
+        Self { party: vec![lead], fight: None, chest: None, rooms: Default::default(), ticks: 0, log: Vec::new(), store: Store::default(), hall: Hall::default(), library: Default::default(), said: Default::default(), boxes: Vec::new(), teleport_pending: None, lost: Default::default() }
     }
 
     pub fn lead(&self) -> &Character {
@@ -1016,7 +1074,14 @@ impl Game {
     pub fn records(&mut self, d: &GameData) -> bool {
         let before = self.hall.records.clone();
         for i in 0..self.party.len() {
+            let held = before.clone();
             for what in self.hall.check_all(d, &self.party[i]) {
+                // The guild log, but not for the mightiest creature or one's own record.
+                if let Some(k) = crate::hall::FOR.iter().position(|&f| f == what).filter(|&k| k != crate::hall::CREATURE && held[k].name != self.party[i].name) {
+                    let c = &self.party[i];
+                    let line = format!("\"{}\"{}{}{}{}.", c.name, d.t(0xb137_91ac), d.t(what), d.t(0x3988_51ce), self.hall.records[k].value);
+                    self.hall.note(c.guild, line);
+                }
                 let line = if self.party.len() == 1 { format!("{}{}!", d.t(0xfb4a_3a19), d.t(what)) } else { format!("{}{}{}!", self.quoted(i), d.t(0x2147_aff8), d.t(what)) };
                 self.say(line);
             }
@@ -1050,6 +1115,11 @@ impl Game {
             }
         }
         self.hall.guildmasters.insert(g, crate::hall::Record { name: c.name.clone(), value: level, date: None });
+        let q = format!("\"{}\"", self.party[i].name);
+        self.hall.note(g, format!("{q}{}", d.t(0xd7a8_41f2)));
+        if let Some(k) = crest {
+            self.hall.note(g, format!("{q}{}{}{}", d.t(0x0ecb_6d22), d.items[k].name, d.t(0x16ff_ea10)));
+        }
         said
     }
 
@@ -1086,6 +1156,41 @@ impl Game {
         self.party.push(ally);
         self.party[0].allies = self.party[1..].iter().map(|m| m.name.clone()).collect();
         Ok(())
+    }
+
+    /// Give (sub145F): `gold`, then the item in pack slot `slot`, from member `from` to
+    /// member `to`, told the original's way; a full pack refuses with a box.
+    pub fn give_to(&mut self, d: &GameData, from: usize, to: usize, gold: u64, slot: Option<usize>) {
+        let name = format!("\"{}\"", self.party[to].name);
+        let gold = gold.min(self.party[from].gold);
+        if gold > 0 {
+            self.party[from].gold -= gold;
+            self.party[to].gold += gold;
+            self.say(format!("{}{}{}{name}{}", d.t(0xface_6fff), commas(gold), d.t(0xea9b_adf6), d.t(0x4eb7_5ebb)));
+        }
+        let Some(s) = slot.filter(|&s| s > 0 && s < self.party[from].items.len()) else { return };
+        let h = &self.party[from].items[s];
+        if (500..512).contains(&d.items[h.item].w(10)) {
+            return self.say(d.t(0xd6f2_3495));
+        }
+        if h.equipped {
+            return self.say(d.t(0x0912_16e7));
+        }
+        if self.party[to].items.len() >= 40 {
+            return self.boxes.push((0x9fa0_af51, format!("{name}{}", d.t(0xcf0a_d86e))));
+        }
+        let mut h = self.party[from].items.remove(s);
+        // The receiver may know it better.
+        if h.id != 0 {
+            let knows = crate::treasure::identifies(&self.party[to], d, h.item);
+            if knows < h.id {
+                h.id = knows;
+                let line = format!("{name}{}{}", d.t(0x6282_def3), crate::magic::item_name(d, &h));
+                self.say(line);
+            }
+        }
+        self.party[to].items.push(h);
+        self.say(format!("{}{name}{}", d.t(0xc704_ffd3), d.t(0x4eb7_5ebb)));
     }
 
     pub fn dismiss(&mut self, i: usize) -> Option<Character> {
@@ -1162,8 +1267,16 @@ impl Game {
         }
         if days > 0 {
             let mut store = std::mem::take(self.stock(data));
-            store.restock(data, &mut self.party[0], days);
+            let (items, monsters) = store.restock(data, &mut self.party[0], days);
             self.store = store;
+            // New stock is recorded in the Library by nobody (mdrReplenishStore,
+            // mdrReplenishCStore).
+            for i in items {
+                self.record_item(i, None, 0, Some(None));
+            }
+            for m in monsters {
+                self.record_monster(data, m, None, Some(0), Some(0), false);
+            }
         }
         self.fight = None;
     }
@@ -1236,6 +1349,9 @@ impl Game {
     pub(crate) fn ailments(&mut self, data: &GameData) {
         self.ticks += 1;
         let foes = self.fight.as_ref().is_some_and(|f| !f.over());
+        if foes {
+            self.see_through(data);
+        }
         let Pos { x, y, floor, .. } = self.pos();
         let sq = self.floor(data).map_or(0, |f| f.square(x, y).flags);
         let (sinking, quicksand) = (sq & (square::WATER | square::QUICKSAND) != 0, sq & square::QUICKSAND != 0);
@@ -1289,6 +1405,21 @@ impl Game {
             }
             let dmg = if dmg < 0 { self.party[i].hp } else { dmg };
             self.hurt(data, i, dmg);
+        }
+        if floor > 0 {
+            for i in self.living() {
+                self.help_cry(data, i);
+            }
+        }
+    }
+
+    /// In a party, a member below 10 hits or at a tenth of them or less calls out (the
+    /// ailment timer, and after a monster's attack): `Name - "Help! My hits are 7/80!`.
+    pub(crate) fn help_cry(&mut self, data: &GameData, i: usize) {
+        let m = &self.party[i];
+        if self.party.len() > 1 && m.alive() && (m.hp < 10 || f64::from(m.hp) <= f64::from(m.max_hp) * 0.1) {
+            let line = format!("{}{}\"{}{}/{}!", m.name, data.t(0x9918_0f02), data.t(0x70d3_62ed), m.hp, m.max_hp);
+            self.say(line);
         }
     }
 
@@ -1397,6 +1528,10 @@ impl Game {
         m.life = Life::Dead(m.pos);
         m.buffs = Buffs::default();
         let name = format!("\"{}\"", m.name);
+        // The guild log (mdrcharSetDead): where, if the level is known.
+        let (g, floor) = (m.guild, m.pos.floor);
+        let died = if self.lost.level { format!("{name}{}", data.t(0x9f85_c746)) } else { format!("{name}{}{floor}.", data.t(0x9a8c_4c90)) };
+        self.hall.note(g, died);
         self.say(format!("{name}{}", data.t(0x7acb_4bd0)));
         if self.living().is_empty() {
             self.shelve(data);
@@ -1630,6 +1765,8 @@ impl Game {
         c.pay(cost);
         // One step of identification (cmdID_Click).
         c.items[slot].id = c.items[slot].id.saturating_sub(1);
+        let (item, id) = (c.items[slot].item, c.items[slot].id);
+        self.record_item(item, Some(i), id, None);
         Ok(String::new())
     }
 
@@ -1645,16 +1782,15 @@ impl Game {
         c.pay(cost);
         c.items[slot].equipped = false;
         c.items[slot].id = 0;
+        self.record_item(item, Some(i), 0, None);
         Ok(data.t(0x4549_b450).into())
     }
 
     /// Rescuers fetch a corpse from floor F for 372,567.52 x ln(F + 1) x F (MORDOR.EXE);
     /// they are lost, and keep the fee, 4% of the time per floor.
-    pub fn rescue_cost(&self, i: usize) -> u64 {
-        match self.party[i].life {
-            Life::Dead(p) => (372_567.52 * (p.floor as f64 + 1.0).ln() * p.floor as f64).round_ties_even() as u64,
-            _ => 0,
-        }
+    /// Hiring rescuers for level `floor` (the one asked for): 372,567.52 x ln(L + 1) x L.
+    pub fn rescue_cost(floor: i32) -> u64 {
+        (372_567.52 * (f64::from(floor) + 1.0).ln() * f64::from(floor)).round_ties_even() as u64
     }
 
     /// Raising costs 2,912.32 x max hits / 1.5 (MORDOR.EXE).
@@ -1668,10 +1804,11 @@ impl Game {
     }
 
     /// The fee comes from the dead character's purse and bank, then the party's; false,
-    /// with the original's "Not enough gold!", when they can't cover it (fn114E).
-    fn charge(&mut self, data: &GameData, i: usize, cost: u64) -> bool {
+    /// with the original's "Not enough gold!" under `title`, when they can't cover it
+    /// (fn114E).
+    fn charge(&mut self, data: &GameData, i: usize, cost: u64, title: u32) -> bool {
         if self.funds() < cost {
-            self.boxes.push((0x9fa0_af51, data.t(0xab5e_eac3).into()));
+            self.boxes.push((title, data.t(0x22bd_be43).into()));
             return false;
         }
         let mut left = cost;
@@ -1724,17 +1861,22 @@ impl Game {
         Some(format!("{}{days}{}", data.t(0xe5ef_49ce), data.t(0x9fba_2bcc)))
     }
 
-    /// FRMMORG's rescue, told in the original's words.
-    pub fn rescue(&mut self, data: &GameData, i: usize) {
+    /// FRMMORG's rescue at the last known coordinates (x, y, level, 1-based): they come
+    /// back when Rnd x 100 > 4 x level, and find the body within 7 squares on that level.
+    pub fn rescue(&mut self, data: &GameData, i: usize, at: (i32, i32, i32)) {
         let Life::Dead(p) = self.party[i].life else { return };
-        if !self.charge(data, i, self.rescue_cost(i)) {
+        if !self.charge(data, i, Self::rescue_cost(at.2), 0xa031_a60b) {
             return;
+        }
+        if self.party[i].rnd() * 100.0 <= 4.0 * f64::from(at.2) {
+            return self.say(data.t(0x6601_942a));
+        }
+        if (at.0 - p.x as i32 - 1).abs() >= 8 || (at.1 - p.y as i32 - 1).abs() >= 8 || at.2 != p.floor as i32 {
+            let line = format!("{}{}", self.party[i].name, data.t(0x975f_d03a));
+            return self.say(line);
         }
         if self.party[i].rocked {
             return self.say(data.t(0xd170_a6e2));
-        }
-        if self.party[i].rnd() * 100.0 <= 4.0 * p.floor as f64 {
-            return self.say(data.t(0x6601_942a));
         }
         self.party[i].life = Life::InMorgue;
         self.party[i].pos = Pos::default();
@@ -1751,18 +1893,20 @@ impl Game {
         if self.party[i].life != Life::InMorgue {
             return;
         }
+        // Paid for, the morgue's box says so after the raise's own (cmdCommand_Click).
+        let done = (0xd654_dfb0, data.t(0xde92_f6ac).to_string());
         const INFO: u32 = 0xbe7b_2721;
         let cost = self.raise_cost(i);
         if self.party[i].levels.iter().max().copied().unwrap_or(0) <= 5 && self.funds() < cost {
             self.boxes.push((0xad54_2324, data.t(0x15ee_90dd).into()));
-        } else if !self.charge(data, i, cost) {
+        } else if !self.charge(data, i, cost, 0x9fa0_af51) {
             return;
         }
         let m = &mut self.party[i];
         let said = if (m.rnd() * 100.0).floor() as i32 > raise_odds(m, 1) {
             match complications(data, m) {
                 Some(id) => vec![0x8327_8e1b, id],
-                None => return self.boxes.push((INFO, data.t(0x8327_8e1b).into())),
+                None => return self.boxes.extend([(INFO, data.t(0x8327_8e1b).into()), done]),
             }
         } else {
             vec![0xf63e_9d43]
@@ -1770,17 +1914,57 @@ impl Game {
         m.age_days += 54;
         m.life = Life::Alive;
         m.hp = m.max_hp;
+        let raised = format!("\"{}\"{}", m.name, data.t(0x107d_8b27));
+        let g = m.guild;
+        self.hall.note(g, raised);
+        let m = &mut self.party[i];
         let min = data.races[m.race].stat_min[CON];
         let con = m.rnd() * 100.0 < 50.0 - 2.0 * f64::from(m.stats[CON]) && m.stats[CON] > min;
         if con {
             m.stats[CON] -= 1;
         }
-        self.boxes.extend(said.into_iter().map(|id| (INFO, data.t(id).into())));
+        self.boxes.extend(said.into_iter().map(|id| (INFO, data.t(id).into())).chain([done]));
         if con {
             let line = if self.party.len() == 1 { data.t(0x346e_365c).into() } else { format!("{}{}{}", data.t(0x2cf6_254e), self.quoted(i), data.t(0x02e1_4e6f)) };
             self.say(line);
         }
     }
+}
+
+/// Exchange Items (frmExchange): the item in slot `from` of `src` dropped on slot `to`
+/// of `dst` (past the last, an empty one): the two change places; the first slot, the
+/// hands, never moves. The one landing may be known better there. Err is the box's text.
+pub fn exchange(d: &GameData, src: &mut Character, from: usize, dst: &mut Character, to: usize) -> Result<(), u32> {
+    let guild = |c: &Character, s: usize| c.items.get(s).is_some_and(|h| (500..512).contains(&d.items[h.item].w(10)));
+    let worn = |c: &Character, s: usize| c.items.get(s).is_some_and(|h| h.equipped);
+    if from == 0 || to == 0 || from >= src.items.len() {
+        return Ok(());
+    }
+    if guild(dst, to) {
+        return Err(0xaed2_8612);
+    }
+    if guild(src, from) {
+        return Err(0xd963_d4b7);
+    }
+    if worn(dst, to) {
+        return Err(0xa40b_39b2);
+    }
+    if worn(src, from) {
+        return Err(0x72a6_3879);
+    }
+    let mut h = src.items.remove(from);
+    if h.id != 0 {
+        h.id = h.id.min(crate::treasure::identifies(dst, d, h.item));
+    }
+    if to < dst.items.len() {
+        let back = std::mem::replace(&mut dst.items[to], h);
+        src.items.insert(from, back);
+    } else if dst.items.len() < 40 {
+        dst.items.push(h);
+    } else {
+        src.items.insert(from, h);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1842,7 +2026,7 @@ mod tests {
             let mut steps = 0;
             while !g.living().is_empty() && steps < 3000 {
                 steps += 1;
-                if g.fight.is_some() {
+                if g.fight.as_ref().is_some_and(|f| !f.peaceful) {
                     g.round(&d, &t);
                 } else if g.log.last().is_some_and(|l| l.starts_with("A wall")) || g.party[0].roll(8) == 0 {
                     let by = 1 + 2 * g.party[0].roll(2) as u8;
@@ -1915,6 +2099,93 @@ mod tests {
     }
 
     #[test]
+    fn mongen_never_brings_the_template() {
+        let d = data();
+        let mut g = Game::new(hero(&d, "Picker", 0, 1, 1, 4));
+        g.enter_dungeon(&d).unwrap();
+        let (mut n, mut kinds) = (0, std::collections::HashSet::new());
+        for (area, a) in d.floors[0].areas.iter().enumerate().skip(1).take(40) {
+            for _ in 0..50 {
+                let groups = g.mongen(&d, a, area as i16, false);
+                assert!(groups.iter().all(|&(m, k)| m != 0 && k >= 1) && groups.len() <= 4);
+                n += usize::from(!groups.is_empty());
+                kinds.extend(groups.iter().map(|&(m, _)| m));
+            }
+        }
+        assert!(n > 1500 && kinds.len() > 10, "{n} encounters, {} monsters", kinds.len());
+    }
+
+    #[test]
+    fn disguises_as_the_original() {
+        use crate::combat::{Foe, Shown};
+        let d = data();
+        let mut g = Game::new(hero(&d, "Looker", 0, 1, 1, 1));
+        g.enter_dungeon(&d).unwrap();
+        // A kin with company: some groups pass for another of their kin and type.
+        let m = (1..d.monsters.len()).find(|&m| (1..d.monsters.len()).filter(|&i| d.monsters[i].w(62) == d.monsters[m].w(62) && d.monsters[i].kind == d.monsters[m].kind).count() > 3).unwrap();
+        let mut veiled = 0;
+        for _ in 0..400 {
+            let s = g.disguise(&d, m);
+            assert!(d.monsters[s.as_m].w(62) == d.monsters[m].w(62) && d.monsters[s.as_m].kind == d.monsters[m].kind && s.as_m != 0);
+            veiled += usize::from(s.as_m != m);
+        }
+        assert!(veiled > 0, "never disguised");
+        // Each round someone may see through it, and says so.
+        let other = (1..d.monsters.len()).find(|&i| i != m && d.monsters[i].w(62) == d.monsters[m].w(62) && d.monsters[i].kind == d.monsters[m].kind).unwrap();
+        let foes = vec![Foe { monster: m, hp: 1_000, max_hp: 1_000, group: 0 }];
+        g.fight = Some(crate::combat::Fight { shown: vec![Shown { as_m: other, typed: true }], foes, round: 0, order: Some(Act::Defend), back: g.pos(), lair: false, peaceful: true, chest: None, defending: vec![false], gold: 0, opening: None, offers: vec![0] });
+        assert_eq!(g.group_name(&d, 0, 1, 0), d.monster_types[d.monsters[m].kind as usize]);
+        for _ in 0..500 {
+            g.see_through(&d);
+        }
+        let s = g.fight.as_ref().unwrap().shown[0];
+        assert!(s.as_m == m && !s.typed && g.log.iter().any(|l| l.starts_with(d.t(0x9541_689d))));
+        // Seen through, the group goes in the Library.
+        assert_eq!(g.library.monsters[&m].count, 1);
+    }
+
+    /// The Library records a group met as itself, not one passing for another; deaths
+    /// and finds add up, and the pages say so.
+    #[test]
+    fn library_as_the_original() {
+        use crate::combat::{Foe, Shown};
+        let d = data();
+        let mut g = Game::new(hero(&d, "Sage", 0, 1, 1, 1));
+        g.enter_dungeon(&d).unwrap();
+        g.library.today = "11/15/2026".into();
+        let (m, other, back) = (1, 2, g.pos());
+        let fight = |m: usize, as_m: usize| {
+            let foes = (0..3).map(|_| Foe { monster: m, hp: 10, max_hp: 10, group: 0 }).collect();
+            crate::combat::Fight { shown: vec![Shown { as_m, typed: false }], foes, round: 0, order: None, back, lair: false, peaceful: true, chest: None, defending: vec![false], gold: 0, opening: None, offers: vec![0] }.into()
+        };
+        g.fight = fight(other, m);
+        g.record_groups(&d, true);
+        assert!(g.library.monsters.is_empty(), "a disguised group is not recorded");
+        g.fight = fight(m, m);
+        g.record_groups(&d, true);
+        g.record_monster(&d, m, Some(0), None, None, true);
+        let p = g.pos();
+        let e = &g.library.monsters[&m];
+        assert!(e.known >= 1 && e.count == 3 && e.deaths == 1 && e.first == "Sage" && e.date == "11/15/2026" && e.last == format!("{},{},{}", p.x, p.y, p.floor));
+        let page = g.library.monster_page(&d, m);
+        assert!(page.starts_with(&format!("{}{}\n", d.t(0x9443_3923), d.monsters[m].name)), "{page}");
+        assert!(page.contains(&format!("{}3{}", d.t(0x5665_62a9), d.t(0x0e67_dd24))) && page.contains(&format!("1{}", d.t(0xe71b_c8e0))) && page.ends_with(d.t(0xb5e5_5fc8)), "{page}");
+        // Items: named on finding (known 3), unlisted while unidentified.
+        g.record_item(5, Some(0), 1, Some(Some(m)));
+        g.record_item(6, Some(0), 2, None);
+        assert_eq!(g.library.listed(false).map(|(k, _)| k).collect::<Vec<_>>(), vec![5]);
+        let page = g.library.item_page(&d, 5);
+        assert!(page.contains(&format!("{}{}{}", d.monsters[m].name, d.t(0x984c_fb44), p.floor)) && page.contains(d.t(0xb6a8_1a45)), "{page}");
+        // A new library starts with the original's ten monsters and level 1 items.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ddj-library-test");
+        let _ = std::fs::remove_file(dir.join("library.json"));
+        let fresh = crate::library::Library::load(&dir, "11/15/2026".into(), &d, &mut g.party[0]);
+        assert!((1..=10).contains(&fresh.monsters.len()) && fresh.monsters.values().all(|e| e.known == 4 && (1..=5).contains(&e.count) && e.last == "?"));
+        assert!(!fresh.items.is_empty() && fresh.items.keys().all(|&i| d.items[i].level == 1));
+        assert!(fresh.monster_page(&d, *fresh.monsters.keys().next().unwrap()).contains(d.t(0x08fc_258d)));
+    }
+
+    #[test]
     fn automap_as_the_original() {
         use crate::automap::{VISITED, record};
         let d = data();
@@ -1968,7 +2239,7 @@ mod tests {
         g.enter_dungeon(&d).unwrap();
         let kobold = d.monsters.iter().position(|m| m.name == "Kobold").unwrap();
         let foes = vec![crate::combat::Foe { monster: kobold, hp: 50, max_hp: 50, group: 0 }];
-        g.fight = Some(crate::combat::Fight { foes, round: 0, order: Some(Act::Defend), back: g.pos(), lair: false, peaceful: false, chest: None, defending: vec![false; 2], gold: 0, opening: None, offers: vec![0] });
+        g.fight = Some(crate::combat::Fight { shown: Vec::new(), foes, round: 0, order: Some(Act::Defend), back: g.pos(), lair: false, peaceful: false, chest: None, defending: vec![false; 2], gold: 0, opening: None, offers: vec![0] });
         g.party[0].hp = 3;
         // MORDOR.EXE: no heals while hostile monsters are about (fn1448).
         let act = crate::ai::decide(&g, &d, &t, 1);
@@ -2001,7 +2272,7 @@ mod tests {
                 break;
             }
             g.party[0].gold = 10_000_000;
-            g.rescue(&d, 0);
+            g.rescue(&d, 0, (at.x as i32 + 1, at.y as i32 + 1, at.floor as i32));
         }
         assert_eq!(g.party[0].life, Life::InMorgue);
         for _ in 0..1000 {
@@ -2029,7 +2300,7 @@ mod tests {
         g.enter_dungeon(&d).unwrap();
         g.hurt(&d, 0, 10_000);
         (g.party[0].gold, g.party[0].bank) = (0, 0);
-        g.rescue(&d, 0);
+        g.rescue(&d, 0, (1, 1, 1));
         assert!(matches!(g.party[0].life, Life::Dead(_)), "no rescue without the gold");
         // Waiting for rescue costs days, not gold (cmdWait_Click).
         let before = g.party[0].age_days;
@@ -2111,7 +2382,7 @@ mod tests {
         }
         assert!(g.party[0].companions.is_empty(), "a bound Orc stays for ever");
         let foes = (0..3).map(|_| crate::combat::Foe { monster: orc, hp: 9, max_hp: 9, group: 0 }).collect();
-        g.fight = Some(crate::combat::Fight { foes, round: 0, order: None, back: g.pos(), lair: false, peaceful: true, chest: None, defending: vec![false], gold: 0, opening: None, offers: vec![2] });
+        g.fight = Some(crate::combat::Fight { shown: Vec::new(), foes, round: 0, order: None, back: g.pos(), lair: false, peaceful: true, chest: None, defending: vec![false], gold: 0, opening: None, offers: vec![2] });
         g.accept_offer(&d);
         assert_eq!(g.party[0].companions.iter().map(|c| c.bind).collect::<Vec<_>>(), vec![-10, -10]);
         assert_eq!(g.fight.as_ref().map(|f| f.alive().count()), Some(1));
@@ -2129,7 +2400,7 @@ mod tests {
         h.enter_dungeon(&d).unwrap();
         h.party[0].companions.push(crate::monsters::Companion { monster: drake, hp: 500, max_hp: 500, bind: 100, id: 0, align: None });
         let foes = (0..4).map(|_| crate::combat::Foe { monster: orc, hp: 1000, max_hp: 1000, group: 0 }).collect();
-        h.fight = Some(crate::combat::Fight { foes, round: 0, order: None, back: h.pos(), lair: false, peaceful: false, chest: None, defending: vec![false], gold: 0, opening: None, offers: vec![0] });
+        h.fight = Some(crate::combat::Fight { shown: Vec::new(), foes, round: 0, order: None, back: h.pos(), lair: false, peaceful: false, chest: None, defending: vec![false], gold: 0, opening: None, offers: vec![0] });
         let t = Tuning::load(&[]).unwrap();
         for _ in 0..20 {
             h.companions_act(&d, &t, 0);
@@ -2320,7 +2591,7 @@ mod tests {
         let kobold = d.monsters.iter().position(|m| m.name == "Kobold").unwrap();
         for _ in 0..20 {
             let trap = crate::treasure::Trap::PoisonGas;
-            g.chest = Some(crate::treasure::Chest { chest: true, trap, guess: trap, sure: 2, magic_lock: false, unlocked: false, monster: kobold, level: 1, gold: 1000 });
+            g.chest = Some(crate::treasure::Chest { chest: true, trap, guess: trap, sure: 2, magic_lock: false, unlocked: false, monster: kobold, level: 1, gold: 1000, disguised: false });
             crate::treasure::open(&mut g, &d, &t, 0);
             g.party[0].hp = g.party[0].max_hp;
         }
@@ -2472,7 +2743,7 @@ mod tests {
                 if g.living().is_empty() || g.pos().floor == 0 {
                     break;
                 }
-                if g.fight.is_some() {
+                if g.fight.as_ref().is_some_and(|f| !f.peaceful) {
                     g.round(&d, &t);
                 } else if g.party[0].roll(6) == 0 {
                     g.turn(&d, 1);

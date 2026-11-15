@@ -397,6 +397,12 @@ fn gate(g: &mut Game, d: &GameData, i: usize, s: usize) -> bool {
     !anti
 }
 
+/// The level guild `g` needs to use an item (fn030F): CInt(4 x the guild's rate x w17),
+/// at least 1.
+pub fn guild_need(d: &GameData, item: usize, g: usize) -> u32 {
+    ((f64::from(d.guilds[g].single(112)) * 3.97 * f64::from(d.items[item].w(17))).round_ties_even() as u32).max(1)
+}
+
 /// Uses a carried item of kind `item`: drink, read or zap it.
 pub fn use_item(g: &mut Game, d: &GameData, t: &Tuning, i: usize, item: usize) {
     let it = &d.items[item];
@@ -563,6 +569,9 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, item: i16,
                 m.rocked = false;
                 m.life = Life::Alive;
                 m.hp = if sp.effect == 22 { m.max_hp } else { 1 };
+                let line = format!("\"{}\"{}\"{}\".", g.party[j].name, d.t(0x2e6b_cc9d), g.party[i].name);
+                let guild = g.party[j].guild;
+                g.hall.note(guild, line);
             }
             g.say(d.t(if ok { 0x97b7_670b } else { 0x8327_8e1b }));
             return;

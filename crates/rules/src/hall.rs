@@ -20,7 +20,7 @@ pub const FIGHTER: usize = 9;
 pub const MAGIC: usize = 10;
 pub const THIEF: usize = 11;
 /// What each record is for, as the game announces it (text ids).
-const FOR: [u32; 12] = [
+pub const FOR: [u32; 12] = [
     0x7c15_6b09, 0xedd4_2534, 0x97d6_6ba9, 0x093a_4ee1, 0x24ef_6fb8, 0x2d96_b8b3, 0x5f5c_cc1f, 0xcff6_869e, 0xf3d2_0bbe, 0x5c2e_ddd9, 0x81c5_4cd0, 0xa905_3d9b,
 ];
 /// The original's record holders (sub0595), by text id.
@@ -53,8 +53,22 @@ pub struct Record {
     pub date: Option<String>,
 }
 
+/// A guild log entry (MDATA9's records): the guild, the day (m/d/yyyy) and what happened.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Entry {
+    pub guild: usize,
+    pub date: String,
+    pub text: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Hall {
+    /// The guild log (sub0578's entries), oldest first.
+    #[serde(default)]
+    pub log: Vec<Entry>,
+    /// Whether the original Guildmasters' appointments are in the log.
+    #[serde(default)]
+    pub seeded: bool,
     pub records: Vec<Record>,
     /// Guildmasters who took over from the original's, by guild (value: their level).
     #[serde(default)]
@@ -73,6 +87,8 @@ impl Default for Hall {
             records: values.map(|value| Record { name: String::new(), value, date: None }).into(),
             guildmasters: BTreeMap::new(),
             today: String::new(),
+            log: Vec::new(),
+            seeded: false,
         }
     }
 }
@@ -153,6 +169,12 @@ impl Hall {
                 self.guildmasters.insert(g, r);
             }
         }
+        for e in other.log {
+            if !self.log.contains(&e) {
+                self.log.push(e);
+            }
+        }
+        self.seeded |= other.seeded;
     }
 
     /// Who holds record j: the original's holder until someone beats it.
@@ -164,6 +186,21 @@ impl Hall {
     }
 
     /// Guild g's Guildmaster and level ("" and 0 for none).
+    /// An entry in guild g's log, dated today (sub0578).
+    pub fn note(&mut self, g: usize, text: String) {
+        self.log.push(Entry { guild: g, date: self.today.clone(), text });
+    }
+
+    /// The first log: each guild's original Guildmaster "was appointed GuildMaster."
+    pub fn seed(&mut self, d: &GameData) {
+        if !self.seeded {
+            self.seeded = true;
+            for g in 0..d.guilds.len().min(GM.len()) {
+                self.note(g, format!("\"{}\"{}", d.t(GM[g].0), d.t(0x91cd_1e99)));
+            }
+        }
+    }
+
     pub fn guildmaster(&self, d: &GameData, g: usize) -> (String, i64) {
         match self.guildmasters.get(&g) {
             Some(r) => (r.name.clone(), r.value),

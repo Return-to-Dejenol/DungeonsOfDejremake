@@ -153,6 +153,13 @@ impl Game {
                 self.say(d.t(0x1044_9d31));
             }
         }
+        // A deeper level than this character has been to (sub0835's header check).
+        if !self.lost.level && p.floor > self.lead().deepest {
+            self.party[0].deepest = p.floor;
+            let line = format!("\"{}\"{}{}.", self.lead().name, d.t(0x6192_afdd), p.floor);
+            let g = self.lead().guild;
+            self.hall.note(g, line);
+        }
         if self.known(d, p.x, p.y) & VISITED != 0 {
             if self.lost.pos || self.lost.level {
                 self.say(d.t(0x0573_bda8));
@@ -178,6 +185,9 @@ impl Game {
     /// `forced` too), else names another special square, as surely as P says.
     pub(crate) fn perceive_square(&mut self, d: &GameData, bit: u32, forced: bool) {
         let p = self.pos();
+        if !forced && self.lead().panel.no_perception {
+            return;
+        }
         let (who, sharp) = if forced { (0, 0.0) } else { self.keenest(d) };
         let tele = bit == 14;
         if !forced && f64::from(self.party[0].d100()) > sharp && !tele {
@@ -255,7 +265,7 @@ impl Game {
     /// or extinguish square in the square ahead, unless a wall or door is in the way.
     pub(crate) fn perceive_ahead(&mut self, d: &GameData) {
         let Some(f) = self.floor(d) else { return };
-        if self.living().is_empty() {
+        if self.living().is_empty() || self.lead().panel.no_perception {
             return;
         }
         let p = self.pos();

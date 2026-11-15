@@ -56,12 +56,13 @@ pub struct View<'a> {
     pics: HashMap<String, (TextureId, Rect)>,
     drags: HashMap<String, Drag>,
     rects: HashMap<String, [i32; 4]>,
-    bolds: std::collections::HashSet<String>,
     tab_h: HashMap<String, f32>,
     paints: Vec<(String, PaintFn<'a>)>,
     /// Touch: controls a swipe across tells (the maze), and controls a drag scrolls, with
     /// the scroll bar moved and its row height.
     swipes: std::collections::HashSet<String>,
+    /// Text boxes that show their text as asterisks (passwords).
+    masks: std::collections::HashSet<String>,
     scrolls: HashMap<String, (String, f32, usize)>,
     /// Control-array members the original loaded at run time: (base key, new index,
     /// rect in the parent, or None to keep the base's).
@@ -88,6 +89,11 @@ impl<'a> View<'a> {
         self.enabled.insert(k.into(), on);
         self
     }
+    /// A text box typed into unseen, as the original's PASSWORD prompts.
+    pub fn mask(&mut self, k: &str) -> &mut Self {
+        self.masks.insert(k.into());
+        self
+    }
     pub fn fore(&mut self, k: &str, c: Color32) -> &mut Self {
         self.fore.insert(k.into(), c);
         self
@@ -102,11 +108,6 @@ impl<'a> View<'a> {
     }
     pub fn pic(&mut self, k: &str, tex: TextureId, uv: Rect) -> &mut Self {
         self.pics.insert(k.into(), (tex, uv));
-        self
-    }
-    /// Sets a control's font bold, as the original's code did at run time.
-    pub fn bold(&mut self, k: &str) -> &mut Self {
-        self.bolds.insert(k.into());
         self
     }
     /// Moves or resizes a control, as the original's code did at run time.
@@ -668,7 +669,7 @@ impl Desk {
         let enabled = v.enabled.get(k).copied().unwrap_or(num(pr, "Enabled").unwrap_or(1) != 0);
         let fore = v.fore.get(k).copied().unwrap_or_else(|| num(pr, "ForeColor").map_or(Color32::BLACK, vb));
         let ink = if enabled { fore } else { SHADOW };
-        let ft = Ft { bold: font(pr, &c.kind).bold || v.bolds.contains(k), ..font(pr, &c.kind) };
+        let ft = font(pr, &c.kind);
         let align = num(pr, "Alignment").unwrap_or(0) as u8;
         let id = ui.scope_id().with((form, k));
         let back_of = |dflt: Color32| v.back.get(k).copied().unwrap_or_else(|| num(pr, "BackColor").map_or(dflt, vb));
@@ -868,6 +869,28 @@ impl Desk {
                 }
                 None
             }
+            "TextBox" if num(pr, "MultiLine").unwrap_or(0) != 0 => {
+                // A read-only multi-line box (frmLibrary's txtInfo): wrapped from the top,
+                // with its vertical scroll bar when the text runs past it.
+                cv.fill(x, y, w, h, back_of(Color32::WHITE));
+                cv.sunken(x, y, w, h);
+                let lh = self.line_height(&ft);
+                let rows = ((h - 4.0) / lh).floor().max(1.0) as usize;
+                let lines = self.wrap(&ft, &caption, w - 24.0);
+                let max = lines.len().saturating_sub(rows);
+                let mut top = self.state(form, k).top.min(max);
+                let shown: Vec<&str> = lines.iter().skip(top).take(rows).map(|l| l.0.trim_end_matches(' ')).collect();
+                self.label_text(cv, Rect::from_min_size(pos2(x + 4.0, y + 2.0), vec2(w - 24.0, h - 4.0)), &ft, &shown.join("\n"), ink, 0, false, false);
+                if max > 0 {
+                    top = self.scrollbar(ui, cv, id, Rect::from_min_size(pos2(x + w - 18.0, y + 2.0), vec2(16.0, h - 4.0)), top, max, rows);
+                    if resp.hovered() {
+                        let wheel = ui.input(|i| i.smooth_scroll_delta.y);
+                        top = (top as f32 - wheel.signum() * f32::from(wheel != 0.0)).clamp(0.0, max as f32) as usize;
+                    }
+                }
+                self.state(form, k).top = top;
+                None
+            }
             "TextBox" => {
                 cv.fill(x, y, w, h, back_of(Color32::WHITE));
                 cv.sunken(x, y, w, h);
@@ -895,7 +918,8 @@ impl Desk {
                         }
                     });
                 }
-                let shown = st.text.clone() + if focused && (ui.input(|i| i.time) * 2.0) as i64 % 2 == 0 { "|" } else { "" };
+                let typed = if v.masks.contains(k) { "*".repeat(st.text.chars().count()) } else { st.text.clone() };
+                let shown = typed + if focused && (ui.input(|i| i.time) * 2.0) as i64 % 2 == 0 { "|" } else { "" };
                 self.label_text(cv, Rect::from_min_size(pos2(x + 4.0, y), vec2(w - 6.0, h)), &ft, &shown, ink, 0, true, false);
                 if focused {
                     self.typing_at = Some(if self.shell { cv.r(r).bottom() + self.lift + 4.0 } else { (cv.r(r).bottom() - self.org.y) / self.s + 4.0 });
@@ -1396,6 +1420,10 @@ fn font(p: &BTreeMap<String, Val>, kind: &str) -> Ft {
 }
 
 /// Drawing in virtual pixels.
+/// The Options window's "No 3-D": sunken edges drawn flat, as VB3 drew them without
+/// CTL3D.
+pub static FLAT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub struct Cv {
     pub p: Painter,
     /// Screen position of the virtual origin.
@@ -1441,6 +1469,9 @@ impl Cv {
         }
     }
     pub fn sunken(&self, x: f32, y: f32, w: f32, h: f32) {
+        if FLAT.load(std::sync::atomic::Ordering::Relaxed) {
+            return self.box1(x, y, w, h, Color32::BLACK, Color32::BLACK);
+        }
         self.box1(x, y, w, h, SHADOW, Color32::WHITE);
         self.box1(x + 1.0, y + 1.0, w - 2.0, h - 2.0, Color32::BLACK, FACE);
     }

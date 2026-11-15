@@ -19,6 +19,9 @@ const FONT: &str = "GeneralUser-GS.sf2";
 /// The original's songs in its order (MUSIC.sub170B), the Sound Canvas versions.
 pub const TRACKS: [&str; 8] =
     ["CITYSC.MID", "MAINSC.MID", "DUNGEOSC.MID", "INTROSC.MID", "GENERASC.MID", "GEN2SC.MID", "GEN3SC.MID", "THEMESC.MID"];
+/// The same songs as plain General MIDI files, played when the Options window's "Use
+/// Sound Canvas MIDI" is unchecked (sub170B; it starts checked).
+const PLAIN: [&str; 8] = ["CITY.MID", "MAIN.MID", "DUNGEON.MID", "INTRO.MID", "GENERAL.MID", "GEN2.MID", "GEN3.MID", "THEME.MID"];
 pub const CITY: &str = TRACKS[0];
 pub const DUNGEON: &str = TRACKS[2];
 pub const THEME: &str = TRACKS[7];
@@ -32,6 +35,10 @@ pub struct Audio {
     scene: Option<&'static str>,
     pub music_on: bool,
     pub sound_on: bool,
+    pub sound_canvas: bool,
+    /// The Options window's sliders, 0 to 1.
+    pub music_volume: f32,
+    pub fx_volume: f32,
 }
 
 /// A MIDI song rendered a block at a time.
@@ -89,7 +96,7 @@ impl Audio {
     pub fn new() -> Option<Self> {
         let mut sink = DeviceSinkBuilder::open_default_sink().ok()?;
         sink.log_on_drop(false);
-        Some(Self { sink, font: None, font_tried: false, music: None, track: None, scene: None, music_on: true, sound_on: true })
+        Some(Self { sink, font: None, font_tried: false, music: None, track: None, scene: None, music_on: true, sound_on: true, sound_canvas: true, music_volume: 1.0, fx_volume: 1.0 })
     }
 
     /// The original's music (frmMain.timMusic, sub1A50): each screen starts its song (the
@@ -121,13 +128,14 @@ impl Audio {
             self.font = font_path().and_then(|p| SoundFont::new(&mut Cursor::new(vfs::read(p).ok()?)).ok()).map(Arc::new);
             self.font_tried = self.font.is_some() || cfg!(not(target_arch = "wasm32"));
         }
-        let (Some(font), Ok(b)) = (&self.font, vfs::read(dir.join(track))) else { return };
+        let file = if self.sound_canvas { track } else { TRACKS.iter().position(|&t| t == track).map_or(track, |i| PLAIN[i]) };
+        let (Some(font), Ok(b)) = (&self.font, vfs::read(dir.join(file))) else { return };
         let Ok(midi) = MidiFile::new(&mut Cursor::new(b)) else { return };
         let Ok(synth) = Synthesizer::new(font, &SynthesizerSettings::new(RATE as i32)) else { return };
         let mut seq = MidiFileSequencer::new(synth);
         seq.play(&Arc::new(midi), false);
         let player = Player::connect_new(self.sink.mixer());
-        player.set_volume(0.45);
+        player.set_volume(0.45 * self.music_volume);
         player.append(Song { seq, left: vec![0.0; 1024], right: vec![0.0; 1024], at: 2048 });
         self.music = Some(player);
         self.track = Some(track);
@@ -148,7 +156,18 @@ impl Audio {
         if let Ok(b) = vfs::read(dir.join(wav))
             && let Ok(d) = Decoder::try_from(Cursor::new(b))
         {
-            self.sink.mixer().add(d.amplify(0.8));
+            self.sink.mixer().add(d.amplify(0.8 * self.fx_volume));
+        }
+    }
+
+    /// The Options window's settings, applied at once: a new song choice starts over.
+    pub fn apply(&mut self, music_on: bool, sound_on: bool, sound_canvas: bool, music: f32, fx: f32) {
+        if sound_canvas != self.sound_canvas || !music_on {
+            self.stop_music();
+        }
+        (self.music_on, self.sound_on, self.sound_canvas, self.music_volume, self.fx_volume) = (music_on, sound_on, sound_canvas, music, fx);
+        if let Some(p) = &self.music {
+            p.set_volume(0.45 * music);
         }
     }
 }
@@ -156,7 +175,8 @@ impl Audio {
 /// The original's sound for a log line, if it has one.
 pub fn effect_for(line: &str) -> Option<&'static str> {
     let l = line.to_lowercase();
-    let table: [(&str, &str); 28] = [
+    let table: [(&str, &str); 29] = [
+        ("help! my hits are", "HELP.WAV"),
         ("critically hits", "SLICE.WAV"),
         ("and kills it", "KILL.WAV"),
         ("has died", "DIE.WAV"),

@@ -159,18 +159,118 @@ pub fn layout_sizes(desk: &Desk) -> Vec<egui::Vec2> {
     LAYOUTS.iter().map(|l| l.iter().map(|r| row_size(desk, r)).fold(vec2(menu, 51.0), |a, b| vec2(a.x.max(b.x), a.y + b.y))).collect()
 }
 
-/// A number with thousands separators, as the original shows gold and experience.
-pub fn commas(n: impl std::fmt::Display) -> String {
-    let s = n.to_string();
-    let (sign, digits) = s.split_at(usize::from(s.starts_with('-')));
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
-            out.push(',');
+pub use ddj_rules::game::commas;
+
+/// The item info the original prints into the character window's Misc tab (sub151C),
+/// as (row, column, text, style: 0 plain, 1 bold, 2 italic), as much as its
+/// identification level `id` tells (0 completely ... 3 barely).
+pub fn item_info(d: &GameData, item: usize, align: u8, id: u8) -> Vec<(i32, i32, String, u8)> {
+    let it = &d.items[item];
+    let t = |k: u32| d.t(k).to_string();
+    let mut v = vec![(2, 1, t(0x1f64_8006), 1)];
+    let name = if id < 2 {
+        let mut n = it.name.clone();
+        if align > 0 && id < 1 {
+            n = format!("{n} {}", t([0x6a77_18bd, 0x7e99_ca7b, 0x82af_9716, 0x8a9e_5a8d][usize::from(align.min(3))]));
         }
-        out.push(c);
+        if id == 0 && it.w(40) != 0 {
+            n += &t(0xe040_1cce);
+        }
+        n
+    } else {
+        t(0x1499_f31f)
+    };
+    v.push((2, 6, name, 0));
+    let class_of = |k: i16| d.item_type_class.get(k as usize).copied().unwrap_or(0);
+    if id < 2 {
+        let mut ad = format!("{}/{}", it.attack, it.defense);
+        if it.damage_mult != 0.0 && id == 0 && class_of(it.kind) == 0 {
+            ad = format!("{ad} [{}]", it.damage_mult);
+        }
+        v.push((3, 1, t(0x26cb_6418), 1));
+        v.push((3, 6, ad, 0));
     }
-    format!("{sign}{out}")
+    v.push((4, 1, t(0x50f9_7d9f), 1));
+    let mut class = match id {
+        0..3 => d.item_types.get(it.kind as usize).cloned().unwrap_or_default(),
+        3 => d.item_classes.get(class_of(it.kind) as usize).cloned().unwrap_or_default(),
+        _ => t(0xcc20_0e59),
+    };
+    if id == 0 {
+        class += &t(if it.w(42) != 0 { 0x8255_8a67 } else { 0xfce5_035e });
+    }
+    v.push((4, 6, class, 0));
+    if id < 2 {
+        v.push((7, 1, t(0x907e_fa93), 1));
+        let req = ddj_rules::magic::stat_req(d, item);
+        for s in 0..6 {
+            v.push((6, s as i32 * 2 + 3, d.t(game::STAT_NAMES[s]).chars().take(3).collect(), 1));
+            v.push((7, s as i32 * 2 + 4, req[s].to_string(), 0));
+        }
+    }
+    if id < 1 {
+        v.push((8, 1, t(0x44a3_7323), 1));
+        for s in 0..6 {
+            v.push((8, s as i32 * 2 + 4, it.w(33 + s).to_string(), 0));
+        }
+    }
+    if id == 0 {
+        let use_ = match it.w(10) {
+            1..=10 => Some(0x9f2d_3105),
+            11 => Some(0xf033_8c37),
+            12 => Some(0x545f_4ac8),
+            13 | 14 => Some(0x20ef_acad),
+            _ => None,
+        };
+        if let Some(k) = use_ {
+            v.push((10, 1, t(k), 0));
+        }
+    }
+    if id < 2 {
+        let hands = it.w(22);
+        let swings = match it.power {
+            1 if hands > 0 => t(0xd76c_a8c6),
+            n if n > 1 => format!(", {n}{}", t(0x7f9b_ff0c)),
+            _ => String::new(),
+        };
+        let words = [0x20af_1fc9, 0x1cb1_b18f, 0xfde2_0b3a];
+        v.push((11, 1, if hands > 0 { format!("{}{}{swings}", words.get(hands as usize).map_or(hands.to_string(), |&k| t(k)), t(0x8545_e6cf)) } else { t(0x26a8_378a) }, 0));
+    }
+    if id < 1 && it.w(11) > 0 {
+        let sp = d.spells.get(it.w(11) as usize - 1).map_or(String::new(), |s| s.name.clone());
+        v.push((12, 1, format!("{}\"{sp}\"", t(0xa618_a785)), 0));
+        if id == 0 {
+            v.push((13, 1, if it.w(41) > 0 { format!("{}{}", t(0x8274_f490), it.w(41)) } else { t(0x41da_581e) }, 0));
+        }
+    }
+    if id < 2 {
+        v.push((10, 13, t(0x2378_e99d), 1));
+        let mut n = 0;
+        for g in (0..d.guilds.len()).filter(|&g| it.guilds & (1 << g) != 0) {
+            n += 1;
+            v.push((10 + n, 13, d.guilds[g].name.clone(), 0));
+            v.push((10 + n, 19, if id == 0 { format!(" {}", ddj_rules::magic::guild_need(d, item, g)) } else { "?".into() }, 0));
+        }
+    }
+    if id < 1 {
+        let mut n = 0;
+        let names = [0xbab3_1830, 0xd1dc_2b2c, 0x0ded_9363, 0xcb4b_34f3, 0xf31c_697d, 0x6e4d_112f];
+        for (b, &k) in names.iter().enumerate().filter(|&(b, _)| it.long(7) >> b & 1 != 0) {
+            let _ = b;
+            n += 1;
+            v.push((13 + n, 2, t(k), 2));
+        }
+        for r in (0..11).filter(|&r| it.long(24) >> r & 1 != 0) {
+            n += 1;
+            v.push((13 + n, 2, format!("{}{}", d.t(game::RESISTANCES[r]), t(0xbbdc_cf9f)), 2));
+        }
+    }
+    v.push((20, 1, t(0x1a00_a69f), 1));
+    v.push((21, 1, t([0x9951_9c42, 0xfb27_ac32, 0x6beb_260a, 0x6e4d_112f][usize::from(id.min(3))]), 0));
+    if (500..500 + d.guilds.len() as i16).contains(&it.w(10)) {
+        v.push((23, 1, t(0xc1ac_6cea), 1));
+    }
+    v
 }
 
 /// Status letters as the party window shows them.
@@ -199,7 +299,19 @@ impl App {
         let tab = desk.state(F, "tabStatTab").tab;
         let mut v = View::default();
         v.caption = Some(format!("\"{}\"", c.name));
-        v.show("elaTabFrame(0)", tab != 5).show("elaTabFrame(1)", tab == 5).show("picTabPicture", false);
+        // Misc shows the item asked about (Info), printed as the original printed it.
+        let info = self.info.filter(|_| tab == 6);
+        v.show("elaTabFrame(0)", tab != 5 && info.is_none()).show("elaTabFrame(1)", tab == 5).show("picTabPicture", info.is_some());
+        if let Some((item, align, id)) = info {
+            let lines = item_info(d, item, align, id);
+            v.paint("picTabPicture", move |p, r, s| {
+                for (row, col, text, style) in &lines {
+                    let fam = egui::FontFamily::Name(if *style == 1 { "ms1" } else if *style == 2 { "ms2" } else { "ms0" }.into());
+                    let at = r.min + vec2(*col as f32 * 6.0, (*row - 1) as f32 * 13.0) * s;
+                    p.text(at, egui::Align2::LEFT_TOP, text, egui::FontId::new(11.0 * s, fam), Color32::BLACK);
+                }
+            });
+        }
         if desk.touch {
             v.tab_height("tabStatTab", 26.0);
             for k in ["elaTabFrame(0)", "elaTabFrame(1)"] {
@@ -321,16 +433,38 @@ impl App {
         v.text("lblGuildInfo", format!("{} ({})", d.guilds[c.guild].name, c.level()));
         // "Character 2 of 3", or "You are Alone".
         v.text("elaGroupInfo", if g.party.len() > 1 { format!("{} {}{} {}", d.t(0xec73_40b0), sel + 1, d.t(0xd274_8962), g.party.len()) } else { d.t(0xb952_9b0d).into() });
-        // Buffers: the original's ten quick slots, empty in the remake.
+        // Buffers (mdcharShowBuffer): "1. (Nothing)", "2. Item #3. Potion", or "3. "Fire
+        // Ball"" with its spell points ("?" when none).
         let b0 = desk.rect(F, "lblBuffer(0)");
         for i in 0..10u16 {
             if i > 0 {
                 v.clone_rect("lblBuffer(0)", i, [b0[0], b0[1] + b0[3] * i32::from(i), b0[2], b0[3]]);
                 v.clone_rect("lblBufferStat(0)", i, [desk.rect(F, "lblBufferStat(0)")[0], b0[1] + b0[3] * i32::from(i), 24, b0[3]]);
             }
-            v.text(&format!("lblBuffer({i})"), format!("{}.", i + 1)).text(&format!("lblBufferStat({i})"), "");
+            let (text, stat) = match c.buffers[usize::from(i)] {
+                Some(game::Buf::Item(it)) => match c.items.iter().position(|h| h.item == it) {
+                    Some(s) => (format!("{}{}. {}", d.t(0x8896_dc63), s + 1, magic::item_name(d, &c.items[s])), String::new()),
+                    None => (d.t(0x02f8_b523).into(), String::new()),
+                },
+                Some(game::Buf::Spell(s)) => (format!("\"{}\"", d.spells[s].name), match magic::sp_cost(c, d, s) { 0 => "?".into(), n => n.to_string() }),
+                None => (d.t(0x02f8_b523).into(), String::new()),
+            };
+            v.text(&format!("lblBuffer({i})"), format!("{}. {text}", i + 1)).text(&format!("lblBufferStat({i})"), stat);
         }
-        desk.window(ctx, F, v, false);
+        let ev = desk.window(ctx, F, v, false);
+        if let Some((k, Drag(kind, m, x))) = ev.dropped.clone()
+            && m == sel
+            && let Some(i) = ["lblBuffer(", "lblBufferStat("].iter().find_map(|b| k.strip_prefix(b)).and_then(|r| r.trim_end_matches(')').parse::<usize>().ok()).filter(|&i| i < 10)
+            && let Some(g) = self.game.as_mut()
+        {
+            let c = &mut g.party[sel];
+            match kind {
+                1 => c.buffers[i] = c.items.get(x).map(|h| game::Buf::Item(h.item)),
+                3 => c.buffers[i] = Some(game::Buf::Spell(x)),
+                _ => {}
+            }
+            self.persist();
+        }
     }
 
     /// Objects & Spells: the items list (drag them to the store), the spells, and the
@@ -392,6 +526,9 @@ impl App {
             }
             let sp = row.map(|s| &d.spells[s]);
             v.text(&format!("lblName({r})"), sp.map_or(String::new(), |s| s.name.clone()));
+            if let Some(s) = row {
+                v.drag(&format!("lblName({r})"), Drag(3, sel, s));
+            }
             v.text(&format!("lblGuild({r})"), "").text(&format!("lblLevel({r})"), sp.map_or(String::new(), |s| s.level.to_string())).text(&format!("lblPoints({r})"), row.map_or(String::new(), |s| magic::sp_cost(c, d, s).to_string()));
             if row.is_some() && row == spick {
                 v.back(&format!("lblName({r})"), SEL_BACK).fore(&format!("lblName({r})"), Color32::WHITE);
@@ -414,6 +551,16 @@ impl App {
         }
         v.text("lblCarryInfo", format!("{} companion{}", c.companions.len(), if c.companions.len() == 1 { "" } else { "s" })).show("cmdCompanion(0)", false);
         let ev = desk.window(ctx, F, v, false);
+        // An item dragged from the bank's list comes back into the pack.
+        if let Some((_, Drag(6, m, k))) = ev.dropped.clone()
+            && m == sel
+            && let Some(g) = self.game.as_mut()
+        {
+            if let Err(e) = g.party[sel].unstash(d, k) {
+                self.boxes.push((String::new(), e));
+            }
+            desk.state("frmCityBank", "lstItems").sel = None;
+        }
         if let Some(i) = ev.clicked.as_deref().and_then(|k| k.strip_prefix("lblItem(")).and_then(|k| k.trim_end_matches(')').parse::<usize>().ok()) {
             desk.state(F, "items").sel = (i < self.game.as_ref().unwrap().party[sel].items.len()).then_some(i);
         }
@@ -443,8 +590,7 @@ impl App {
             }
             (Some(3), Some(i)) => {
                 let h = &g.party[sel].items[i];
-                let it = &d.items[h.item];
-                msg = if h.known() { format!("{}: attack {}, defense {}, worth {} gold.", magic::item_name(d, h), it.attack, it.defense, it.price) } else { format!("{} is unidentified.", magic::item_name(d, h)) };
+                App::show_info(&mut self.info, desk, h.item, h.align, h.id);
             }
             _ => {}
         }
@@ -569,14 +715,20 @@ impl App {
         let g = self.game.as_ref().unwrap();
         let p = g.pos();
         let mut v = View::default();
-        let floor = if g.lost.level { g.lost.floor } else { p.floor };
+        // The level shown: the last known while lost; with Auto Change Lev the party's,
+        // else it stays (medDrawCursor).
+        let floor = if g.lost.level { g.lost.floor } else if g.lead().panel.auto_level || self.automap_floor == 0 { p.floor } else { self.automap_floor };
+        self.automap_floor = floor;
         v.caption = Some(format!("{} {floor})", d.t(0x3ea0_825e)));
         let size = desk.size("frmAutoMap");
         let (w, h) = (size.x as i32, size.y as i32);
         v.show("hsbLevel", false).show("lblLevel", false).show("lblInfo", false);
         v.rect("picPicture", [0, 0, w, h]).rect("picMaze", [0, 0, w - 2, h - 2]);
         let art = self.art.as_ref();
-        v.paint("picMaze", move |pt, r, s| art::automap(pt, r, s, art, d, g));
-        desk.window(ctx, "frmAutoMap", v, false);
+        let blink = !self.opts.no_blink;
+        v.paint("picMaze", move |pt, r, s| art::automap(pt, r, s, art, d, g, floor, blink));
+        if desk.window(ctx, "frmAutoMap", v, false).closed {
+            self.automap_open = false;
+        }
     }
 }

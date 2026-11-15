@@ -70,6 +70,12 @@ impl Art {
         })
     }
 
+    /// A monster's face as the Library's picMonster draws it: Asmodeus's own (fn0C3B),
+    /// else its portrait.
+    pub fn face(&self, m: &ddj_rules::mdr::Monster) -> (egui::TextureId, Rect) {
+        if m.id == ASMODEUS { (self.asmo.id(), Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0))) } else { self.portrait(m.picture) }
+    }
+
     /// A monster's portrait as (texture, uv rect).
     pub fn portrait(&self, picture: i16) -> (egui::TextureId, Rect) {
         let tile = f32::from(picture.max(1) - 1);
@@ -207,10 +213,12 @@ fn view(paint: &egui::Painter, rect: Rect, art: &Art, f: &Floor, p: game::Pos) {
 /// The monster box: one portrait for each kind of foe still standing, left to right.
 pub fn monsters(paint: &egui::Painter, rect: Rect, s: f32, art: Option<&Art>, d: &GameData, g: &Game) {
     let (Some(art), Some(fight)) = (art, &g.fight) else { return };
+    // Each group's picture is the monster it passes for (MONGEN's @24).
     let mut kinds: Vec<usize> = Vec::new();
     for f in fight.foes.iter().filter(|f| f.hp > 0) {
-        if !kinds.contains(&f.monster) {
-            kinds.push(f.monster);
+        let m = fight.shown.get(usize::from(f.group)).map_or(f.monster, |s| s.as_m);
+        if !kinds.contains(&m) {
+            kinds.push(m);
         }
     }
     let size = 60.0 * s;
@@ -243,9 +251,10 @@ pub fn box_icons(paint: &egui::Painter, rect: Rect, s: f32, art: Option<&Art>, d
 /// black, each known flag's symbol at a 14-pixel step (walls and doors on the square's
 /// east and north edges), the facing cursor, and the map's west and south edges beside
 /// visited squares. Centred on the party (modAdjustMap), or on the map's middle when lost.
-pub fn automap(paint: &egui::Painter, r: Rect, s: f32, art: Option<&Art>, d: &GameData, g: &Game) {
+/// At its default size the original's window shows only this; the level bar and labels
+/// come into view only when it is made bigger than the whole map.
+pub fn automap(paint: &egui::Painter, r: Rect, s: f32, art: Option<&Art>, d: &GameData, g: &Game, floor: usize, blink: bool) {
     let (Some(art), pos) = (art, g.pos()) else { return };
-    let floor = if g.lost.level { g.lost.floor } else { pos.floor };
     let Some(f) = floor.checked_sub(1).and_then(|i| d.floors.get(i)) else { return };
     let map = g.lead().map.get(floor - 1).map_or(&[][..], Vec::as_slice);
     let paint = paint.with_clip_rect(r);
@@ -280,7 +289,16 @@ pub fn automap(paint: &egui::Painter, r: Rect, s: f32, art: Option<&Art>, d: &Ga
             }
         }
     }
-    if !g.lost.any() {
-        tile(23 + pos.facing as usize, at(pos.x as f32, pos.y as f32), 2.0);
+    // The cursor is copied, not ORed, and blinks every half second (timBlinker).
+    if !g.lost.any() && floor == pos.floor {
+        let ctx = paint.ctx();
+        if blink {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
+        if !blink || ctx.input(|i| i.time * 2.0) as u64 % 2 == 0 {
+            let p = at(pos.x as f32, pos.y as f32);
+            paint.rect_filled(Rect::from_min_size(p + vec2(2.0, 2.0) * s, vec2(11.0, 11.0) * s), 0.0, Color32::BLACK);
+            tile(23 + pos.facing as usize, p, 2.0);
+        }
     }
 }

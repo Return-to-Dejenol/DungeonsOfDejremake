@@ -9,8 +9,9 @@ use ddj_rules::{
     Tuning,
     ai::{Act, Target},
     game::{self, Life},
+    magic,
     mdr::{GameData, square},
-    monsters, treasure,
+    treasure,
 };
 use eframe::egui::{self, Color32, Key};
 
@@ -66,9 +67,9 @@ impl App {
                     }
                 }
                 v.show("picMonGroups", true).show("lblCurrentGroup", true);
-                for (i, (_, m, n)) in groups.iter().take(4).enumerate() {
+                for (i, (gr, _, n)) in groups.iter().take(4).enumerate() {
                     let k = format!("lblMonster({i})");
-                    v.show(&k, true).text(&k, format!("{}. {n} {}", i + 1, monsters::plural(d, *m, *n, g.lead().buffs.see_invisible)));
+                    v.show(&k, true).text(&k, format!("{}. {n} {}", i + 1, g.group_name(d, *gr, *n, 0)));
                     if f.peaceful {
                         v.fore(&k, Color32::from_rgb(0, 128, 0));
                     }
@@ -78,7 +79,10 @@ impl App {
             v.show("lblMonsterHit", true).text("lblMonsterHit", g.said[game::MONSTER_HIT].clone());
             v.show("lblDead", g.lead().life != Life::Alive);
             let art_ref = self.art.as_ref();
-            v.paint("picMaze2", move |p, r, _| {
+            // "No StretchBlt": the view at its own 100 x 100, centred, not stretched.
+            let native = self.opts.no_stretch;
+            v.paint("picMaze2", move |p, r, s| {
+                let r = if native { egui::Rect::from_center_size(r.center(), egui::vec2(100.0 * s, 100.0 * s)).intersect(r) } else { r };
                 if p_floor_zero(g) {
                     p.rect_filled(r, 0.0, Color32::from_gray(128));
                 } else {
@@ -147,14 +151,29 @@ impl App {
                     treasure::open(g, d, t, who);
                 }
             }
-            Some(6) => desk.active = Some("frmAutoMap".into()),
+            Some(6) => {
+                self.automap_open = true;
+                desk.active = Some("frmAutoMap".into());
+            }
             Some(4 | 5) => g.log.push("Carrying characters isn't in the remake yet.".into()),
             Some(7) if on_up && g.pos().floor == 1 => g.take_stairs(d, t),
             Some(7) => g.log.push("You must be on the stairs up on level 1 to exit.".into()),
             _ => {}
         }
-        if ev.index("cmdBuffer").is_some() {
-            g.log.push("Buffers aren't in the remake yet.".into());
+        // A buffer (cmdBuffer_Click): its item is used, its spell cast now, or in a fight
+        // this round's action.
+        if let Some(i) = ev.index("cmdBuffer").map(usize::from).filter(|_| g.pos().floor > 0) {
+            match g.party[0].buffers.get(i).copied().flatten() {
+                Some(game::Buf::Item(it)) if g.party[0].items.iter().any(|h| h.item == it) => magic::use_item(g, d, t, 0, it),
+                Some(game::Buf::Spell(s)) => {
+                    let target = if magic::kind(&d.spells[s]).is_some_and(|k| matches!(k, magic::Magic::Damage | magic::Magic::MassDamage | magic::Magic::Sleep)) { Target::Strongest } else { Target::LowestAlly };
+                    match g.fight.as_mut() {
+                        Some(f) => f.order = Some(Act::Cast(s, target)),
+                        None => magic::cast(g, d, t, 0, s, target),
+                    }
+                }
+                _ => {}
+            }
         }
         if keys[4] {
             g.take_stairs(d, t);
@@ -206,7 +225,9 @@ impl App {
             self.screen = Screen::Town;
             self.building = dead.then_some("frmCityMorgue");
         }
-        if after != before || ev.clicked.is_some() {
+        // The original saves on changing level or area unless "No Autosave"; the remake
+        // saves as things change, and leaves the dungeon's saves to town with it.
+        if (after != before || ev.clicked.is_some()) && !(self.opts.no_autosave && self.screen == Screen::Dungeon) {
             self.persist();
         }
     }
