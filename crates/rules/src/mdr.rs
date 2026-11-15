@@ -101,7 +101,7 @@ macro_rules! words {
         }
     })*};
 }
-words!(Race, Guild, Item, Monster);
+words!(Race, Guild, Item, Monster, Spell);
 
 /// Alignment bitmask: 1 good, 2 neutral, 4 evil.
 pub type Alignments = i16;

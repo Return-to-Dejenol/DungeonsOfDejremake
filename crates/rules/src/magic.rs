@@ -742,7 +742,7 @@ fn offensive(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f64,
                 }
                 continue;
             }
-            if !g.damage_foe(d, t, i, fi, dmg, "blasts", None, 1.0) {
+            if !g.damage_foe(d, t, i, fi, dmg, "", None, 1.0) {
                 hurt = dmg;
                 break;
             }
@@ -756,25 +756,28 @@ fn offensive(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f64,
         let you = format!("{}{}!", d.t(0xee68_3ce2), crate::game::count_word(d, charmed));
         g.fought(i, you, format!("{} charms {charmed}.", g.party[i].name));
     } else {
-        g.said_cast(d, i, &sp.name, 0x17f1_3590, n, hurt);
+        // The spell's own verb (gv0972 by its w5): "You Fried Two!", "You Froze One!".
+        const VERBS: [u32; 17] = [
+            0x430b_f15e, 0xe5fc_c169, 0x4eb6_cadf, 0x87c0_aa7d, 0xb4e7_2c90, 0x0e4e_7c1c, 0x8839_5d49, 0xeb9a_9c27, 0x9062_8333, 0x7072_fbdd, 0xb7c5_5d28, 0x298a_4cb9, 0xe41a_97e9, 0x17f1_3590, 0xa7bc_7b2f, 0xe3fb_8dda, 0xd072_afdf,
+        ];
+        let verb = usize::try_from(sp.w(5)).ok().and_then(|v| VERBS.get(v)).copied().unwrap_or(0x17f1_3590);
+        g.said_cast(d, i, &sp.name, verb, n, hurt);
     }
 }
 
 impl Game {
-    /// The controlled character's label after an attack spell (mdrcharCastSpell):
-    /// "You Killed Two!", "You Killed One and damaged one for 9!", "You damaged one for
-    /// 9!", or "You failed in casting "Fireball"!".
+    /// What an attack spell did (mdrcharCastSpell), on the controlled character's label
+    /// and in Messages: "You Fried Two!", "You Killed One and damaged one for 9!", "You
+    /// damaged one for 9!", or "You failed in casting "Fireball"!".
     fn said_cast(&mut self, d: &GameData, i: usize, spell: &str, verb: u32, n: usize, hurt: i32) {
-        if i != 0 {
-            return;
-        }
         let you = d.t(0x35d0_2f14);
-        self.said[CHAR_HIT] = match (n, hurt) {
+        let said = match (n, hurt) {
             (0, 0) => format!("{you}{}\"{spell}\"!", d.t(0x5d5d_7642)),
             (0, h) => format!("{you}{} {h}!", d.t(0x30bb_da77)),
             (n, 0) => format!("{you}{} {}!", d.t(verb), crate::game::count_word(d, n)),
             (n, h) => format!("{you}{} {}{} {h}!", d.t(verb), crate::game::count_word(d, n), d.t(0xa013_c0c8)),
         };
+        self.tell(i, CHAR_HIT, said, None);
     }
 }
 

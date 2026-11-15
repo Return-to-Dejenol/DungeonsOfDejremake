@@ -175,7 +175,8 @@ impl Audio {
 /// The original's sound for a log line, if it has one.
 pub fn effect_for(line: &str) -> Option<&'static str> {
     let l = line.to_lowercase();
-    let table: [(&str, &str); 29] = [
+    let table: [(&str, &str); 30] = [
+        ("you killed", "KILL.WAV"),
         ("help! my hits are", "HELP.WAV"),
         ("critically hits", "SLICE.WAV"),
         ("and kills it", "KILL.WAV"),

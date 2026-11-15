@@ -1,6 +1,6 @@
 import { fetch_bytes, idb_del, idb_put } from './snippets/ddj-extract-cc4a816fa57be21a/inline0.js';
-import { pick } from './snippets/ddj-game-f40bdf2247207e36/inline0.js';
-import { http } from './snippets/ddj-game-f40bdf2247207e36/inline1.js';
+import { pick } from './snippets/ddj-game-91fb8b4350da1217/inline0.js';
+import { http } from './snippets/ddj-game-91fb8b4350da1217/inline1.js';
 import * as import1 from "./snippets/ddj-extract-cc4a816fa57be21a/inline0.js"
 
 
@@ -1191,7 +1191,7 @@ function __wbg_get_imports() {
             getDataViewMemory0().setInt32((arg0 >>> 0) + 4 * 1, len1, true);
             getDataViewMemory0().setInt32((arg0 >>> 0) + 4 * 0, ptr1, true);
         }, arguments); },
-        __wbg_http_0f9120a32fcbbfb9: function(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
+        __wbg_http_657a29142a5bc0fd: function(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
             let v0;
             if (arg6 !== 0) {
                 v0 = getStringFromWasm0(arg6, arg7);
@@ -1710,7 +1710,7 @@ function __wbg_get_imports() {
             const ret = arg0.performance;
             return ret;
         },
-        __wbg_pick_b5343751c76f7745: function(arg0) {
+        __wbg_pick_08a17a71217f0b7c: function(arg0) {
             const ret = pick(arg0 !== 0);
             return ret;
         },

@@ -127,7 +127,9 @@ Taken while building; reviewed at play-test.
   character's news as "You hit for 7 damage!", "2 Zombies hit for 13!", "You have fallen
   into a pit for 5 hits."; the Messages window keeps a line for every member (the
   original's named form where it has one, else the quoted name and the "You" words, and
-  the remake's own lines for fight actions). The stores', morgue's, Holding's and Seer's
+  the remake's own lines for fight actions). Kills and attack spells are told in the
+  original's words there too: "You Killed One!", and each spell's verb, "You Fried Two!",
+  "You Froze One and damaged one for 9!" (gv0972). The stores', morgue's, Holding's and Seer's
   refusals and questions are the original's titled message boxes ("Not enough gold!",
   BUY ITEM). Lines for what the original did silently or showed elsewhere are gone
   (descending, stairs, a cleared room, a sale, healing, buffs); the remake's own
@@ -137,8 +139,7 @@ Taken while building; reviewed at play-test.
 - **Not matched yet**, where the remake's rules differ: the Seer's per-target fees and
   its asking first, raising when the dead character is run, Exit
   from anywhere, level titles in lblGuildInfo, the character list's level, guild and
-  status, item alignment markers, "points left" at creation, the spell verbs by kind
-  ("Fried", "Froze"), the guild log, and the bank's item slots.
+  status, item alignment markers, and the bank's item slots.
 
 ## Ported from the stubs (2026-11-15, owner: everything but carrying)
 

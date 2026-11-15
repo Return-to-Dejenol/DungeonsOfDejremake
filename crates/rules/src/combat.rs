@@ -721,8 +721,10 @@ impl Game {
         let mon = self.foe_name(data, fi);
         let line = format!("{name} {verb} the {mon} for {dmg}{} (+{xp} XP)", if killed { " and kills it!" } else { "." });
         match you {
-            Some([_, kill]) if killed => self.fought(i, data.t(kill).into(), line),
+            // A kill is told in the original's words, in Messages too ("You Killed One!").
+            Some([_, kill]) if killed => self.tell(i, CHAR_HIT, data.t(kill).into(), None),
             Some([hit, _]) => self.fought(i, format!("{} {dmg}{}", data.t(hit), data.t(0x6434_a9bd)), line),
+            None if verb.is_empty() => {}
             None => self.say(line),
         }
         if killed {
