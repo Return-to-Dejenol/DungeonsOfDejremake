@@ -418,7 +418,15 @@ impl App {
             let right = desk.screen.x as i32 - 4;
             v.rect("lblGold", [right - lg[2], lg[1], lg[2], lg[3]]).rect("lblExperience", [right - le[2], le[1], le[2], le[3]]);
             v.text("lblGold", format!("{}{}{}", d.t(0x336b_5380), stats::commas(gold), d.t(0xf4e9_3569)));
-            v.text("lblExperience", format!("{}{}{}{}.", d.t(0x9ca1_2838), stats::commas(need), d.t(0x87e5_d3e9), c.level() + 1));
+            // Past the next level's experience, the way to the pin (sub1617): one short of
+            // the level after next.
+            let xp = c.xp[c.guild];
+            let pin = t.xp_needed(c.level() + 1, d.races[c.race].xp_factor, d.guilds[c.guild].xp_factor).saturating_sub(1);
+            v.text("lblExperience", match () {
+                _ if need > 0 => format!("{}{}{}{}.", d.t(0x9ca1_2838), stats::commas(need), d.t(0x87e5_d3e9), c.level() + 1),
+                _ if xp >= pin => d.t(0xb99a_8146).to_string(),
+                _ => format!("{}{}{}", d.t(0x9ca1_2838), stats::commas(pin - xp), d.t(0xb26a_ca3e)),
+            });
         }
         let playing = self.game.is_some();
         // The resistance bar (sub152F): the eleven resistances' first three letters over

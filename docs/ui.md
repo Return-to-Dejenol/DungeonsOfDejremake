@@ -118,7 +118,8 @@ Taken while building; reviewed at play-test.
   only the guilds that take the character's race and alignment, with its levels. Each
   guild's Guildmaster starts as the original's (Crashland, level 64, for the Nomads...);
   a character who makes a higher level takes over, in `hall.json`, and gets the guild's
-  Crest. The original's guild log and the forfeit of a quest when pinned aren't built.
+  Crest. Pinned (experience stopped one short of the level after next) with a quest
+  open, Make Level offers the original's forfeit, which demotes and goes in the guild log.
 
 - **Messages** (2026-11-09) are the original's words wherever the remake does what the
   original did, read from MORDOR.EXE like the guilds'. As the original, the dungeon
