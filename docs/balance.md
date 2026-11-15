@@ -358,6 +358,25 @@ behaviour is a known gap, not a choice.
   decision first.
 - **Teleport and Displacement (ported, owner's choice 2026-11-14):** the original's offsets,
   picked with - and + buttons instead of typed.
+- **The AutoMap, perception and being lost (ported, owner's choice 2026-11-14):** the map
+  holds what the character playing has worked out of each square, not the squares seen
+  (sub0835). Entering a square records its walls and doors (not in fog), pits, stairs,
+  water, quicksand, fog and chutes, and the walls of the squares west and south; a secret
+  door is found Perception/5 % of the time, else it goes down as a wall. Facing,
+  extinguish, rotator, anti-magic and stud squares need a perception roll
+  (mdrmazPerceiveSquare): the party's best Perception P notices one P% of the time and
+  names it rightly half of those, else names another special square, "kind of" to
+  "absolutely" certain as P says; a teleporter is always noticed, and casting in anti-magic reveals it.
+  Perceive Ahead spots quicksand, stairs, teleporters, chutes, pits, rotators and
+  extinguish squares in the square ahead (P%, at most 95) at each step and turn. Perception
+  is (rate + ln L / ln 1.25) x rate x 0.3 + WIS + worn WIS/4 - 2 x floor, 5 to 90 (fn11D4),
+  from the best guild as the remake counts it. A rotator can cost the leader their sense
+  of direction; a teleporter, chute or teleport trap landing on a square not on the map
+  leaves the party completely lost. While lost nothing goes on the map and the Dungeon
+  window says "(Lost on N)" or "(Lost)" and "?" for the direction; each step may bring
+  back the level (ln(P)²/15 %), the direction (/20) or everything (/25), and a visited
+  square ends it. The level and direction spells end their part. Saves from before
+  version 5 keep their seen squares as visited, with what entering them shows.
 
 ## Taken while building (review at play-test)
 

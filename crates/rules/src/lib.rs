@@ -4,6 +4,7 @@
 //! rebalance layer on top of them, loaded from `patches/*.toml`.
 
 pub mod ai;
+pub mod automap;
 pub mod combat;
 pub mod game;
 pub mod hall;

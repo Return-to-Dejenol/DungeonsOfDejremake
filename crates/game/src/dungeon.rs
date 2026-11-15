@@ -27,7 +27,14 @@ impl App {
             let flags = if p.floor > 0 { d.floors[p.floor - 1].square(p.x, p.y).flags } else { 0 };
             let mut v = View::default();
             let here = g.party.iter().filter(|m| m.pos.floor == p.floor && m.pos.x == p.x && m.pos.y == p.y).count();
-            v.text("lblRoom", format!("{},{},{} {} [ {here} ]", p.x + 1, p.y + 1, p.floor, d.t(game::DIRECTIONS[p.facing as usize])));
+            // Lost, the original hides what is lost (mdrmazLookAround).
+            let at = match g.lost {
+                l if !l.pos => format!("{},{},{} ", p.x + 1, p.y + 1, p.floor),
+                l if !l.level => format!("{}{}{}", d.t(0xa39b_f4c6), p.floor, d.t(0xfbd7_702c)),
+                _ => d.t(0xd7df_fb94).to_string(),
+            };
+            let dir = if g.lost.dir { "?" } else { d.t(game::DIRECTIONS[p.facing as usize]) };
+            v.text("lblRoom", format!("{at}{dir} [ {here} ]"));
             // What just happened on the square, else its stairs or chute (sub0835's lines).
             let note = [(square::STAIRS_UP, 0xe21e_1250), (square::STAIRS_DOWN, 0x4228_c865), (square::CHUTE, 0x98e9_7440)].into_iter().find(|(b, _)| flags & b != 0).map_or("", |(_, w)| d.t(w));
             v.text("lblSquareInfo", if g.said[game::SQUARE].is_empty() { note } else { &g.said[game::SQUARE] });
@@ -104,23 +111,23 @@ impl App {
         let g = self.game.as_mut().unwrap();
         let before = (g.pos(), g.fight.is_some(), g.party.iter().map(|m| m.hp).sum::<i32>());
         match ev.index("cmdMove") {
-            Some(0) => g.turn(3),
-            Some(1) => g.turn(1),
+            Some(0) => g.turn(d, 3),
+            Some(1) => g.turn(d, 1),
             Some(2) => g.step(d, t),
-            Some(3) => g.turn(2),
+            Some(3) => g.turn(d, 2),
             _ => {}
         }
         if keys[1] {
-            g.turn(3);
+            g.turn(d, 3);
         }
         if keys[2] {
-            g.turn(1);
+            g.turn(d, 1);
         }
         if keys[0] {
             g.step(d, t);
         }
         if keys[3] {
-            g.turn(2);
+            g.turn(d, 2);
         }
         let on_up = g.pos().floor > 0 && d.floors[g.pos().floor - 1].square(g.pos().x, g.pos().y).flags & square::STAIRS_UP != 0;
         match ev.index("cmdAction") {

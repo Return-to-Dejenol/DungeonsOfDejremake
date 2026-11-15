@@ -292,7 +292,8 @@ impl App {
     }
 
     /// Starts play with a character, bringing its allies along when they can come.
-    fn start(&mut self, ch: Character, d: &GameData) {
+    fn start(&mut self, mut ch: Character, d: &GameData) {
+        ch.upgrade_map(d);
         let allies = ch.allies.clone();
         let mut g = Game::new(ch);
         g.store = ddj_rules::store::Store::load(&saves(), d);

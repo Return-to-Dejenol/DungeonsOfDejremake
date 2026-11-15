@@ -245,6 +245,8 @@ fn spring(g: &mut Game, d: &GameData, t: &Tuning, who: usize, c: &Chest) -> bool
             let (x, y, f) = g.random_square(d, floor);
             let p = g.pos();
             g.set_pos(d, crate::game::Pos { x, y, floor: f, facing: p.facing });
+            let alone = g.party.len() == 1;
+            g.landed(d, floor, alone);
             return true;
         }
         Trap::Blackout => g.party[who].buffs = Default::default(),

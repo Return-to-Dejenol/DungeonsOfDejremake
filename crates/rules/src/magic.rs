@@ -372,6 +372,7 @@ pub fn teleport(g: &mut Game, d: &GameData, t: &Tuning, offsets: Option<(i32, i3
     if rock {
         let at = Pos { floor: to.floor.min(d.floors.len()), x: to.x.min(29), y: to.y.min(29), ..to };
         g.set_pos(d, at);
+        g.learn(d, at.x, at.y, square::ROCK);
         let named = format!("{}{}", g.quoted(0), d.t(0xb9f2_1ece));
         g.say(if g.party.len() == 1 { d.t(0x9a54_4773).into() } else { named });
         return g.entomb(d);
@@ -391,6 +392,7 @@ fn gate(g: &mut Game, d: &GameData, i: usize, s: usize) -> bool {
     let anti = g.floor(d).is_some_and(|f| f.square(g.pos().x, g.pos().y).flags & square::ANTI_MAGIC != 0);
     if anti {
         g.say(d.t(0x533a_0453));
+        g.perceive_square(d, 18, true);
     }
     !anti
 }
@@ -608,23 +610,32 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, item: i16,
                 g.set_pos(d, Pos { x, y, ..pos });
                 if rock {
                     g.say(d.t(0xf350_a09d));
+                    g.learn(d, x, y, square::ROCK);
                     g.entomb(d);
+                } else {
+                    g.map_arrival(d);
                 }
             }
         }
         (_, 11) => {
             let Some(f) = g.floor(d) else { return };
             let pos = g.pos();
-            let rock = crate::game::ahead(f, pos.x, pos.y, pos.facing).is_some_and(|(x, y)| f.square(x, y).flags & square::ROCK != 0);
-            g.say(d.t(if rock { 0x2e1c_8b23 } else { 0x69ab_64ec }));
+            // Either way the square ahead goes on the map: as rock, or as visited.
+            if let Some((x, y)) = crate::game::ahead(f, pos.x, pos.y, pos.facing) {
+                let rock = f.square(x, y).flags & square::ROCK != 0;
+                g.say(d.t(if rock { 0x2e1c_8b23 } else { 0x69ab_64ec }));
+                g.learn(d, x, y, if rock { square::ROCK } else { crate::automap::VISITED });
+            }
         }
         (_, 12) => {
             let floor = g.pos().floor;
             g.say(format!("{} {floor}.", d.t(0x5e6f_feb9)));
+            g.lost.level = false;
         }
         (_, 13) => {
             let pos = g.pos();
             g.say(format!("{}{}.", d.t(0x0b58_e5e4), d.t(crate::game::DIRECTIONS[pos.facing as usize])));
+            g.lost.dir = false;
         }
         (_, 14 | 15) => {
             // Locate: how far right, forward and down each lost member lies.

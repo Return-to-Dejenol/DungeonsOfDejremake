@@ -26,6 +26,9 @@ pub struct Art {
     water: TextureHandle,
     sand: TextureHandle,
     asmo: TextureHandle,
+    /// The AutoMap's 15x15 symbols, one per square flag bit, then the four facing
+    /// cursors; black is clear, as the original ORs them onto the map.
+    pics: TextureHandle,
 }
 
 /// Asmodeus's monster id: his own face, icon and chest.
@@ -60,6 +63,10 @@ impl Art {
             water: whole("water", (50, 18, water.2[..50 * 18 * 4].to_vec())),
             sand: whole("sand", (50, 18, sand.2[..50 * 18 * 4].to_vec())),
             asmo: whole("asmo", mg("ASMO")?),
+            pics: whole("pics", mg("PICS").map(|(w, h, mut px)| {
+                px.chunks_mut(4).filter(|c| c[..3] == [0, 0, 0]).for_each(|c| c[3] = 0);
+                (w, h, px)
+            })?),
         })
     }
 
@@ -229,5 +236,51 @@ pub fn box_icons(paint: &egui::Painter, rect: Rect, s: f32, art: Option<&Art>, d
     }
     if let Some(c) = g.fight.as_ref().and_then(|f| f.chest.as_ref()).or(g.chest.as_ref()) {
         icon(rect.right() - 51.0 * s, if asmo(c.monster) { 4.0 } else if c.chest { 3.0 } else { 2.0 });
+    }
+}
+
+/// The AutoMap (frmAutoMap's medPlotMaze and medDrawCursor): the gray map, visited squares
+/// black, each known flag's symbol at a 14-pixel step (walls and doors on the square's
+/// east and north edges), the facing cursor, and the map's west and south edges beside
+/// visited squares. Centred on the party (modAdjustMap), or on the map's middle when lost.
+pub fn automap(paint: &egui::Painter, r: Rect, s: f32, art: Option<&Art>, d: &GameData, g: &Game) {
+    let (Some(art), pos) = (art, g.pos()) else { return };
+    let floor = if g.lost.level { g.lost.floor } else { pos.floor };
+    let Some(f) = floor.checked_sub(1).and_then(|i| d.floors.get(i)) else { return };
+    let map = g.lead().map.get(floor - 1).map_or(&[][..], Vec::as_slice);
+    let paint = paint.with_clip_rect(r);
+    let (step, h) = (14.0 * s, f.height as f32);
+    let (cx, cy) = if g.lost.any() { (f.width as f32 / 2.0 - 1.0, h / 2.0) } else { (pos.x as f32, h - 1.0 - pos.y as f32) };
+    let origin = r.center() - vec2(cx * 14.0 + 3.75, cy * 14.0 + 3.75) * s;
+    // A square's top left, `x` east and `y` north of the south-west corner.
+    let at = |x: f32, y: f32| origin + vec2(x, h - 1.0 - y) * step;
+    let tile = |n: usize, p: Pos2, inset: f32| {
+        let uv = Rect::from_min_size(pos2((n as f32 * 15.0 + inset) / 405.0, inset / 15.0), vec2((15.0 - 2.0 * inset) / 405.0, (15.0 - 2.0 * inset) / 15.0));
+        paint.image(art.pics.id(), Rect::from_min_size(p + vec2(inset, inset) * s, vec2(15.0 - 2.0 * inset, 15.0 - 2.0 * inset) * s), uv, Color32::WHITE);
+    };
+    let known = |x: usize, y: usize| map.get(y * f.width + x).copied().unwrap_or(0);
+    for y in 0..f.height {
+        for x in 0..f.width {
+            if known(x, y) & ddj_rules::automap::VISITED != 0 {
+                paint.rect_filled(Rect::from_min_size(at(x as f32, y as f32) - vec2(s, s), vec2(16.0 * s, 16.0 * s)), 0.0, Color32::BLACK);
+            }
+        }
+    }
+    for y in 0..f.height {
+        for x in 0..f.width {
+            let (v, p) = (known(x, y), at(x as f32, y as f32));
+            for n in (0..23).filter(|n| v & (1 << n) != 0) {
+                tile(n, p + if n < 6 { if n % 2 == 0 { vec2(7.0 * s, 0.0) } else { vec2(0.0, -7.0 * s) } } else { vec2(0.0, 0.0) }, 0.0);
+            }
+            if v & ddj_rules::automap::VISITED != 0 && x == 0 {
+                tile(0, at(-1.0, y as f32) + vec2(7.0 * s, 0.0), 0.0);
+            }
+            if v & ddj_rules::automap::VISITED != 0 && y == 0 {
+                tile(1, at(x as f32, -1.0) - vec2(0.0, 7.0 * s), 0.0);
+            }
+        }
+    }
+    if !g.lost.any() {
+        tile(23 + pos.facing as usize, at(pos.x as f32, pos.y as f32), 2.0);
     }
 }

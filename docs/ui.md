@@ -80,6 +80,11 @@ Taken while building; reviewed at play-test.
   for peaceful ones; top right the box, chest or Asmodeus's chest while there is one.
   The maze shows the original's fog, the water and quicksand strips along its bottom,
   and Asmodeus's face when his group is in front.
+- **AutoMap** (frmAutoMap, 2026-11-14): MG11.DLL's PICS symbols for each flag the
+  character has worked out (balance.md), at the original's 14-pixel step on gray, visited
+  squares black, the facing cursor; centred on the party, or on the map's middle with no
+  cursor while lost (the level shown is then the last one known). The cursor doesn't
+  blink, and the hidden level scroll bar can't show other levels.
 - **Party order**: the Party window's < and > show the previous or next member, and Up
   and Down move the shown member among the followers (not in a fight), between Options
   and a narrower Leave.

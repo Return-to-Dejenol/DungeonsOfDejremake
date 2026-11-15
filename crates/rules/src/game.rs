@@ -19,7 +19,7 @@ use crate::{
     treasure::Chest,
 };
 
-pub const SAVE_VERSION: u32 = 4;
+pub const SAVE_VERSION: u32 = 5;
 /// Item 0, "Hands": every character's first slot, the weapon when no other is wielded
 /// (two swings at half damage). It can't be sold, dropped, stolen or destroyed.
 pub const HANDS: usize = 0;
@@ -161,8 +161,13 @@ pub struct Character {
     pub status: Status,
     #[serde(default)]
     pub buffs: Buffs,
-    /// The automap: squares seen, per floor, row-major.
-    pub seen: Vec<Vec<bool>>,
+    /// Before version 5 the automap kept only the squares seen (`upgrade_map`).
+    #[serde(default, skip_serializing)]
+    pub(crate) seen: Vec<Vec<bool>>,
+    /// The AutoMap, per floor, row-major: the square flags this character has worked out,
+    /// and `automap::VISITED`.
+    #[serde(default)]
+    pub map: Vec<Vec<u32>>,
     pub kills: u32,
     /// Combat rules for when this character is AI-controlled, first match wins.
     #[serde(default)]
@@ -274,6 +279,7 @@ impl Character {
             status: Status::default(),
             buffs: Buffs::default(),
             seen: Vec::new(),
+            map: Vec::new(),
             kills: 0,
             macros: ai::preset(ai::Role::Fighter, |_| None),
             companions: Vec::new(),
@@ -843,17 +849,6 @@ impl Character {
         self.gold += n;
     }
 
-    pub(crate) fn see(&mut self, data: &GameData) {
-        let Pos { x, y, floor, .. } = self.pos;
-        if floor == 0 {
-            return;
-        }
-        let f = &data.floors[floor - 1];
-        self.seen.resize(data.floors.len(), Vec::new());
-        self.seen[floor - 1].resize(f.width * f.height, false);
-        self.seen[floor - 1][y * f.width + x] = true;
-    }
-
     pub fn save(&self, dir: &Path) -> io::Result<()> {
         fs::create_dir_all(dir)?;
         fs::write(dir.join(format!("{}.json", self.name)), serde_json::to_vec_pretty(self)?)
@@ -974,6 +969,8 @@ pub struct Game {
     /// Teleport or Displacement waiting for the player's offsets: the caster, the spell
     /// and the SP it will cost (`magic::teleport`).
     pub teleport_pending: Option<(usize, usize, i32)>,
+    /// Lost, as the leader's flags (not saved: a loaded game starts in the city).
+    pub lost: crate::automap::Lost,
 }
 
 /// `Game::said` slots, after the dungeon window's lblCharacterHit, lblMonsterHit and
@@ -984,7 +981,7 @@ pub const SQUARE: usize = 2;
 
 impl Game {
     pub fn new(lead: Character) -> Self {
-        Self { party: vec![lead], fight: None, chest: None, rooms: Default::default(), ticks: 0, log: Vec::new(), store: Store::default(), hall: Hall::default(), said: Default::default(), boxes: Vec::new(), teleport_pending: None }
+        Self { party: vec![lead], fight: None, chest: None, rooms: Default::default(), ticks: 0, log: Vec::new(), store: Store::default(), hall: Hall::default(), said: Default::default(), boxes: Vec::new(), teleport_pending: None, lost: Default::default() }
     }
 
     pub fn lead(&self) -> &Character {
@@ -1071,7 +1068,8 @@ impl Game {
 
     /// Adds a saved character as an ally: alive, in the city, and not Good with Evil.
     /// Adds a saved character as an ally (fn14CB's Join); the refusal is the original's.
-    pub fn add_ally(&mut self, data: &GameData, ally: Character) -> Result<(), String> {
+    pub fn add_ally(&mut self, data: &GameData, mut ally: Character) -> Result<(), String> {
+        ally.upgrade_map(data);
         let name = format!("\"{}\"", ally.name);
         if self.party.len() >= MAX_PARTY {
             return Err(data.t(0x37c2_52b8).into());
@@ -1121,7 +1119,7 @@ impl Game {
     }
 
     /// Moves everyone, carried bodies included.
-    pub(crate) fn set_pos(&mut self, data: &GameData, p: Pos) {
+    pub(crate) fn set_pos(&mut self, _data: &GameData, p: Pos) {
         let floor_changed = p.floor != self.pos().floor;
         self.store.deepest = self.store.deepest.max(p.floor);
         if (p.x, p.y, p.floor) != (self.pos().x, self.pos().y, self.pos().floor) {
@@ -1132,11 +1130,8 @@ impl Game {
             if let Life::Dead(_) = m.life {
                 m.life = Life::Dead(p);
             }
-            if m.alive() {
-                m.see(data);
-                if floor_changed {
-                    m.buffs.xp_mult = 0.0;
-                }
+            if m.alive() && floor_changed {
+                m.buffs.xp_mult = 0.0;
             }
         }
     }
@@ -1149,6 +1144,7 @@ impl Game {
         let lead = &self.party[0];
         let days = (100.0 - 100.0 * f64::from(lead.hp) / f64::from(lead.max_hp.max(1))) / 3.25;
         let days = if lead.alive() { days.round_ties_even() as u32 } else { 0 };
+        self.lost = Default::default();
         for m in &mut self.party {
             m.pos = Pos::default();
             m.buffs = Buffs::default();
@@ -1182,11 +1178,12 @@ impl Game {
         Ok(())
     }
 
-    pub fn turn(&mut self, by: u8) {
+    pub fn turn(&mut self, data: &GameData, by: u8) {
         if self.fight.is_none() {
             for m in &mut self.party {
                 m.pos.facing = (m.pos.facing + by) % 4;
             }
+            self.perceive_ahead(data);
         }
     }
 
@@ -1215,6 +1212,7 @@ impl Game {
         self.set_pos(data, Pos { x: nx, y: ny, ..back });
         self.walk_effects(data, t);
         self.arrive(data, t, back);
+        self.perceive_ahead(data);
     }
 
     /// Each step: an ailment tick, SP trickles back, and a Healer in the party slowly
@@ -1297,6 +1295,7 @@ impl Game {
     /// Effects of the square just entered, then a possible encounter.
     pub(crate) fn arrive(&mut self, data: &GameData, t: &Tuning, back: Pos) {
         let Some(f) = self.floor(data) else { return };
+        self.map_arrival(data);
         let Pos { x, y, floor, .. } = self.pos();
         let sq = f.square(x, y);
         let (flags, area) = (sq.flags, sq.area);
@@ -1308,6 +1307,7 @@ impl Game {
         if flags & square::ROTATOR != 0 {
             let dir = self.party[0].roll(4) as u8;
             self.turn_to(dir);
+            self.rotator_lost(data);
         }
         // The size term of a fall: ln(race size + 2).
         let size = |c: &Character| (f64::from(data.races[c.race].w(28)) + 2.0).ln();
@@ -1340,6 +1340,7 @@ impl Game {
         if flags & square::CHUTE != 0 && drop > 0 && !self.party[0].levitates(data) {
             let to = (floor + drop).min(data.floors.len());
             self.set_pos(data, Pos { floor: to, ..self.pos() });
+            self.landed(data, floor, true);
             let fall: Vec<usize> = self.living().into_iter().filter(|&i| !self.party[i].levitates(data)).collect();
             for i in fall {
                 let m = &mut self.party[i];
@@ -1354,8 +1355,9 @@ impl Game {
                 Some((tx, ty, tf)) => (tx, ty, (tf as usize).clamp(1, data.floors.len())),
                 None => self.random_square(data, floor),
             };
+            self.perceive_square(data, 14, false);
             self.set_pos(data, Pos { x: tx, y: ty, floor: tf, facing: self.pos().facing });
-            return self.say(data.t(if self.party.len() == 1 { 0x6e7f_7df7 } else { 0xd5ce_1bdb }));
+            return self.landed(data, floor, true);
         }
         // A room's monsters meet the party as it comes in (sub0980).
         let was = (back.floor == floor).then(|| f.square(back.x, back.y).area);
@@ -1431,6 +1433,7 @@ impl Game {
             // Taking a chute drops by its table's floors (fn14CB, key T).
             let drop = f.chutes.iter().find(|c| c.at == (p.x, p.y)).map_or(1, |c| c.drop.max(1) as usize);
             self.set_pos(data, Pos { floor: (p.floor + drop).min(data.floors.len()), ..p });
+            self.landed(data, p.floor, true);
         } else {
             self.say("There are no stairs here.");
         }
@@ -1843,7 +1846,7 @@ mod tests {
                     g.round(&d, &t);
                 } else if g.log.last().is_some_and(|l| l.starts_with("A wall")) || g.party[0].roll(8) == 0 {
                     let by = 1 + 2 * g.party[0].roll(2) as u8;
-                    g.turn(by);
+                    g.turn(&d, by);
                     g.log.push(String::new());
                 } else {
                     g.step(&d, &t);
@@ -1909,6 +1912,51 @@ mod tests {
         g.party[0].items.push(magic::new_held(&d, sword, true));
         magic::use_item(&mut g, &d, &t, 0, sword);
         assert!(g.party[0].items.iter().any(|h| h.item == sword));
+    }
+
+    #[test]
+    fn automap_as_the_original() {
+        use crate::automap::{VISITED, record};
+        let d = data();
+        // A square with a secret door on its east side.
+        let (fi, i) = d.floors.iter().enumerate().find_map(|(fi, f)| f.squares.iter().position(|q| q.flags & square::RIGHT_SECRET_DOOR != 0 && q.flags & square::FOG == 0).map(|i| (fi, i))).unwrap();
+        let f = &d.floors[fi];
+        let (x, y) = (i % f.width, i / f.width);
+        let mut map = vec![0; f.width * f.height];
+        record(f, &mut map, x, y, || false);
+        assert_eq!(map[i] & (VISITED | square::RIGHT_WALL | square::RIGHT_SECRET_DOOR), VISITED | square::RIGHT_WALL, "missed: a wall");
+        map[i] = 0;
+        record(f, &mut map, x, y, || true);
+        assert_eq!(map[i] & (square::RIGHT_WALL | square::RIGHT_SECRET_DOOR), square::RIGHT_SECRET_DOOR, "found: the door");
+        // Version 4 saves: seen squares become visited, secrets as walls.
+        let mut c = hero(&d, "Mapper", 0, 1, 6, 10);
+        c.seen = vec![vec![false; f.width * f.height]; fi + 1];
+        c.seen[fi][i] = true;
+        c.upgrade_map(&d);
+        assert!(c.seen.is_empty() && c.map[fi][i] & (VISITED | square::RIGHT_WALL) == VISITED | square::RIGHT_WALL);
+        assert!((5.0..=90.0).contains(&c.perception(&d)));
+        // Landing somewhere unknown is being lost; the map waits until a known square.
+        let mut g = Game::new(c);
+        let here = Pos { x, y, floor: fi + 1, facing: 0 };
+        g.set_pos(&d, here);
+        g.map_arrival(&d);
+        let away = (0..f.width * f.height).find(|&j| g.known(&d, j % f.width, j / f.width) == 0 && f.squares[j].flags & (square::ROCK | square::FOG) == 0).unwrap();
+        g.set_pos(&d, Pos { x: away % f.width, y: away / f.width, ..here });
+        g.landed(&d, fi + 1, true);
+        assert!(g.lost.pos && g.lost.level && g.lost.dir);
+        assert_eq!(g.log.last().map(String::as_str), Some(d.t(0xccab_2048)));
+        g.map_arrival(&d);
+        assert!(g.lost.any() == (g.known(&d, away % f.width, away / f.width) == 0), "nothing recorded while lost");
+        g.set_pos(&d, here);
+        g.map_arrival(&d);
+        assert!(!g.lost.any(), "found on a visited square");
+        // A special square: noticed P% of the time, named rightly half of those.
+        g.lead_mut().map[fi].iter_mut().for_each(|v| *v &= !square::ROTATOR);
+        let lines = g.log.len();
+        for _ in 0..200 {
+            g.perceive_square(&d, 17, false);
+        }
+        assert!(g.known(&d, x, y) & square::ROTATOR != 0 && g.log.len() > lines);
     }
 
     #[test]
@@ -2427,7 +2475,7 @@ mod tests {
                 if g.fight.is_some() {
                     g.round(&d, &t);
                 } else if g.party[0].roll(6) == 0 {
-                    g.turn(1);
+                    g.turn(&d, 1);
                 } else if g.chest.is_some() {
                     crate::treasure::open(&mut g, &d, &t, 0);
                 } else {

@@ -5,16 +5,16 @@
 use ddj_rules::{
     Tuning,
     ai::{Act, Target},
-    game::{self, Game, Life, Side},
+    game::{self, Life},
     magic,
-    mdr::{GameData, Words, square},
+    mdr::{GameData, Words},
 };
 use std::collections::HashMap;
 
 use ddj_extract::forms::Val;
-use eframe::egui::{self, Color32, Painter, Rect, Stroke, pos2, vec2};
+use eframe::egui::{self, Color32, Rect, pos2, vec2};
 
-use crate::{App, Deed, Dialog, Screen, win::{Desk, Drag, View}};
+use crate::{App, Deed, Dialog, Screen, art, win::{Desk, Drag, View}};
 
 const SEL_BACK: Color32 = Color32::from_rgb(0, 0, 128);
 
@@ -185,43 +185,6 @@ fn status(m: &game::Character) -> String {
 
 /// Seen squares of the current floor into `r`, six pixels a square, north up and
 /// centred on the party (an arrow).
-fn automap(p: &Painter, r: Rect, s: f32, d: &GameData, g: &Game) {
-    let pos = g.pos();
-    let Some(f) = (pos.floor > 0).then(|| &d.floors[pos.floor - 1]) else { return };
-    let Some(seen) = g.lead().seen.get(pos.floor - 1) else { return };
-    let cell = 7.0 * s;
-    let (ox, oy) = (r.center().x - (pos.x as f32 + 0.5) * cell, r.center().y - (f.height - pos.y) as f32 * cell + 0.5 * cell);
-    let corner = |x: usize, y: usize| pos2(ox + x as f32 * cell, oy + (f.height - y) as f32 * cell);
-    for y in 0..f.height {
-        for x in 0..f.width {
-            if !seen.get(y * f.width + x).copied().unwrap_or(false) && (x, y) != (pos.x, pos.y) {
-                continue;
-            }
-            let fl = f.square(x, y).flags;
-            let mark = [(square::STAIRS_UP, Color32::from_rgb(0, 255, 0)), (square::STAIRS_DOWN, Color32::from_rgb(255, 0, 0)), (square::WATER, Color32::from_rgb(0, 0, 255))].iter().find(|m| fl & m.0 != 0).map(|m| m.1);
-            if let Some(c) = mark {
-                p.rect_filled(Rect::from_two_pos(corner(x, y), corner(x + 1, y + 1)).shrink(cell / 3.0), 0.0, c);
-            }
-            for (dir, a, b) in [(0, corner(x, y + 1), corner(x + 1, y + 1)), (1, corner(x + 1, y), corner(x + 1, y + 1)), (2, corner(x, y), corner(x + 1, y)), (3, corner(x, y), corner(x, y + 1))] {
-                match game::side(f, x, y, dir) {
-                    Side::Wall => {
-                        p.line_segment([a, b], Stroke::new(1.0, Color32::WHITE));
-                    }
-                    Side::Door => {
-                        p.line_segment([a, b], Stroke::new(1.0, Color32::YELLOW));
-                    }
-                    Side::Open => {}
-                }
-            }
-        }
-    }
-    // The original's cursor (shpLocation), with the facing as a short tick.
-    let c = Rect::from_two_pos(corner(pos.x, pos.y), corner(pos.x + 1, pos.y + 1)).center();
-    p.rect_stroke(Rect::from_center_size(c, vec2(cell * 0.5, cell * 0.5)), 0.0, Stroke::new(s, Color32::YELLOW), egui::StrokeKind::Inside);
-    let dir = [vec2(0.0, -1.0), vec2(1.0, 0.0), vec2(0.0, 1.0), vec2(-1.0, 0.0)][pos.facing as usize] * cell * 0.45;
-    p.line_segment([c, c + dir], Stroke::new(s, Color32::YELLOW));
-}
-
 impl App {
     fn member(&self) -> usize {
         self.game.as_ref().map_or(0, |g| self.sel.min(g.party.len() - 1))
@@ -601,17 +564,19 @@ impl App {
         }
     }
 
-    /// The AutoMap: what the party has seen of this level.
+    /// The AutoMap: what the character playing has worked out of this level.
     pub(crate) fn automap_window(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData) {
         let g = self.game.as_ref().unwrap();
         let p = g.pos();
         let mut v = View::default();
-        v.caption = Some(format!("{} {})", d.t(0x3ea0_825e), p.floor));
+        let floor = if g.lost.level { g.lost.floor } else { p.floor };
+        v.caption = Some(format!("{} {floor})", d.t(0x3ea0_825e)));
         let size = desk.size("frmAutoMap");
         let (w, h) = (size.x as i32, size.y as i32);
         v.show("hsbLevel", false).show("lblLevel", false).show("lblInfo", false);
         v.rect("picPicture", [0, 0, w, h]).rect("picMaze", [0, 0, w - 2, h - 2]);
-        v.paint("picMaze", move |pt, r, s| automap(pt, r, s, d, g));
+        let art = self.art.as_ref();
+        v.paint("picMaze", move |pt, r, s| art::automap(pt, r, s, art, d, g));
         desk.window(ctx, "frmAutoMap", v, false);
     }
 }
