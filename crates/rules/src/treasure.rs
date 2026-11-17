@@ -61,7 +61,7 @@ pub struct Chest {
 /// The container an encounter's monster leaves (MORDOR.EXE): one d99 roll against its
 /// chest % (w29) and box % (w28), +25 in its lair. Chests are trapped 89% of the time,
 /// boxes 74%, with a trap from the monster's list. Magic locks follow the remake's floor
-/// table (rare on floors 1-5), and never on anti-magic or extinguish squares.
+/// table (owner, 2026-11-17), and never on anti-magic or extinguish squares.
 pub fn chest_for(g: &mut Game, d: &GameData, m: usize, lair: bool) -> Option<Chest> {
     let mon = &d.monsters[m];
     let floor = g.pos().floor as u32;
@@ -275,23 +275,25 @@ fn loot(g: &mut Game, d: &GameData, c: &Chest) {
     g.share_gold(d, if c.chest { c.gold * 3 / 2 } else { c.gold });
     let mon = &d.monsters[c.monster];
     let l = g.pos().floor as f64;
-    let mut chance = i32::from(mon.item_chance);
-    let mut r = g.party[0].d100() - if c.chest { 25 } else { 0 } + if c.unlocked { (5.0 * (l + 10.0).ln()) as i32 } else { 0 };
-    if r > 90 && chance != 100 {
-        r = 90;
+    let mut chance = f64::from(mon.item_chance);
+    // A Single in the original: the Charm's penalty keeps its fraction.
+    let mut r = f64::from(g.party[0].d100()) - if c.chest { 25.0 } else { 0.0 } + if c.unlocked { 5.0 * (l + 10.0).ln() } else { 0.0 };
+    if r > 90.0 && mon.item_chance != 100 {
+        r = 90.0;
     }
-    while r <= chance && chance > 0 {
-        let item = random_item(&mut g.party[0], d, c.monster, c.chest);
+    while r <= chance && chance > 0.0 {
+        let Some(item) = random_item(&mut g.party[0], d, c.monster, c.chest) else { break };
         let disguised = g.fight.as_ref().map_or(c.disguised, |f| f.shown.first().is_some_and(|s| s.as_m != c.monster));
-        g.give(d, item, c.chest, (!disguised).then_some(c.monster));
-        r = g.party[0].d100();
-        chance = (f64::from(mon.item_chance) / 10.0).round_ties_even() as i32;
+        g.give(d, Some(item), c.chest, (!disguised).then_some(c.monster));
+        r = f64::from(g.party[0].d100());
+        chance = (f64::from(mon.item_chance) / 10.0).round_ties_even();
     }
 }
 
 /// An item from the monster's treasure (MORDOR.EXE): one of its ten item classes, at a
 /// level from half its item level (one more for a chest) to its item level, weighted by
-/// rarity (w6). Experience potions sometimes (the remake's).
+/// rarity (w6) over the run of that type in file order. Experience potions sometimes
+/// (the remake's).
 pub fn random_item(r: &mut Character, d: &GameData, m: usize, chest: bool) -> Option<usize> {
     let mon = &d.monsters[m];
     if r.chance(0.04) {
@@ -301,7 +303,10 @@ pub fn random_item(r: &mut Character, d: &GameData, m: usize, chest: bool) -> Op
     }
     let max = mon.item_level.max(1);
     // Asmodeus (id 277) leaves his top three levels (monOpenChest).
-    let mut min = if mon.id == 277 { max - 2 } else { ((f64::from(max) / 2.0).round_ties_even() as i16 + i16::from(chest)).clamp(1, max) };
+    let base = if mon.id == 277 { max - 2 } else { ((f64::from(max) / 2.0).round_ties_even() as i16 + i16::from(chest)).clamp(1, max) };
+    let mut min = base;
+    let n = d.items.iter().position(|it| it.id >= POTION_OF_EXPERIENCE).unwrap_or(d.items.len());
+    // The original loops until it finds one; the remake gives up after 100 tries.
     for _ in 0..100 {
         let class = mon.item_classes[r.roll(10) as usize];
         if class < -1 {
@@ -312,18 +317,30 @@ pub fn random_item(r: &mut Character, d: &GameData, m: usize, chest: bool) -> Op
         }
         // Class -1 is any one item type, each as likely.
         let kind = if class == -1 { r.roll(d.item_types.len() as u32) as i16 } else { class };
-        // A type whose first item from the low level up is already at the top widens
-        // the range a level down.
-        let first = (0..d.items.len()).filter(|&i| d.items[i].kind == kind && d.items[i].level >= min).map(|i| d.items[i].level).min();
-        if first == Some(max) && min > 1 {
+        // From the first item of the type at min or above, in file order (past Hands): already at the
+        // top widens the range a level down and rolls the class again; past the top, or
+        // none at all, starts over from the first min.
+        let Some(s) = (1..n).find(|&i| d.items[i].kind == kind && d.items[i].level >= min) else {
+            min = base;
+            continue;
+        };
+        if d.items[s].level == max && min > 1 {
             min -= 1;
+            continue;
         }
-        let fits: Vec<(usize, u32)> = (0..d.items.len())
-            .filter(|&i| d.items[i].kind == kind && (min..=max).contains(&d.items[i].level) && d.items[i].id < POTION_OF_EXPERIENCE)
-            .map(|i| (i, d.items[i].w(6).max(0) as u32))
-            .collect();
+        if d.items[s].level > max {
+            min = base;
+            continue;
+        }
+        // The unbroken run of that type up to max; one reaching the file's end keeps
+        // only its first item.
+        let e = (s..n).find(|&i| d.items[i].level > max || d.items[i].kind != kind).map_or(s, |i| (i - 1).max(s));
+        let fits: Vec<(usize, u32)> = (s..=e).map(|i| (i, d.items[i].w(6).max(0) as u32)).collect();
         let total: u32 = fits.iter().map(|f| f.1).sum();
+        // A run of rarity 0 divides by zero in the original and ends the chest's items;
+        // fixed here: nothing in it can drop, so start over as when none is in range.
         if total == 0 {
+            min = base;
             continue;
         }
         let mut pick = r.roll(total);

@@ -78,12 +78,12 @@ are listed at the end. Notation:
   - The remake's depth and catch-up bonuses apply on top.
 - **Peace:** a good group meets a good leader in peace, and a neutral group 40% of the time. Each round a peaceful group turns hostile at a chance set by the two alignments (15-100) minus 7.5 ln CHA.
 - **Leaving** a fight gives each group a free attack at its target, 50% + 5% per point of its DEX over the target's (5-98%); the monsters stay in the room.
-- **Ailments** (timAilment_Timer; one tick is a combat round in a fight and a step outside, never while idle):
+- **Ailments** (timAilment_Timer: every 4 seconds in the dungeon, fight or not). Death clears them all (mdrcharIsDead), so a raised body comes back clean:
   - Poison and disease wear off when d200 + 2 (CON − 10) − 2 × strength beats 185 (195 for disease). Until then poison costs 2 hits a tick and disease 1. An ailment already there isn't renewed.
   - Paralysis has the monster's power level p as its strength. Each tick it holds at clamp(ln(0.6 p) / ln 1.02 − (((ln L + L/10) / ln 1.05) / 10 + 1.5 CON + paralysis resistance), 5, 90)%, L the current guild level, and it ends at once when no monsters are left. Meanwhile the stat bonus to attack and defense is lost.
 - **Level-up HP:** new characters start with 15. Up to the guild's HP cap (w1), the guild's hits; two times in three, d(hits / 5) more; and d(CON − 16) for CON above 16 below the cap. Past it exactly w2 (plus the remake's CON at half rate). Hits stop at 999, and a guild at level 999.
 - **Monsters at companions** swing with the same critical, backstab and size terms. Breath hits the target's companions first, each less half its resistance, and the reduced value carries on to the next and to the member (an original quirk). Draining max hits stops at the highest guild level. A peaceful group turns when d100 < the chance.
-- **Treasure class −1** is one item type at random, each as likely; a type whose first item from the low level up is already at the top widens the range a level down. Asmodeus leaves his top three item levels. Gold is split over the whole party, the dead included.
+- **Treasure class −1** is one item type at random, each as likely. The item is drawn by rarity from the unbroken run of its type in file order, from the first at the low level or above up to the top; a run that starts at the top widens the range a level down and rolls the class again, and none in range starts over. A run of rarity 0 starts over too (a bug fix: the original divides by zero there and gives no more items from that chest). Asmodeus leaves his top three item levels. Gold is split over the whole party, the dead included.
 - **Quests:** from level 5, at the guild's quest chance (w32). 5% of the time the Questmaster lets you off. Above level 15 a quarter are "return one item" (level 1 to Int(Q / 1.5) + 1, worth 100 or more, not cursed); the rest "defeat one monster" of a random type up to level found Q = CInt(L / 25), 1-10 (from the type's first 40% of the time, else from level Q; spawn weights below 10 rarely). A pinned character with a quest open may file for forfeit (not with a cursed item worn): the guild loses Int(ln(L + 1)) levels and the hits they brought.
 - **Squares** (sub0835, sub08F5, timAilment_Timer), F the floor:
   - A pit drops each member for Int(Rnd × (F + 1)/2 × 15.5) × ln(race size + 2) + 1; a member's own levitation saves it but fails (5 + F/4)% of the time.
@@ -95,7 +95,7 @@ are listed at the end. Notation:
 - **Containers:**
   - One d99 roll for a chest (w29) or a box (w28), +25 in the monster's lair.
   - Chests are trapped 89% of the time and boxes 74%, with a trap drawn from the monster's trap list (w35).
-  - Magic locks: remake. Rare on floors 1-5 (the floor table); the original uses w6%.
+  - Magic locks: the remake's floor table (owner, 2026-11-17; see Decided); the original rolls d100 ≤ the monster's w6.
 - **Gold:**
   - For gold exponent e, B = e × 10^(e − 0.5) / 4.
   - Each group carries a quarter to five quarters of B × log2(level + 1), 500 at least.
@@ -308,6 +308,13 @@ changes floor, going back to town included.
 - Boosts do not stack: only the strongest active boost applies to a character.
 - Charm of Experience sits above Resist Magic (15), the top of the original Seeker list.
 - Its SP cost, and the potion's price and drop rates, are start values to tune.
+
+### Magic locks by floor (2026-11-17)
+
+Boxes and chests are magically locked by the floor table in `patches/modern.toml`
+(`magic_lock_chance`: 1% on floors 1-2, 2.5% by floor 5, 8% on floor 6, 25% from floor
+10 on), not by each monster's lock chance (w6) as in the original. Never on anti-magic
+or extinguish squares, as in the original.
 
 ### Match the original's mechanics (audit, 2026-11-14)
 

@@ -1583,7 +1583,9 @@ impl Game {
         }
         m.hp = 0;
         m.life = Life::Dead(m.pos);
+        // Death clears the ailments (mdrcharIsDead -> sub048C).
         m.buffs = Buffs::default();
+        m.status = Status::default();
         let name = format!("\"{}\"", m.name);
         // The guild log (mdrcharSetDead): where, if the level is known.
         let (g, floor) = (m.guild, m.pos.floor);
@@ -1974,6 +1976,7 @@ impl Game {
         let m = &mut self.party[i];
         m.age_days += 54;
         m.life = Life::Alive;
+        m.status = Status::default(); // bodies from saves before death cleared it
         m.hp = m.max_hp;
         let raised = format!("\"{}\"{}", m.name, data.t(0x107d_8b27));
         let g = m.guild;

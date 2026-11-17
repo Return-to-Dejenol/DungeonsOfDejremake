@@ -277,11 +277,12 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning, group: u8, at: Option<usiz
         if hurt(g, d, j, total) {
             return killed(g, d, j, &one, [0xe5d9_a378, 0xf5fc_efbb], at, rec);
         }
-        if last_hit {
-            specials(g, d, m, j);
-        }
-        if mon.specials & STONE != 0 && g.party[j].alive() {
+        // Stoning comes first; a member turned to stone takes nothing else (sub0E85).
+        if mon.specials & STONE != 0 {
             stone(g, d, m, j, &one, rec);
+        }
+        if last_hit && !g.party[j].status.stoned {
+            specials(g, d, m, j);
         }
     } else {
         let you = d.t(if awake.len() > 1 { 0xe339_1a5f } else { 0x2f02_d448 }).into();
@@ -480,16 +481,17 @@ fn specials(g: &mut Game, d: &GameData, m: usize, j: usize) {
     let mon = &d.monsters[m];
     let (w7, w37) = (mon.level.max(1), mon.power_level);
     let name = g.quoted(j);
-    let con = f64::from(g.party[j].stats[CON]);
+    let con = f64::from(g.party[j].stat(d, CON));
     let body = (con * 2.5 - 2.0 * f64::from(w7)) as i32;
     let c = &mut g.party[j];
+    // What to tell, in order: the label words, and Messages' line (None: the label only).
     let (mut said, mut sounds) = (Vec::new(), Vec::new());
     if mon.specials & AGE != 0 && c.d100() > body {
         sounds.push(52);
         let years = (f64::from(w37) / 50.0).round_ties_even().clamp(1.0, 5.0) as u32;
         let days = (c.roll(1825) + 1).min(years * 365);
         c.age_days += days;
-        said.push((0x6b21_9f83, Some(format!("{name}{}", d.t(0x45d2_509c)))));
+        said.push((0x6b21_9f83, Some(Some(format!("{name}{}", d.t(0x45d2_509c))))));
     }
     if mon.specials & DRAIN != 0 {
         for _ in 0..(c.rnd() * (f64::from(w7) / 2.0 + 0.5)) as u32 + 1 {
@@ -500,7 +502,7 @@ fn specials(g: &mut Game, d: &GameData, m: usize, j: usize) {
                     s if c.stats[s] > d.races[c.race].stat_min[s] => c.stats[s] -= 1,
                     _ => {}
                 }
-                said.push((0x278b_8452, Some(format!("{name}{}", d.t(0x7d56_1ded)))));
+                said.push((0x278b_8452, Some(Some(format!("{name}{}", d.t(0x7d56_1ded))))));
             }
         }
         if said.iter().any(|s| s.0 == 0x278b_8452) {
@@ -508,42 +510,41 @@ fn specials(g: &mut Game, d: &GameData, m: usize, j: usize) {
         }
     }
     let lvl = w7 as u16;
-    // An ailment already there stays as it is (sub0D1D and its kin).
-    if mon.specials & POISON != 0 && c.d100() > resist(c, d, POISON_RES) {
-        if c.status.poison == 0 {
-            c.status.poison = lvl;
-            sounds.push(38);
-        }
+    // Only a member not already ailing rolls (sub0D1D and its kin). Poison and disease
+    // are told only in the controlled character's label, never in Messages.
+    if mon.specials & POISON != 0 && c.status.poison == 0 && c.d100() > resist(c, d, POISON_RES) {
+        c.status.poison = lvl;
+        sounds.push(38);
         said.push((0x7413_b904, None));
     }
-    if mon.specials & DISEASE != 0 && c.d100() > resist(c, d, DISEASE_RES) {
-        if c.status.disease == 0 {
-            c.status.disease = lvl;
-            sounds.push(39);
-        }
+    if mon.specials & DISEASE != 0 && c.status.disease == 0 && c.d100() > resist(c, d, DISEASE_RES) {
+        c.status.disease = lvl;
+        sounds.push(39);
         said.push((0x1391_68c1, None));
     }
-    if mon.specials & PARALYZE != 0 && c.d100() > (resist(c, d, PARALYSIS_RES) + i32::from(c.stats[CON])).min(95) {
-        if c.status.paralysis == 0 {
-            c.status.paralysis = w37.max(1) as u16;
-            sounds.push(37);
-        }
-        said.push((0x5826_6943, Some(format!("{} - \"{}\"", c.name, d.t(0x2a09_8669)))));
+    if mon.specials & PARALYZE != 0 && c.status.paralysis == 0 && c.d100() > (resist(c, d, PARALYSIS_RES) + i32::from(c.stat(d, CON))).min(95) {
+        c.status.paralysis = w37.max(1) as u16;
+        sounds.push(37);
+        said.push((0x5826_6943, Some(Some(format!("{} - \"{}\"", c.name, d.t(0x2a09_8669))))));
     }
     for n in sounds {
         g.sound(n, Some(j));
     }
     for (you, named) in said {
-        g.tell(j, MONSTER_HIT, d.t(you).into(), named);
+        match named {
+            Some(named) => g.tell(j, MONSTER_HIT, d.t(you).into(), named),
+            None if j == 0 => g.said[MONSTER_HIT] = d.t(you).into(),
+            None => {}
+        }
     }
 }
 
 /// Stoning: past the stone resistance, CON x ln CON / ln 2.5 - level (95 at most) saves.
 fn stone(g: &mut Game, d: &GameData, m: usize, j: usize, mon: &str, rec: Option<usize>) {
     let c = &mut g.party[j];
-    let v = f64::from(c.stats[CON].max(1));
+    let v = f64::from(c.stat(d, CON).max(1));
     let save = (v * v.ln() / 2.5f64.ln() - f64::from(d.monsters[m].level)).min(95.0);
-    if c.d100() > resist(c, d, STONE_RES) && f64::from(c.d100()) > save {
+    if c.alive() && !c.status.stoned && c.d100() > resist(c, d, STONE_RES) && f64::from(c.d100()) > save {
         c.status.stoned = true;
         // Stoned is dead to the original (mdrcharSetDead).
         g.sound(51, Some(j));

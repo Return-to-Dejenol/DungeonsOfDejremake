@@ -591,6 +591,7 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, item: i16,
             if ok {
                 m.rocked = false;
                 m.life = Life::Alive;
+                m.status = Default::default(); // bodies from saves before death cleared it
                 m.hp = if sp.effect == 22 { m.max_hp } else { 1 };
                 let line = format!("\"{}\"{}\"{}\".", g.party[j].name, d.t(0x2e6b_cc9d), g.party[i].name);
                 let guild = g.party[j].guild;
