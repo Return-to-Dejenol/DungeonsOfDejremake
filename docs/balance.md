@@ -361,9 +361,11 @@ behaviour is a known gap, not a choice.
   old age (ported).
 - **Theft and monster spells (ported):** match the original, including theft's gold rule
   and monster spells hitting the target and its own companions only.
-- **Real-time timers:** where the original runs a rule on a wall-clock timer (ailments,
-  water and quicksand, binding decay, old age, room refills), one tick is one combat round
-  in a fight and one step outside. **Deliberate change:** idling never advances them.
+- **Real-time timers (owner, 2026-11-16: back to the original's):** combat rounds come
+  every 1.5 seconds (timCombat) and the ailment timer every 4 seconds in the dungeon,
+  fight or not (timAilment: poison and disease, paralysis, water and quicksand, seeing
+  through disguises, "Help!", the rooms' clock). Pausing (Space) stops both. Before
+  this, a tick was a combat round or a step and idling advanced nothing.
 - **Everything else the audit listed** (teleport and displacement, buffs, item cast
   levels, bank item storage, Pool, restocking and the minor items): match the original by
   default. Where a rule would hurt play on a phone, it comes back to the owner as its own
@@ -371,7 +373,8 @@ behaviour is a known gap, not a choice.
 - **Teleport and Displacement (ported, owner's choice 2026-11-14):** the original's offsets,
   picked with - and + buttons instead of typed.
 - **Help! and Give (ported 2026-11-15):** in a party, a member below 10 hits or at a tenth
-  of them calls "Help! My hits are 7/80!" each tick and after a monster's attack. Give
+  of them calls "Help! My hits are 7/80!" each ailment tick (4 seconds) and after a
+  monster's attack. Give
   moves gold, then an item (not guild-issued or worn), which the receiver may know
   better (sub145F).
 - **The AutoMap, perception and being lost (ported, owner's choice 2026-11-14):** the map

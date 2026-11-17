@@ -184,6 +184,7 @@ pub fn open(g: &mut Game, d: &GameData, t: &Tuning, i: usize) {
     } else {
         g.chest = None;
     }
+    g.sound(5, None);
     if c.trap != Trap::None {
         if f64::from(g.party[who].d100()) <= skill {
             let lv = f64::from(g.party[who].level());
@@ -203,6 +204,11 @@ pub fn open(g: &mut Game, d: &GameData, t: &Tuning, i: usize) {
 /// moved away from the container.
 fn spring(g: &mut Game, d: &GameData, t: &Tuning, who: usize, c: &Chest) -> bool {
     let l = g.pos().floor.max(1) as f64;
+    // Each trap's sounds (monOpenChest), in TRAPS order.
+    const SOUNDS: [&[u8]; 11] = [&[], &[38], &[39], &[43, 35], &[28, 35], &[49], &[44], &[29], &[7], &[48], &[52]];
+    for &n in SOUNDS[TRAPS.iter().position(|&x| x == c.trap).unwrap_or(0)] {
+        g.sound(n, None);
+    }
     match c.trap {
         Trap::PoisonGas | Trap::DiseaseSpores => {
             // The original catches only the resistant (an inverted test); here

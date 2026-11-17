@@ -482,6 +482,10 @@ impl Game {
     /// peaceful groups' offers to join (d3000 <= 10 CHA - 10 (level found - 1)).
     fn muster(&mut self, data: &GameData, groups: &[(usize, u32)], lair: i16, back: Pos) {
         let first = groups[0].0;
+        // Asmodeus announces himself (fn0D4D).
+        if groups.iter().any(|&(m, _)| data.monsters[m].id == 277) {
+            self.sound(68, None);
+        }
         let shown: Vec<Shown> = groups.iter().map(|&(m, _)| self.disguise(data, m)).collect();
         let mut foes = Vec::new();
         for (gi, &(m, n)) in groups.iter().enumerate() {
@@ -565,8 +569,6 @@ impl Game {
                 }
             }
         }
-        // A round is a tick of the ailment timer (docs/balance.md).
-        self.ailments(data);
     }
 
     /// Carries out one member's action.
@@ -603,7 +605,6 @@ impl Game {
         }
         if self.fight.is_some() {
             self.shelve(data);
-            self.ailments(data);
             self.set_pos(data, back);
             crate::ai::tend(self, data, t);
         }
@@ -638,6 +639,8 @@ impl Game {
         for _ in 0..swings {
             let m = self.fight.as_ref().unwrap().foes[fi].monster;
             let mon = &data.monsters[m];
+            // Each swing's sound by the weapon's type (sub1019).
+            self.sound(if [0, 1, 2, 4, 5, 7].contains(&weapon.kind) { 36 } else { 46 }, Some(i));
             // Weapon-resistant monsters ignore weapons below half their level, and the
             // member defends; immune ones ignore all, with no defending (sub1019).
             if mon.flags & 32 != 0 || mon.flags & 16 != 0 && weapon.level < mon.level / 2 {
@@ -678,6 +681,11 @@ impl Game {
                 self.fought(i, data.t(0x0f2f_e6dc).into(), format!("{name} misses the {}.", self.foe_name(data, fi)));
                 return;
             }
+            // A hit's sounds, the knack's then the blow's (sub1019).
+            if critical || backstab {
+                self.sound(if !backstab { 71 } else if critical { 55 } else { 70 }, Some(i));
+            }
+            self.sound(2, Some(i));
             // The label's words for a hit and for a kill (sub1019).
             let (verb, you) = match (critical, backstab) {
                 (true, true) => ("severs", [0xb6db_bf47, 0x4921_99cb]),
@@ -688,6 +696,7 @@ impl Game {
             if !self.damage_foe(data, t, i, fi, dmg, verb, Some(you), 1.0) {
                 return;
             }
+            self.sound(crate::monsters::death_cry(data, m), Some(i));
             match self.fight.as_ref().and_then(|f| f.pick(Target::First)) {
                 Some(next) => fi = next,
                 None => return,
@@ -791,8 +800,6 @@ impl Game {
 
     fn win(&mut self, _data: &GameData, _t: &Tuning) {
         let Some(f) = self.fight.take() else { return };
-        // Paralysis ends with the fight (timAilment_Timer).
-        self.ailments(_data);
         match f.chest {
             // A container keeps the gold until it is opened.
             Some(mut chest) => {
@@ -826,6 +833,7 @@ impl Game {
         // MONSMOD.monOpenChest: "CHEST: Slot #3, Dagger", by name in a party.
         let found = format!("{}{}{}{}{}", data.t(if chest { 0x3e05_53f6 } else { 0xd5cb_7ed2 }).to_uppercase(), data.t(0xdc80_56b6), self.party[j].items.len() + 1, data.t(0x89d0_00f1), crate::magic::item_name(data, &held));
         let line = if self.party.len() == 1 { found } else { format!("{}{}{found}", self.quoted(j), data.t(0x9918_0f02)) };
+        self.sound(41, None);
         self.say(line);
         let from = from.filter(|&m| data.monsters[m].flags & 2 == 0 || self.party[j].sees_invisible(data));
         self.record_item(item, Some(j), held.id, Some(from));
@@ -835,6 +843,8 @@ impl Game {
         if data.items[item].w(40) == 2 && self.party[j].toggle_equip(data, slot).is_ok() {
             let line = if j == 0 { data.t(0xb969_69a3).into() } else { format!("{}\"{}\"!!", data.t(0xb328_a64b), self.party[j].name) };
             self.say(line);
+            self.sound(61, None);
+            self.sound(63, None);
         }
     }
 }

@@ -161,6 +161,8 @@ struct App {
     paused: bool,
     in_fight: bool,
     last_round: Instant,
+    /// The ailment timer's last tick (timAilment, every 4 seconds in the dungeon).
+    last_tick: Instant,
     /// The party member shown in the character windows.
     sel: usize,
     rule: party::RuleDraft,
@@ -298,6 +300,7 @@ impl App {
             paused: false,
             in_fight: false,
             last_round: Instant::now(),
+            last_tick: Instant::now(),
             sel: 0,
             rule: party::RuleDraft::default(),
             audio: None,
@@ -1118,6 +1121,8 @@ impl App {
                             match g.party[i].forfeit(d, t) {
                                 Err(e) => self.boxes.push((d.t(0x6a45_dbf2).into(), e)),
                                 Ok(()) => {
+                                    // Levels given up (sub29BD).
+                                    g.sound(38, None);
                                     let c = &g.party[i];
                                     let line = format!("\"{}\"{}{}{}", c.name, d.t(0x5ddb_ceff), before.saturating_sub(c.level()), d.t(if c.female { 0xc909_194b } else { 0x425a_93de }));
                                     let guild = c.guild;
@@ -1223,6 +1228,13 @@ impl App {
         v.text("lblLabel(9)", "Cloud Saves").text("cmdCommand(1)", "Cloud &Saves...").text("cmdCommand(2)", "S&ync Now").enable("cmdCommand(2)", s.on() && !s.busy());
         v.text("lblBackup", status).text("lblLabel(2)", "Courier New").text("lblLabel(3)", "MS Sans Serif");
         let ev = desk.window(ctx, F, v, true);
+        // Turning sound effects on, or moving their volume, plays one at the new volume
+        // (chkCheck_Click, hsbVolume_Scroll).
+        let fx = desk.state(F, "hsbVolume(1)").top.min(opts::LOUD) as f32 / opts::LOUD as f32;
+        let test = if ev.click("chkCheck(2)") && !desk.state(F, "chkCheck(2)").on { Some(11) } else { ev.changed.as_deref().is_some_and(|k| k == "hsbVolume(1)").then_some(2) };
+        if let (Some(n), Some(a)) = (test, &self.audio) {
+            a.play(&ddj_extract::data_dir(), n, fx);
+        }
         if ev.click("cmdCommand(0)") {
             for k in 0..12 {
                 *self.opts.check(k) = desk.state(F, &format!("chkCheck({k})")).on;
@@ -1763,27 +1775,26 @@ impl eframe::App for App {
             self.desk = Some(desk);
         }
         // The original's Sound Canvas music for the menu, the city and the dungeon, and
-        // its effects for what just happened (at most a few a frame).
+        // the game's sound effects (at most a few a frame).
         if let Some(a) = self.audio.as_mut() {
             a.music(&dir, match self.screen {
                 Screen::Town => audio::CITY,
                 Screen::Dungeon => audio::DUNGEON,
                 _ => audio::THEME,
             });
-            if let Some(g) = &self.game {
-                self.heard = self.heard.min(g.log.len());
-                let new = &g.log[self.heard..];
-                // Each Messages line dings (sub085B) unless "No Msg. Ding"; "No Party
-                // Sound" leaves only the controlled character's actions heard.
-                if !new.is_empty() && !self.opts.no_ding {
-                    a.effect(&dir, "MESSAGE.WAV");
+        }
+        if let Some(g) = self.game.as_mut() {
+            // New Messages lines ding (sub085B) unless "No Msg. Ding"; "No Party Sound"
+            // leaves only the controlled character's actions heard, "No HELP Sound" no cry.
+            self.heard = self.heard.min(g.log.len());
+            let ding = (g.log.len() > self.heard && !self.opts.no_ding).then_some(audio::MESSAGE);
+            self.heard = g.log.len();
+            let o = &self.opts;
+            let heard = std::mem::take(&mut g.sounds).into_iter().filter(|s| s.by.is_none_or(|i| i == 0 || !o.no_party_fx) && !(s.n == audio::HELP && o.no_help_sound));
+            if let Some(a) = &self.audio {
+                for n in ding.into_iter().chain(heard.map(|s| s.n)).take(4) {
+                    a.effect(&dir, n);
                 }
-                let others: Vec<&str> = g.party[1..].iter().map(|m| m.name.as_str()).collect();
-                let heard = |l: &&String| !self.opts.no_party_fx || !others.iter().any(|n| l.starts_with(n) || l.starts_with(&format!("\"{n}\"")));
-                for w in new.iter().filter(heard).filter_map(|l| audio::effect_for(l)).filter(|&w| w != "HELP.WAV" || !self.opts.no_help_sound).take(3) {
-                    a.effect(&dir, w);
-                }
-                self.heard = g.log.len();
             }
         }
         self.data = self.data.take().or(Some(data));

@@ -210,9 +210,14 @@ impl App {
             g.round(d, t);
             self.last_round = Instant::now();
         }
-        if self.in_fight {
-            ctx.request_repaint_after(Duration::from_millis(100));
+        // The ailment timer (timAilment, 4 seconds) runs in the dungeon, fight or not.
+        if self.paused || g.pos().floor == 0 {
+            self.last_tick = Instant::now();
+        } else if self.last_tick.elapsed() >= Duration::from_secs(4) {
+            g.ailments(d);
+            self.last_tick = Instant::now();
         }
+        ctx.request_repaint_after(Duration::from_millis(if self.in_fight { 100 } else { 500 }));
         let after = (g.pos(), g.fight.is_some(), g.party.iter().map(|m| m.hp).sum::<i32>());
         let wiped = g.living().is_empty();
         if g.pos().floor == 0 || wiped {

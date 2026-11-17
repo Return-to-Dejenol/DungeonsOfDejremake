@@ -26,8 +26,8 @@ regen_per_step = 0.005
 sp_potion_vs_heal = 0.85
 
 [combat]
-# Seconds per combat round; the player can pause.
-round_seconds = 2.0
+# Seconds per combat round, the original's timCombat (1.5); the player can pause.
+round_seconds = 1.5
 # The rest of combat is MORDOR.EXE's own rules (docs/balance.md, "Original rules").
 
 [boxes]

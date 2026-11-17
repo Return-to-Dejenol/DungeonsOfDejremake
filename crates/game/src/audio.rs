@@ -25,6 +25,18 @@ const PLAIN: [&str; 8] = ["CITY.MID", "MAIN.MID", "DUNGEON.MID", "INTRO.MID", "G
 pub const CITY: &str = TRACKS[0];
 pub const DUNGEON: &str = TRACKS[2];
 pub const THEME: &str = TRACKS[7];
+/// The original's sound effects by number (gv20CA).
+pub const FILES: [&str; 72] = [
+    "FIGHT.WAV", "DIE.WAV", "HIT.WAV", "KILL.WAV", "MAGIC.WAV", "OPEN.WAV", "FALL.WAV", "BLACKOUT.WAV", "SCURRY.WAV", "MOAN.WAV", "DSTSLAM.WAV", "RAISE.WAV",
+    "STEAL.WAV", "BUG.WAV", "SLIME.WAV", "GOBLIN.WAV", "DOG.WAV", "DEVIL.WAV", "SNAKE.WAV", "UNDEAD.WAV", "WATERD.WAV", "GIANT.WAV", "MYTHIC.WAV", "LYCAN.WAV",
+    "MAGE.WAV", "WARRIOR.WAV", "WATER.WAV", "WATER1.WAV", "FIRE.WAV", "TELEPORT.WAV", "DI-DEMON.WAV", "DI-HUMAN.WAV", "DI-ANIM.WAV", "SHOCK.WAV", "BYE.WAV",
+    "OUCH.WAV", "SWING.WAV", "PARAL.WAV", "POISON.WAV", "DISEASE.WAV", "BETTER.WAV", "FOUND.WAV", "COLD.WAV", "EXPLOS.WAV", "MAGIC2.WAV", "WADE.WAV",
+    "SLICE.WAV", "DRAIN.WAV", "FEAR.WAV", "SLIMETR.WAV", "SPIT.WAV", "STONE.WAV", "WITHER.WAV", "MAKELEV.WAV", "BUGDIE.WAV", "RIP.WAV", "HELP.WAV", "DEMON.WAV",
+    "DRAGON.WAV", "BIRD.WAV", "BIRDDIE.WAV", "EXTING.WAV", "HELLO.WAV", "YEECH.WAV", "DI-UNDEA.WAV", "FOG.WAV", "MESSAGE.WAV", "DROWN.WAV", "ASMO.WAV",
+    "PLANTATT.WAV", "BSTAB.WAV", "CHIT.WAV",
+];
+pub const HELP: u8 = 56;
+pub const MESSAGE: u8 = 66;
 
 pub struct Audio {
     sink: MixerDeviceSink,
@@ -149,14 +161,20 @@ impl Audio {
         self.scene = None;
     }
 
-    pub fn effect(&self, dir: &Path, wav: &str) {
-        if !self.sound_on {
-            return;
+    /// Effect `n` (sub09DE), unless the Options turn sound effects off.
+    pub fn effect(&self, dir: &Path, n: u8) {
+        if self.sound_on {
+            self.play(dir, n, self.fx_volume);
         }
-        if let Ok(b) = vfs::read(dir.join(wav))
+    }
+
+    /// Effect `n` at volume `vol` (0 to 1), sound effects on or off.
+    pub fn play(&self, dir: &Path, n: u8, vol: f32) {
+        if let Some(wav) = FILES.get(usize::from(n))
+            && let Ok(b) = vfs::read(dir.join(wav))
             && let Ok(d) = Decoder::try_from(Cursor::new(b))
         {
-            self.sink.mixer().add(d.amplify(0.8 * self.fx_volume));
+            self.sink.mixer().add(d.amplify(0.8 * vol));
         }
     }
 
@@ -172,68 +190,19 @@ impl Audio {
     }
 }
 
-/// The original's sound for a log line, if it has one.
-pub fn effect_for(line: &str) -> Option<&'static str> {
-    let l = line.to_lowercase();
-    let table: [(&str, &str); 30] = [
-        ("you killed", "KILL.WAV"),
-        ("help! my hits are", "HELP.WAV"),
-        ("critically hits", "SLICE.WAV"),
-        ("and kills it", "KILL.WAV"),
-        ("has died", "DIE.WAV"),
-        ("breathes fire", "FIRE.WAV"),
-        ("breathes frost", "COLD.WAV"),
-        ("breathes lightning", "SHOCK.WAV"),
-        ("is poisoned", "POISON.WAV"),
-        ("is diseased", "DISEASE.WAV"),
-        ("is paralysed", "PARAL.WAV"),
-        ("turned to stone", "STONE.WAV"),
-        ("drained", "DRAIN.WAV"),
-        ("ages", "WITHER.WAV"),
-        ("steals", "STEAL.WAV"),
-        ("destroys", "DSTSLAM.WAV"),
-        ("acid burns", "SPIT.WAV"),
-        ("teleport", "TELEPORT.WAV"),
-        ("falls into a pit", "FALL.WAV"),
-        ("chute", "FALL.WAV"),
-        ("water", "WADE.WAV"),
-        ("welcome to level", "MAKELEV.WAV"),
-        ("is raised", "RAISE.WAV"),
-        ("lives again", "RAISE.WAV"),
-        ("sets off", "EXPLOS.WAV"),
-        ("disarms", "OPEN.WAV"),
-        ("finds", "FOUND.WAV"),
-        ("magic fades", "EXTING.WAV"),
-        (" casts ", "MAGIC.WAV"),
-        (" heals ", "MAGIC2.WAV"),
-    ];
-    if let Some((_, w)) = table.iter().find(|(k, _)| l.contains(k)) {
-        return Some(w);
-    }
-    if l.contains(" misses ") {
-        Some("SWING.WAV")
-    } else if l.starts_with("the ") && l.contains(" hits ") {
-        Some("OUCH.WAV")
-    } else if l.contains(" hits ") {
-        Some("HIT.WAV")
-    } else {
-        None
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The dungeon song renders through the SoundFont (when present) and every effect the
-    /// log can trigger exists in the import.
+    /// The dungeon song renders through the SoundFont (when present) and every effect of
+    /// the original's table exists in the import, but FIGHT.WAV: nothing plays it, and the
+    /// game doesn't ship it.
     #[test]
     fn music_renders_and_effects_exist() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let out = root.join("target/ddj-audio-test");
         ddj_extract::import(&root.join("tests/fixtures/MORDOR11.ZIP"), &out).unwrap();
-        for line in ["Ann critically hits the Orc", "Bo has died!", "The Orc hits Ann for 3.", "Ann misses the Orc.", "Cy casts Heal.", "Welcome to level 2!"] {
-            let w = effect_for(line).unwrap_or_else(|| panic!("{line}"));
+        for w in &FILES[1..] {
             assert!(out.join(w).exists(), "{w}");
         }
         let Some(font) = [root.join("vendor/soundfont").join(FONT)].into_iter().find(|p| p.exists()) else { return };

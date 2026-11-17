@@ -196,6 +196,9 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning, group: u8, at: Option<usiz
             companion_hurt(g, d, j, k, dmg);
         }
         let dmg = reduce(dmg, resist(&g.party[j], d, slot));
+        if dmg > 0 {
+            g.sound(28, Some(j));
+        }
         struck(g, j, format!("{} {dmg}!", d.t(0xa542_e4fe)), format!("The {one} breathes {kind}!"));
         let at = g.log.len();
         if hurt(g, d, j, dmg) {
@@ -206,13 +209,17 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning, group: u8, at: Option<usiz
         let dmg = (f64::from(element_hit(&mut g.party[j], f64::from(mon.power_level) + 1.0, f64::from(lcur), 10.0, false)) * 0.7).round_ties_even() as i32;
         let dmg = reduce(dmg, resist(&g.party[j], d, ACID_RES));
         let name = g.party[j].name.clone();
+        if dmg > 0 {
+            g.sound(50, Some(j));
+        }
         struck(g, j, format!("{} {dmg}!", d.t(0xbe84_f489)), format!("The {one}'s acid burns {name} for {dmg}!"));
         let at = g.log.len();
         if hurt(g, d, j, dmg) {
             return killed(g, d, j, &one, [0x8820_ae91, 0x719d_9180], at, rec);
         }
     }
-    let (mut total, mut last_hit, mut bruised) = (0, false, Vec::new());
+    // Whether the member was swung at, and the knacks (1 critical, 2 backstab).
+    let (mut total, mut last_hit, mut bruised, mut swung, mut knacks) = (0, false, Vec::new(), false, 0);
     for _ in &awake {
         if g.fight.is_none() || !g.party[j].alive() {
             return;
@@ -241,7 +248,9 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning, group: u8, at: Option<usiz
         if defending.get(j).copied().unwrap_or(false) {
             def += def / 2;
         }
-        mult += knack_bonus(g, mon, lcur, 2.0);
+        let k = knack_bonus(g, mon, lcur, 2.0);
+        (swung, knacks) = (true, knacks | usize::from(k >= 2.0) | usize::from(k == 1.0 || k == 3.0) << 1);
+        mult += k;
         mult -= size_term(d, &g.party[j], m);
         // An unseen target: -0.5 unless the monster sees invisible (sub0E85).
         if g.party[j].unseen(d) && mon.flags & SEES_INVISIBLE == 0 {
@@ -252,7 +261,15 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning, group: u8, at: Option<usiz
         total += dmg;
     }
     let name = g.party[j].name.clone();
+    // The group's cry, then a wound's knack and its own sounds (sub0E85).
+    if let Some(n) = cry(d, m).filter(|_| swung) {
+        g.sound(n, Some(j));
+    }
     if total > 0 {
+        if knacks > 0 {
+            g.sound([71, 70, 55][knacks - 1], Some(j));
+        }
+        ouch(g, d, m, j);
         // MONSMOD: "2 Zombies hit for 13!"
         let you = format!("{} {many}{} {total}!", awake.len(), d.t(0x0354_4daf));
         struck(g, j, you, format!("The {many} hit {name} for {total}."));
@@ -281,6 +298,7 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning, group: u8, at: Option<usiz
         let v = f64::from(cm.stats[3].max(1));
         let save = (v * v.ln() / 2.5f64.ln() - f64::from(mon.level)).min(95.0);
         if mon.specials & STONE != 0 && g.party[j].d100() > i32::from(cm.resist[STONE_RES]) && f64::from(g.party[j].d100()) > save {
+            g.sound(51, Some(j));
             let hp = g.party[j].companions[k].hp;
             companion_hurt(g, d, j, k, hp);
         }
@@ -288,6 +306,7 @@ pub fn attack(g: &mut Game, d: &GameData, t: &Tuning, group: u8, at: Option<usiz
     if mon.specials & ELECTROCUTE != 0 && total > 0 && g.party[j].alive() && g.party[j].d100() <= odds(lcur, mon.power_level, 90) {
         let dmg = (f64::from(element_hit(&mut g.party[j], f64::from(mon.power_level) + 1.0, f64::from(lcur), 10.0, false)) * 0.7).round_ties_even() as i32;
         let dmg = reduce(dmg, resist(&g.party[j], d, ELECTRIC));
+        g.sound(33, Some(j));
         struck(g, j, format!("{} {dmg}!", d.t(0xb9b9_e791)), format!("{name} is electrocuted for {dmg}!"));
         let at = g.log.len();
         if hurt(g, d, j, dmg) {
@@ -319,6 +338,52 @@ fn knack_bonus(g: &mut Game, mon: &Monster, lcur: u32, crit: f64) -> f64 {
 /// Takes half the resistance off: `dmg x (1 - res / 200)`.
 fn reduce(dmg: i32, res: i32) -> i32 {
     (f64::from(dmg) * (1.0 - f64::from(res.clamp(0, 100)) / 200.0)) as i32
+}
+
+/// Monster m's own sound by its type (sub0D35); Asmodeus has his.
+fn cry(d: &GameData, m: usize) -> Option<u8> {
+    let mon = &d.monsters[m];
+    if mon.id == 277 {
+        return Some(68);
+    }
+    let n = match mon.kind {
+        0 | 14 => 15,
+        1 | 4 => 14,
+        2 => 57,
+        3 => 17,
+        5 => 18,
+        6 => 58,
+        7 if mon.picture == 18 => 59,
+        7 => 16,
+        8 => 13,
+        9..=13 => 10 + mon.kind as u8,
+        15 | 16 => 9 + mon.kind as u8,
+        17 => 69,
+        _ => return None,
+    };
+    Some(n)
+}
+
+/// Monster m's death sound by its type (sub0CB7).
+pub(crate) fn death_cry(d: &GameData, m: usize) -> u8 {
+    let mon = &d.monsters[m];
+    match mon.kind {
+        0 | 14 | 15 | 16 => 31,
+        2 | 6 | 11 => 30,
+        3 | 7 | 12 | 13 if mon.picture == 18 => 60,
+        3 | 7 | 12 | 13 => 32,
+        8 => 54,
+        9 => 64,
+        _ => 3,
+    }
+}
+
+/// Member j wounded by monster m (sub0E99): some types rip first.
+fn ouch(g: &mut Game, d: &GameData, m: usize, j: usize) {
+    if matches!(d.monsters[m].kind, 2 | 3 | 4 | 7) {
+        g.sound(55, Some(j));
+    }
+    g.sound(35, Some(j));
 }
 
 fn hurt(g: &mut Game, d: &GameData, j: usize, dmg: i32) -> bool {
@@ -403,8 +468,9 @@ fn companion_hurt(g: &mut Game, d: &GameData, j: usize, k: usize, dmg: i32) {
     }
     c.hp = (c.hp - dmg).max(0);
     if c.hp == 0 {
-        let name = &d.monsters[c.monster].name;
-        g.say(format!("The {name} dies."));
+        let m = c.monster;
+        g.sound(death_cry(d, m), Some(j));
+        g.say(format!("The {} dies.", d.monsters[m].name));
     }
 }
 
@@ -417,8 +483,9 @@ fn specials(g: &mut Game, d: &GameData, m: usize, j: usize) {
     let con = f64::from(g.party[j].stats[CON]);
     let body = (con * 2.5 - 2.0 * f64::from(w7)) as i32;
     let c = &mut g.party[j];
-    let mut said = Vec::new();
+    let (mut said, mut sounds) = (Vec::new(), Vec::new());
     if mon.specials & AGE != 0 && c.d100() > body {
+        sounds.push(52);
         let years = (f64::from(w37) / 50.0).round_ties_even().clamp(1.0, 5.0) as u32;
         let days = (c.roll(1825) + 1).min(years * 365);
         c.age_days += days;
@@ -436,26 +503,35 @@ fn specials(g: &mut Game, d: &GameData, m: usize, j: usize) {
                 said.push((0x278b_8452, Some(format!("{name}{}", d.t(0x7d56_1ded)))));
             }
         }
+        if said.iter().any(|s| s.0 == 0x278b_8452) {
+            sounds.push(47);
+        }
     }
     let lvl = w7 as u16;
     // An ailment already there stays as it is (sub0D1D and its kin).
     if mon.specials & POISON != 0 && c.d100() > resist(c, d, POISON_RES) {
         if c.status.poison == 0 {
             c.status.poison = lvl;
+            sounds.push(38);
         }
         said.push((0x7413_b904, None));
     }
     if mon.specials & DISEASE != 0 && c.d100() > resist(c, d, DISEASE_RES) {
         if c.status.disease == 0 {
             c.status.disease = lvl;
+            sounds.push(39);
         }
         said.push((0x1391_68c1, None));
     }
     if mon.specials & PARALYZE != 0 && c.d100() > (resist(c, d, PARALYSIS_RES) + i32::from(c.stats[CON])).min(95) {
         if c.status.paralysis == 0 {
             c.status.paralysis = w37.max(1) as u16;
+            sounds.push(37);
         }
         said.push((0x5826_6943, Some(format!("{} - \"{}\"", c.name, d.t(0x2a09_8669)))));
+    }
+    for n in sounds {
+        g.sound(n, Some(j));
     }
     for (you, named) in said {
         g.tell(j, MONSTER_HIT, d.t(you).into(), named);
@@ -469,6 +545,9 @@ fn stone(g: &mut Game, d: &GameData, m: usize, j: usize, mon: &str, rec: Option<
     let save = (v * v.ln() / 2.5f64.ln() - f64::from(d.monsters[m].level)).min(95.0);
     if c.d100() > resist(c, d, STONE_RES) && f64::from(c.d100()) > save {
         c.status.stoned = true;
+        // Stoned is dead to the original (mdrcharSetDead).
+        g.sound(51, Some(j));
+        g.sound(1, None);
         if j == 0 {
             g.said[MONSTER_HIT] = d.t(0x3779_4ba3).into();
         }
@@ -494,6 +573,7 @@ fn thieves(g: &mut Game, d: &GameData, m: usize, j: usize, dmg: i32, shown: &str
         let it = &d.items[c.items[s].item];
         if c.d100() > protect && it.level - 2 <= mon.level && !(500..512).contains(&it.w(10)) && c.items[s].item != crate::game::HANDS {
             let h = c.items.remove(s);
+            g.sound(49, Some(j));
             let gone = format!("{shown}{}{}{}", d.t(0x8e06_2137), d.items[h.item].name, d.t(0xdd34_21c9));
             let line = if g.party.len() == 1 { gone } else { format!("{name}{}{gone}", d.t(0x89d0_00f1)) };
             g.say(line);
@@ -528,6 +608,13 @@ fn thieves(g: &mut Game, d: &GameData, m: usize, j: usize, dmg: i32, shown: &str
         g.say(format!("{shown}{}\"{}{}{}{name}!\"", d.t(0x8e06_2137), d.t(0x6702_d10c), d.items[h.item].name, d.t(0x89d0_00f1)));
     }
     let runs = item || took > 0 && g.party[j].d100() > 30;
+    // The theft, and the thief making off (sub0E85).
+    if item || took > 0 {
+        g.sound(12, Some(j));
+    }
+    if runs {
+        g.sound(34, Some(j));
+    }
     for you in said {
         let named = format!("\"{name}\"{}{you}", d.t(0x3b35_7578));
         g.tell(j, MONSTER_HIT, you, Some(named));
@@ -568,6 +655,9 @@ fn monster_spell(g: &mut Game, d: &GameData, m: usize, j: usize, shown: &str) ->
     let sp = &d.spells[s];
     let l = (f64::from(mon.power_level) / 4.0).floor();
     g.say(format!("The {shown} casts {}!", sp.name));
+    if let Some(n) = cry(d, m) {
+        g.sound(n, Some(j));
+    }
     // The target, then its own companions, up to w6 (4 at most) of them, each with its
     // own roll (fn0FF5); a kill spell (effect 100) counts only if it kills.
     let slot = usize::try_from(sp.resist).unwrap_or(99);
@@ -580,6 +670,7 @@ fn monster_spell(g: &mut Game, d: &GameData, m: usize, j: usize, shown: &str) ->
     }
     let name = g.party[j].name.clone();
     if dmg > 0 {
+        ouch(g, d, m, j);
         struck(g, j, format!("{}\"{}\"{} {dmg}{}", d.t(0xcd84_4714), sp.name, d.t(0x48d1_78ea), d.t(0x6434_a9bd)), format!("{name} takes {dmg}."));
     }
     for k in (0..g.party[j].companions.len().min(usize::try_from(sp.targets.clamp(0, 4)).unwrap_or(0))).rev() {
@@ -632,16 +723,18 @@ impl Game {
             let Some(fi) = f.pick(crate::ai::Target::Weakest) else {
                 return;
             };
-            let c = &d.monsters[cm];
-            let foe = &d.monsters[f.foes[fi].monster];
+            let (c, m) = (&d.monsters[cm], f.foes[fi].monster);
+            let foe = &d.monsters[m];
             let mut mult = f64::from(c.single(46)).max(1.0) + knack_bonus(self, c, foe.power_level.max(0) as u32, 4.0);
             if foe.flags & 2 != 0 && c.flags & SEES_INVISIBLE == 0 {
                 mult /= 2.0;
             }
             let dmg = swing(&mut self.party[i], i32::from(c.attack), i32::from(foe.defense), f64::from(c.power_level), i32::from(c.stats[0]), mult);
-            if dmg > 0 {
-                let verb = format!("'s {} hits", c.name);
-                self.damage_foe(d, t, i, fi, dmg, &verb, None, 0.25);
+            if dmg > 0 && self.damage_foe(d, t, i, fi, dmg, &format!("'s {} hits", c.name), None, 0.25) {
+                self.sound(death_cry(d, m), Some(i));
+            }
+            if let Some(n) = cry(d, cm) {
+                self.sound(n, Some(i));
             }
         }
     }
@@ -673,6 +766,12 @@ impl Game {
             let top = f64::from(*g.party[j].levels.iter().max().unwrap_or(&1));
             let res = resist(&g.party[j], d, slot) as i16;
             let dmg = hits(&mut g.party[i], quarter, top, res);
+            // Breath and acid as the victim's, shocks as the owner's (monCompanionAttack).
+            match slot {
+                ELECTRIC => g.sound(33, Some(i)),
+                _ if dmg > 0 => g.sound(if slot == ACID_RES { 50 } else { 28 }, Some(j)),
+                _ => {}
+            }
             g.say(format!("The {} strikes {} for {dmg}!", mon.name, g.quoted(j)));
             for k in 0..g.party[j].companions.len() {
                 let c = &d.monsters[g.party[j].companions[k].monster];
@@ -695,6 +794,9 @@ impl Game {
                         for _ in 0..5 {
                             let Some((fi, m)) = self.fight.as_ref().and_then(|f| f.front(gr).map(|fi| (fi, f.foes[fi].monster))) else { break };
                             let dmg = hits(&mut self.party[i], true, f64::from(d.monsters[m].power_level), d.monsters[m].resist[slot]);
+                            if dmg > 0 {
+                                self.sound(28, Some(i));
+                            }
                             if dmg <= 0 || !self.damage_foe(d, t, i, fi, dmg, &format!("'s {} breathes on", mon.name), None, 0.25) {
                                 break;
                             }
@@ -713,6 +815,7 @@ impl Game {
             } else if let Some((fi, m)) = self.fight.as_ref().and_then(|f| f.alive().next().map(|fi| (fi, f.foes[fi].monster))) {
                 let dmg = hits(&mut self.party[i], false, f64::from(d.monsters[m].power_level), d.monsters[m].resist[slot]);
                 if dmg > 0 {
+                    self.sound(if bit == ACID { 50 } else { 33 }, Some(i));
                     self.damage_foe(d, t, i, fi, dmg, &format!("'s {} burns", mon.name), None, 0.25);
                 }
             }
@@ -736,6 +839,9 @@ impl Game {
             return;
         }
         let Some(gr) = self.fight.as_ref().and_then(|f| f.alive().next().map(|fi| f.foes[fi].group)) else { return };
+        // The spell's sound, and the group's death sound for its kills (mdrcharCastSpell).
+        crate::magic::spell_sound(self, sp, Some(i));
+        let mut dead = None;
         for _ in 0..sp.targets.max(1) {
             let Some((fi, m, hp)) = self.fight.as_ref().and_then(|f| f.front(gr).map(|fi| (fi, f.foes[fi].monster, f.foes[fi].hp))) else { break };
             let target = &d.monsters[m];
@@ -744,6 +850,10 @@ impl Game {
             if dmg <= 0 || target.flags & 4 != 0 || sp.effect == 100 && dmg < hp || !self.damage_foe(d, t, i, fi, dmg, &format!("'s {} casts {} at", mon.name, sp.name), None, 0.25) {
                 break;
             }
+            dead = Some(m);
+        }
+        if let Some(m) = dead {
+            self.sound(death_cry(d, m), Some(i));
         }
     }
 
@@ -967,11 +1077,14 @@ impl Game {
         }
         c.pay(cost);
         let odds = (75 + i32::from(d.monsters[c.companions[k].monster].stats[3])).min(98);
+        // Failure and success sound as a member's raise does (cmdCommand_Click).
         if (c.rnd() * 100.0).floor() as i32 > odds {
             c.companions.remove(k);
+            self.sound(38, None);
             return Ok(d.t(0x8327_8e1b).into());
         }
         c.companions[k].hp = c.companions[k].max_hp;
+        self.sound(11, None);
         Ok(d.t(0x97b7_670b).into())
     }
 

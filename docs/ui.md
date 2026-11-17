@@ -186,6 +186,14 @@ Taken while building; reviewed at play-test.
   entry count. Not hooked yet: re-identifying an item given, taken from the bank or
   known better at a new level.
 
+- **Sounds** (2026-11-16, owner: as native): the original's effects by number at its own
+  calls (sub09DE's table, gv20CA): swings by weapon, hits, criticals and backstabs, the
+  monsters' own cries, wounds and death cries by type, breath, acid and the special
+  attacks, spells by class, chests and traps, squares, the ailment timer's drowning,
+  water and dungeon noises, raises, levels; MESSAGE.WAV for new Messages lines; the
+  Options' No Party Sound, No HELP Sound and No Msg. Ding as the original. Not played:
+  the sounds for other players' characters in the room (the remake has none).
+
 ## Not done yet
 
 - Pickup/Drop, Carry and the toolbar's Leave (carrying characters) stay off: the owner

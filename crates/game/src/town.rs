@@ -288,6 +288,7 @@ impl App {
             let quest = (g.party[sel].quest, g.party[sel].quest_item);
             match g.party[sel].make_level(d, t) {
                 Ok(lines) => {
+                    g.sound(53, None);
                     // A new quest goes in the guild log (cmdMake_Click).
                     let c = &g.party[sel];
                     let set = match (c.quest, c.quest_item) {

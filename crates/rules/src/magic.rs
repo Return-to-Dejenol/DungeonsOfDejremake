@@ -347,6 +347,7 @@ pub fn teleport(g: &mut Game, d: &GameData, t: &Tuning, offsets: Option<(i32, i3
     let Some((right, fwd, down)) = offsets else { return };
     g.party[i].sp -= cost;
     g.say(format!("{} casts {}.", g.party[i].name, d.spells[s].name));
+    g.sound(29, None);
     let p = g.pos();
     let (dx, dy) = match p.facing % 4 {
         0 => (right, fwd),
@@ -377,8 +378,18 @@ pub fn teleport(g: &mut Game, d: &GameData, t: &Tuning, offsets: Option<(i32, i3
         g.say(if g.party.len() == 1 { d.t(0x9a54_4773).into() } else { named });
         return g.entomb(d);
     }
+    spell_sound(g, &d.spells[s], None);
     g.set_pos(d, to);
     g.arrive(d, t, p);
+}
+
+/// A spell's sound by its class (sub1005): fire, cold (a blast too from level 7),
+/// electric, healing, or magic.
+pub(crate) fn spell_sound(g: &mut Game, sp: &Spell, by: Option<usize>) {
+    g.sound([28, 42, 33, 4, 4, 4, 4, 4, 4, 44].get(sp.class as usize).copied().unwrap_or(4), by);
+    if sp.class == 1 && sp.level >= 7 {
+        g.sound(43, by);
+    }
 }
 
 /// The combat gates and anti-magic, told the original's way; true if the spell may go.
@@ -446,7 +457,11 @@ pub fn use_item(g: &mut Game, d: &GameData, t: &Tuning, i: usize, item: usize) {
         _ => {
             // By the table (mdrcharUseItem): w10 1 adds the stat modifiers w33-38 to the
             // natural stats (race minimum to maximum + 5), 11 and 12 give 50 and 200 SP, 13
-            // and 14 take one and ten years off (never below 16).
+            // and 14 take one and ten years off (never below 16). Its power sounds, but a
+            // guild item's.
+            if it.w(10) > 0 && !(500..512).contains(&it.w(10)) {
+                g.sound(4, None);
+            }
             let c = &mut g.party[i];
             let r = &d.races[c.race];
             let mut said = Vec::new();
@@ -510,6 +525,13 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, item: i16,
     // Out of a fight, alone: the original's "Fireball" thrown.
     let cast = if g.fight.is_none() && g.party.len() == 1 { format!("\"{}\"{}", sp.name, d.t(0x408b_8649)) } else { format!("{caster} casts {}.", sp.name) };
     g.say(cast);
+    // The spell's sound out of a fight (mdrcharCastSpell): Ethereal Portal's always,
+    // Teleport's and Displacement's when they go (`teleport`), any other's for the
+    // controlled character alone. In a fight `offensive` sounds it.
+    let e = sp.effect % 200;
+    if (when(sp) == When::Peace || g.fight.as_ref().is_none_or(|f| f.over())) && (e == 9 || i == 0 && !matches!(e, 7 | 8)) {
+        spell_sound(g, sp, None);
+    }
     if sp.id == CHARM_OF_EXPERIENCE {
         for m in g.party.iter_mut().filter(|m| m.alive()) {
             m.buffs.xp_mult = m.buffs.xp_mult.max(1.5);
@@ -564,7 +586,8 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, item: i16,
             };
             let m = &mut g.party[j];
             let odds = if m.rocked { 10 } else { crate::game::raise_odds(m, i32::from(sp.effect) - 19) };
-            let ok = (m.rnd() * 100.0).floor() as i32 <= odds || crate::game::complications(d, m).is_some();
+            let won = (m.rnd() * 100.0).floor() as i32 <= odds;
+            let ok = won || crate::game::complications(d, m).is_some();
             if ok {
                 m.rocked = false;
                 m.life = Life::Alive;
@@ -574,6 +597,10 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, item: i16,
                 g.hall.note(guild, line);
             }
             g.say(d.t(if ok { 0x97b7_670b } else { 0x8327_8e1b }));
+            // The raised one's sound: success, or complications (fn10A3, fn11A1).
+            if ok {
+                g.sound(if won { 11 } else { 38 }, None);
+            }
             return;
         }
         Some(Magic::Protect) => {
@@ -666,6 +693,7 @@ fn effect(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, item: i16,
             Some(to) => {
                 g.fight = None;
                 g.party[i].age_days += 365;
+                g.sound(52, None);
                 g.set_pos(d, to);
             }
             None => g.say(format!("\"{}\"{}", d.t(0x1536_6ebd), d.t(0xd748_25b0))),
@@ -718,6 +746,9 @@ fn offensive(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f64,
     let wizard = g.party[i].guild == WIZARD && school(WIZARD, sp.class);
     let (mut n, mut hurt, mut charmed) = (0, 0, 0);
     for gr in groups.into_iter().take(sp.groups.max(1) as usize) {
+        // The spell's sound at each group, and its death sound for the kills.
+        spell_sound(g, sp, Some(i));
+        let mut dead = None;
         for _ in 0..sp.targets.max(1) {
             let Some((fi, m, hp)) = g.fight.as_ref().and_then(|f| f.front(gr).map(|fi| (fi, f.foes[fi].monster, f.foes[fi].hp))) else { break };
             let mon = &d.monsters[m];
@@ -747,9 +778,13 @@ fn offensive(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, p: f64,
                 break;
             }
             n += 1;
+            dead = Some(m);
             if wizard {
                 restore_sp(g, d, t, i);
             }
+        }
+        if let Some(m) = dead {
+            g.sound(crate::monsters::death_cry(d, m), Some(i));
         }
     }
     if charmed > 0 {

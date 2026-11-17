@@ -1029,6 +1029,17 @@ pub struct Game {
     pub teleport_pending: Option<(usize, usize, i32)>,
     /// Lost, as the leader's flags (not saved: a loaded game starts in the city).
     pub lost: crate::automap::Lost,
+    /// Sound effects for the window to play, in order.
+    pub sounds: Vec<Sound>,
+}
+
+/// A sound effect by its number in the original's table (gv20CA), and the member whose
+/// action it is: with the Options' "No Party Sound" only the controlled character's are
+/// heard; None is always heard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sound {
+    pub n: u8,
+    pub by: Option<usize>,
 }
 
 /// `Game::said` slots, after the dungeon window's lblCharacterHit, lblMonsterHit and
@@ -1039,7 +1050,7 @@ pub const SQUARE: usize = 2;
 
 impl Game {
     pub fn new(lead: Character) -> Self {
-        Self { party: vec![lead], fight: None, chest: None, rooms: Default::default(), ticks: 0, log: Vec::new(), store: Store::default(), hall: Hall::default(), library: Default::default(), said: Default::default(), boxes: Vec::new(), teleport_pending: None, lost: Default::default() }
+        Self { party: vec![lead], fight: None, chest: None, rooms: Default::default(), ticks: 0, log: Vec::new(), store: Store::default(), hall: Hall::default(), library: Default::default(), said: Default::default(), boxes: Vec::new(), teleport_pending: None, lost: Default::default(), sounds: Vec::new() }
     }
 
     pub fn lead(&self) -> &Character {
@@ -1052,6 +1063,14 @@ impl Game {
 
     pub(crate) fn say(&mut self, s: impl Into<String>) {
         self.log.push(s.into());
+    }
+
+    /// Plays sound effect `n` (sub09DE) as member `by`'s action (a few at a time: the
+    /// window plays the first of them and drains the rest).
+    pub fn sound(&mut self, n: u8, by: Option<usize>) {
+        if self.sounds.len() < 64 {
+            self.sounds.push(Sound { n, by });
+        }
     }
 
     /// News of member i the original's way: its "You" words in the controlled
@@ -1316,7 +1335,8 @@ impl Game {
             _ => ahead(f, x, y, facing).is_some_and(|(nx, ny)| f.square(nx, ny).flags & if facing == 2 { square::UPPER_SECRET_DOOR } else { square::RIGHT_SECRET_DOOR } != 0),
         };
         let to = ahead(f, x, y, facing).filter(|&(nx, ny)| (side(f, x, y, facing) != Side::Wall || secret) && f.square(nx, ny).flags & square::ROCK == 0);
-        let Some((nx, ny)) = to else { return };
+        // Walking into a wall (fn14CB).
+        let Some((nx, ny)) = to else { return self.sound(35, None) };
         self.said = Default::default();
         if secret {
             self.say(data.t(0x3c78_91e7));
@@ -1339,14 +1359,13 @@ impl Game {
                 m.hp = (m.hp + (m.max_hp / 100).max(1)).min(m.max_hp);
             }
         }
-        self.ailments(data);
     }
 
-    /// One tick of the original's ailment timer (timAilment_Timer): a combat round in a
-    /// fight, a step outside, never while idle (docs/balance.md). Poison and disease wear
+    /// One tick of the original's ailment timer (timAilment_Timer, every 4 seconds in the
+    /// dungeon; the window drives it). Poison and disease wear
     /// off when d200 + 2 (CON - 10) - 2 x strength beats 185 (195), else bite for 2 (1);
     /// paralysis wears off at `paralysis_stay`, and at once with no monsters left.
-    pub(crate) fn ailments(&mut self, data: &GameData) {
+    pub fn ailments(&mut self, data: &GameData) {
         self.ticks += 1;
         let foes = self.fight.as_ref().is_some_and(|f| !f.over());
         if foes {
@@ -1355,7 +1374,7 @@ impl Game {
         let Pos { x, y, floor, .. } = self.pos();
         let sq = self.floor(data).map_or(0, |f| f.square(x, y).flags);
         let (sinking, quicksand) = (sq & (square::WATER | square::QUICKSAND) != 0, sq & square::QUICKSAND != 0);
-        let (mut hurt, mut lost) = (Vec::new(), Vec::new());
+        let (mut hurt, mut lost, mut better, mut drown) = (Vec::new(), Vec::new(), 0, false);
         for (i, m) in self.party.iter_mut().enumerate().filter(|(_, m)| m.alive()) {
             let con = 2 * i32::from(m.stat(data, CON) - 10);
             for (k, cure, dmg) in [(0, 185, 2), (1, 195, 1)] {
@@ -1363,6 +1382,7 @@ impl Game {
                 if strength > 0 {
                     if m.roll(200) as i32 + con - 2 * i32::from(strength) > cure {
                         if k == 0 { m.status.poison = 0 } else { m.status.disease = 0 }
+                        better += 1;
                     } else {
                         hurt.push((i, dmg));
                     }
@@ -1370,11 +1390,13 @@ impl Game {
             }
             if m.status.paralysis > 0 && (!foes || f64::from(m.d100()) > paralysis_stay(data, m)) {
                 m.status.paralysis = 0;
+                better += 1;
             }
             // Water and quicksand take the floor's number in hits from each member not
             // levitating, every tick; quicksand swallows an item from a random slot
             // F/25 of the time (timAilment_Timer).
             if sinking && !m.levitates(data) {
+                drown |= i == 0 && !quicksand;
                 hurt.push((i, floor as i32));
                 let s = 1 + m.roll(39) as usize;
                 if quicksand && m.rnd() * 25.0 < floor as f64 && s < m.items.len() && m.items[s].item != HANDS && !(500..512).contains(&data.items[m.items[s].item].w(10)) {
@@ -1390,7 +1412,28 @@ impl Game {
             }
         }
         self.companions_tick(data);
+        // The timer's sounds (timAilment_Timer): the controlled character drowning, each
+        // ailment gone, a quicksand loss; then under the leader fog one tick in four,
+        // water or quicksand lapping, and with no monsters about the dungeon's noises one
+        // tick in ten (the remake rolls these from the clock, not the game's dice).
+        let whim = self.ticks.wrapping_mul(0x9e37_79b9_7f4a_7c15) >> 40;
+        if drown {
+            self.sound(67, None);
+        }
+        for _ in 0..better {
+            self.sound(40, None);
+        }
+        if sq & square::FOG != 0 && whim.is_multiple_of(4) {
+            self.sound(65, None);
+        }
+        if sinking {
+            self.sound(26 + (whim / 4 % 2) as u8, None);
+        }
+        if !foes && self.party[0].alive() && (whim / 8).is_multiple_of(10) {
+            self.sound(8 + (whim / 80 % 3) as u8, None);
+        }
         for (i, item) in lost {
+            self.sound(49, None);
             let (it, gone) = (&data.items[item].name, data.t(0xc7c7_7f7d));
             let (you, named) = (format!("{}{it}{gone}", data.t(0xd1a8_7aa4)), format!("{}{}{it}{gone}", self.quoted(i), data.t(0x07b6_f246)));
             self.tell(i, SQUARE, you, Some(named));
@@ -1420,6 +1463,7 @@ impl Game {
         if self.party.len() > 1 && m.alive() && (m.hp < 10 || f64::from(m.hp) <= f64::from(m.max_hp) * 0.1) {
             let line = format!("{}{}\"{}{}/{}!", m.name, data.t(0x9918_0f02), data.t(0x70d3_62ed), m.hp, m.max_hp);
             self.say(line);
+            self.sound(56, None);
         }
     }
 
@@ -1430,6 +1474,10 @@ impl Game {
         let Pos { x, y, floor, .. } = self.pos();
         let sq = f.square(x, y);
         let (flags, area) = (sq.flags, sq.area);
+        // Wading in, unless the leader levitates (sub0835).
+        if flags & (square::WATER | square::QUICKSAND) != 0 && !self.party[0].levitates(data) {
+            self.sound(45, None);
+        }
         for (bit, dir) in [(square::FACE_NORTH, 0), (square::FACE_EAST, 1), (square::FACE_SOUTH, 2), (square::FACE_WEST, 3)] {
             if flags & bit != 0 {
                 self.turn_to(dir);
@@ -1453,6 +1501,11 @@ impl Game {
                 let dmg = ((m.rnd() * (floor as f64 + 1.0) / 2.0 * 15.5).floor() * size(m) + 1.0).round_ties_even() as i32;
                 let (you, named) = (format!("{} {dmg}{}", data.t(0xc950_49a3), data.t(0x3563_88c5)), format!("{}{} {dmg}{}", self.quoted(i), data.t(0x8a5e_51a8), data.t(0x3563_88c5)));
                 self.tell(i, SQUARE, you, Some(named));
+                // The fall is heard when the controlled character falls.
+                if i == 0 {
+                    self.sound(6, None);
+                    self.sound(2, None);
+                }
                 self.hurt(data, i, dmg);
             }
         }
@@ -1460,6 +1513,7 @@ impl Game {
             for m in &mut self.party {
                 m.buffs = Buffs::default();
             }
+            self.sound(61, None);
         }
         if self.living().is_empty() {
             return;
@@ -1470,6 +1524,8 @@ impl Game {
         let drop = f.chutes.iter().find(|c| c.at == (x, y)).map_or(0, |c| c.drop.max(0) as usize);
         if flags & square::CHUTE != 0 && drop > 0 && !self.party[0].levitates(data) {
             let to = (floor + drop).min(data.floors.len());
+            self.sound(6, None);
+            self.sound(2, None);
             self.set_pos(data, Pos { floor: to, ..self.pos() });
             self.landed(data, floor, true);
             let fall: Vec<usize> = self.living().into_iter().filter(|&i| !self.party[i].levitates(data)).collect();
@@ -1487,6 +1543,7 @@ impl Game {
                 None => self.random_square(data, floor),
             };
             self.perceive_square(data, 14, false);
+            self.sound(29, None);
             self.set_pos(data, Pos { x: tx, y: ty, floor: tf, facing: self.pos().facing });
             return self.landed(data, floor, true);
         }
@@ -1532,6 +1589,7 @@ impl Game {
         let (g, floor) = (m.guild, m.pos.floor);
         let died = if self.lost.level { format!("{name}{}", data.t(0x9f85_c746)) } else { format!("{name}{}{floor}.", data.t(0x9a8c_4c90)) };
         self.hall.note(g, died);
+        self.sound(1, None);
         self.say(format!("{name}{}", data.t(0x7acb_4bd0)));
         if self.living().is_empty() {
             self.shelve(data);
@@ -1911,6 +1969,9 @@ impl Game {
         } else {
             vec![0xf63e_9d43]
         };
+        // Complications (fn11A1) or success (sub0930).
+        self.sound(if said.len() > 1 { 38 } else { 11 }, None);
+        let m = &mut self.party[i];
         m.age_days += 54;
         m.life = Life::Alive;
         m.hp = m.max_hp;
@@ -2266,6 +2327,7 @@ mod tests {
         let at = g.pos();
         assert!(g.hurt(&d, 0, 1000));
         assert_eq!(g.party[0].life, Life::Dead(at));
+        assert_eq!(g.sounds, [Sound { n: 1, by: None }], "DIE.WAV");
         // Bounded: a refused fee must never spin a test (it once filled the owner's RAM).
         for _ in 0..1000 {
             if g.party[0].life == Life::InMorgue {
@@ -2283,6 +2345,7 @@ mod tests {
             g.raise(&d, 0);
         }
         assert_eq!(g.party[0].life, Life::Alive);
+        assert!([11, 38].contains(&g.sounds.last().unwrap().n), "RAISE.WAV, or POISON.WAV for complications");
         g.boxes.clear();
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ddj-save-test");
         g.party[0].save(&dir).unwrap();
