@@ -333,6 +333,9 @@ pub struct Desk {
     /// raises them over the on-screen keyboard.
     pub shell: bool,
     pub place: HashMap<String, Option<(Pos2, f32)>>,
+    /// Touch: an item picked up by a long press (form.key, what, its words), put down
+    /// by the next tap on another control as if dropped there.
+    pub carry: Option<(String, Drag, String)>,
     lift: f32,
     ctx: egui::Context,
 }
@@ -366,6 +369,7 @@ impl Desk {
             active: None,
             shell: cfg!(target_os = "android") || std::env::var_os("DDJ_SHELL").is_some(),
             place: HashMap::new(),
+            carry: None,
             lift: 0.0,
             ctx: ctx.clone(),
         })
@@ -686,8 +690,19 @@ impl Desk {
             let d = ui.input(|i| i.pointer.press_origin().zip(i.pointer.latest_pos()).map(|(a, b)| b - a)).unwrap_or_default();
             self.state(form, k).scrolling = d.y.abs() > d.x.abs();
         }
+        // Touch: a press held still on a draggable item picks it up instead (the drag
+        // started by time, not by moving).
+        if self.touch
+            && resp.drag_started()
+            && let Some(dr) = v.drags.get(k)
+            && ui.input(|i| i.pointer.press_origin().zip(i.pointer.latest_pos()).is_some_and(|(a, b)| (b - a).length() < 6.0))
+        {
+            self.carry = Some((format!("{form}.{k}"), *dr, caption.clone()));
+            egui::DragAndDrop::clear_payload(ui.ctx());
+        }
+        let carried = self.carry.as_ref().is_some_and(|c| c.0 == format!("{form}.{k}"));
         let scrolling = scroll.is_some() && self.state(form, k).scrolling;
-        if let Some(d) = v.drags.get(k).filter(|_| !scrolling) {
+        if let Some(d) = v.drags.get(k).filter(|_| !scrolling && !carried) {
             resp.dnd_set_drag_payload(*d);
         }
         if let Some((sb, ..)) = scroll.as_ref().filter(|_| scrolling || !v.drags.contains_key(k)) {
@@ -708,7 +723,18 @@ impl Desk {
         if let Some(d) = resp.dnd_release_payload::<Drag>() {
             ev.dropped = Some((k.to_string(), *d));
         }
-        let clicked = enabled && resp.clicked();
+        let mut clicked = enabled && resp.clicked();
+        // A tap puts down what is carried: on another control as a drop, on its own
+        // again to keep it. Tab strips leave it carried, to reach another tab.
+        if clicked
+            && c.kind != "videosoftindextab"
+            && let Some((src, dr, _)) = self.carry.take()
+        {
+            if src != format!("{form}.{k}") {
+                ev.dropped = Some((k.to_string(), dr));
+            }
+            clicked = false;
+        }
         if clicked {
             ev.clicked = Some(k.to_string());
         }

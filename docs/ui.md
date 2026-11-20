@@ -41,8 +41,8 @@ Decided 2026-11-04: what the player sees should look exactly like the original.
   - Landscape: the play window, Messages and the pad on the left; the tabs on the right.
   - The touch pad is a remake window in the original's style. It has the Dungeon window's
     own arrows, Take, Open, Fight and Spell, finger-sized, plus Defend and Run (the
-    keyboard's D and R). Defend reads Join while a group offers to join (the keyboard's
-    J). The toolbar's and the dungeon's buttons that made a window
+    keyboard's D and R), and Pause (Space; it reads Go while paused). Defend reads Join
+    while a group offers to join (the keyboard's J). The toolbar's and the dungeon's buttons that made a window
     active (Objects & Spells, the AutoMap) bring its tab to the front.
   - Dialogs and the HelpLesson open centred, as big as they fit; the HelpLesson's main
     window fills the screen. The on-screen keyboard lifts a dialog so the box typed in
@@ -58,7 +58,14 @@ Decided 2026-11-04: what the player sees should look exactly like the original.
   strip moves it, with a flick that carries on: Messages, the guild and bank lists,
   Objects & Spells' items and spells, the store's and Confinement's stock, and HelpLesson
   topics. A drag that starts upright on an item scrolls; one that starts sideways carries
-  the item (to the store's boxes). Combo lists open with finger-tall rows, above the box
+  the item (to the store's boxes).
+- **Carrying by touch** (2026-11-19): a press held still on anything the mouse drags (a
+  pack item, a spell, a companion, a bank item, the Exchange window's items and gold)
+  picks it up, and a yellow banner says so. The next tap on another control puts it down
+  there as if dropped: the store's Uncurse, Identify and Combine boxes, the bank's list,
+  the Character window's buffers, Confinement's boxes, the other side of an Exchange.
+  The phone's tab strip keeps it carried, so it can go from Objects to Character; a tap
+  on the item itself or on the banner puts it back. Combo lists open with finger-tall rows, above the box
   when there's no room below.
 - **The Symbol font's arrows** (the dungeon's movement buttons) are drawn from
   Liberation Sans off Windows; before 2026-11-13 they showed as empty boxes on the web

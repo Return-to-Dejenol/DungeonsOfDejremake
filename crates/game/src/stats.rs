@@ -115,8 +115,8 @@ pub fn shell(desk: &mut Desk, play: &str, dungeon: bool) {
 }
 
 /// The shell's windows in the original's style: the tab strip, and the dungeon's touch pad
-/// with the Dungeon window's own movement and action buttons (and the remake's Defend and
-/// Run, the keyboard's D and R).
+/// with the Dungeon window's own movement and action buttons (and the remake's Defend,
+/// Run and Pause, the keyboard's D, R and Space).
 pub fn add_shell(desk: &mut Desk) {
     desk.synth(STRIP, "", 200, 28, &[("videosoftindextab", "tabShell", None, [0, 0, 200, 28], "Character|Objects|Party")]);
     #[rustfmt::skip]
@@ -124,14 +124,15 @@ pub fn add_shell(desk: &mut Desk) {
         ("CommandButton", "cmdMove", Some(0), [2, 2, 36, 23], ""), ("CommandButton", "cmdMove", Some(2), [39, 2, 36, 23], ""),
         ("CommandButton", "cmdMove", Some(1), [76, 2, 36, 23], ""), ("CommandButton", "cmdMove", Some(3), [113, 2, 36, 23], ""),
         ("CommandButton", "cmdAction", Some(2), [152, 2, 42, 23], ""), ("CommandButton", "cmdAction", Some(3), [195, 2, 43, 23], ""),
-        ("CommandButton", "cmdAction", Some(0), [2, 27, 58, 23], ""), ("CommandButton", "cmdDefend", None, [61, 27, 58, 23], "Defend"),
-        ("CommandButton", "cmdRun", None, [120, 27, 58, 23], "Run"), ("CommandButton", "cmdAction", Some(1), [179, 27, 59, 23], ""),
+        ("CommandButton", "cmdAction", Some(0), [2, 27, 46, 23], ""), ("CommandButton", "cmdDefend", None, [49, 27, 46, 23], "Defend"),
+        ("CommandButton", "cmdRun", None, [96, 27, 46, 23], "Run"), ("CommandButton", "cmdPause", None, [143, 27, 46, 23], "Pause"),
+        ("CommandButton", "cmdAction", Some(1), [190, 27, 48, 23], ""),
     ]);
     let dun = desk.forms.get("frmDungeonMain").map(|f| f.controls.clone()).unwrap_or_default();
     for f in desk.forms.iter_mut().filter(|(k, _)| [STRIP, PAD].contains(&k.as_str())).map(|(_, f)| f) {
         f.props.insert("BorderStyle".into(), Val::N(0));
         for c in &mut f.controls {
-            // Defend and Run take Fight's font.
+            // Defend, Run and Pause take Fight's font.
             let same = dun.iter().find(|o| o.name == c.name && o.index == c.index);
             if let Some(o) = same.or(dun.iter().find(|o| o.name == "cmdAction" && o.index == Some(0) && c.name != "tabShell")) {
                 let caption = c.props.get("Caption").cloned().filter(|_| same.is_none());

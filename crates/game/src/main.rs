@@ -1043,8 +1043,12 @@ impl App {
             }
         }
         self.toasts.retain(|t| t.2 > now);
-        if let Some(n) = desk.toasts(ctx, &self.toasts) {
-            self.toasts.remove(n);
+        // Touch: what a long press picked up, until a tap puts it down (on the banner, back).
+        let carried = desk.carry.as_ref().map(|(_, _, s)| ("Carrying".to_string(), format!("{}{}Tap where it goes, or here to put it back.", s.trim(), if s.trim().is_empty() { "" } else { ": " }), f64::INFINITY));
+        match desk.toasts(ctx, &self.toasts.iter().cloned().chain(carried).collect::<Vec<_>>()) {
+            Some(n) if n == self.toasts.len() => desk.carry = None,
+            Some(n) => drop(self.toasts.remove(n)),
+            None => {}
         }
         if let Some(t) = self.toasts.iter().map(|t| t.2).reduce(f64::min) {
             ctx.request_repaint_after_secs((t - now) as f32);

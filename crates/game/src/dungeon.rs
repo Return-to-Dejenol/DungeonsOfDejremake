@@ -103,7 +103,7 @@ impl App {
             let fight = self.game.as_ref().is_some_and(|g| g.fight.is_some());
             let mut v = View::default();
             v.enable("cmdAction(3)", open).enable("cmdDefend", fight).enable("cmdRun", fight);
-            v.text("cmdDefend", if offer { "Join" } else { "Defend" });
+            v.text("cmdDefend", if offer { "Join" } else { "Defend" }).text("cmdPause", if self.paused { "Go" } else { "Pause" });
             ev.clicked = desk.window(ctx, crate::stats::PAD, v, false).clicked.or(ev.clicked);
         }
         // Touch: a swipe across the maze steps (up), turns (left, right) or turns about (down).
@@ -112,6 +112,7 @@ impl App {
         }
         keys[if offer { 11 } else { 6 }] |= ev.click("cmdDefend");
         keys[7] |= ev.click("cmdRun");
+        keys[8] |= ev.click("cmdPause");
         let g = self.game.as_mut().unwrap();
         let before = (g.pos(), g.fight.is_some(), g.party.iter().map(|m| m.hp).sum::<i32>());
         match ev.index("cmdMove") {
