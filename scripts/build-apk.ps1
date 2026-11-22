@@ -1,10 +1,12 @@
 # Builds the Android APK, target/android/DejenolRestoration-<version>.apk, without Gradle:
-# the game as a native library (crates/android) for arm64 and x86_64, the Java activity
+# the game as a native library (crates/android) for phones (arm64; -Emulator adds x86_64 for
+# the emulator, a test build only), the Java activity
 # (android/Main.java), and the SoundFont as an asset. Needs the Android SDK (ANDROID_HOME,
 # else %LOCALAPPDATA%\Android\Sdk) with build-tools, a platform and the NDK, a JDK, and
-# rustup's aarch64-linux-android and x86_64-linux-android targets.
+# rustup's aarch64-linux-android target (and x86_64-linux-android for -Emulator).
 # It signs with ~/.android/dejenol-release.jks, made on the first run: keep that key, since
 # an APK signed with another can't update an installed one.
+param([switch]$Emulator)
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot)
 $sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { "$env:LOCALAPPDATA\Android\Sdk" }
@@ -21,7 +23,9 @@ New-Item -ItemType Directory "$out/apk", "$out/classes", "$out/res/mipmap", "$ou
 # (and the clang they start) at Low, which can't write to %TEMP%.
 $env:TEMP = $env:TMP = (Resolve-Path "$out/tmp").Path
 
-foreach ($t in @(('arm64-v8a', 'aarch64-linux-android'), ('x86_64', 'x86_64-linux-android'))) {
+$abis = @(, @('arm64-v8a', 'aarch64-linux-android'))
+if ($Emulator) { $abis += , @('x86_64', 'x86_64-linux-android') }
+foreach ($t in $abis) {
     $abi, $triple = $t
     $var = $triple.ToUpper().Replace('-', '_')
     Set-Item "env:CARGO_TARGET_${var}_LINKER" "$llvm\${triple}26-clang.cmd"

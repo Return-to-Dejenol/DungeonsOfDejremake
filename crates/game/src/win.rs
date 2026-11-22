@@ -690,13 +690,12 @@ impl Desk {
             let d = ui.input(|i| i.pointer.press_origin().zip(i.pointer.latest_pos()).map(|(a, b)| b - a)).unwrap_or_default();
             self.state(form, k).scrolling = d.y.abs() > d.x.abs();
         }
-        // Touch: a press held still on a draggable item picks it up instead (the drag
-        // started by time, not by moving).
-        if self.touch
-            && resp.drag_started()
-            && let Some(dr) = v.drags.get(k)
-            && ui.input(|i| i.pointer.press_origin().zip(i.pointer.latest_pos()).is_some_and(|(a, b)| (b - a).length() < 6.0))
-        {
+        // Touch: a press held still on a draggable item picks it up instead. A real touch
+        // screen reports it as a long touch (egui's press-and-hold, which ends the drag);
+        // a mouse in the mobile layout as a drag started by time, not by moving.
+        let picked = self.touch
+            && (resp.long_touched() || resp.drag_started() && ui.input(|i| i.pointer.press_origin().zip(i.pointer.latest_pos()).is_some_and(|(a, b)| (b - a).length() < 6.0)));
+        if picked && let Some(dr) = v.drags.get(k) {
             self.carry = Some((format!("{form}.{k}"), *dr, caption.clone()));
             egui::DragAndDrop::clear_payload(ui.ctx());
         }
@@ -723,9 +722,10 @@ impl Desk {
         if let Some(d) = resp.dnd_release_payload::<Drag>() {
             ev.dropped = Some((k.to_string(), *d));
         }
-        let mut clicked = enabled && resp.clicked();
-        // A tap puts down what is carried: on another control as a drop, on its own
-        // again to keep it. Tab strips leave it carried, to reach another tab.
+        // The long touch that picked it up also reports a click; that is not a put-down.
+        let mut clicked = resp.clicked() && !(picked && v.drags.contains_key(k));
+        // A tap puts down what is carried: on another control as a drop (enabled or not,
+        // as a mouse drop), on its own again to keep it. Tab strips leave it carried, to reach another tab.
         if clicked
             && c.kind != "videosoftindextab"
             && let Some((src, dr, _)) = self.carry.take()
@@ -735,7 +735,7 @@ impl Desk {
             }
             clicked = false;
         }
-        if clicked {
+        if clicked && enabled {
             ev.clicked = Some(k.to_string());
         }
         if enabled && resp.double_clicked() {
@@ -1575,4 +1575,54 @@ mod tests {
             assert!(r.min.x.is_finite() && r.min.y.is_finite() && r.max.x.is_finite() && r.max.y.is_finite(), "{screen:?} -> {r:?}");
         }
     }
-}
+
+    /// Touch: a finger held still on a draggable item picks it up (egui's long touch),
+    /// and a tap on another control puts it down there as a drop.
+    #[test]
+    fn long_touch_carries() {
+        use std::cell::Cell;
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/ddj-win-test-carry");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(ddj_extract::forms::FILE), "{}").unwrap();
+        let ctx = egui::Context::default();
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(400.0, 800.0));
+        ctx.run_ui(egui::RawInput { max_texture_side: Some(8192), screen_rect: Some(screen), ..Default::default() }, |_| {}).textures_delta.clear();
+        let mut desk = Desk::new(&ctx, &dir).unwrap();
+        desk.touch = true;
+        desk.synth("frmT", "T", 200, 100, &[("Label", "lblA", None, [10, 10, 80, 15], "A"), ("Label", "lblB", None, [10, 50, 80, 15], "B")]);
+        let (a, b) = (Cell::new(Pos2::ZERO), Cell::new(Pos2::ZERO));
+        let mut frame = |t: f64, events: Vec<egui::Event>, desk: &mut Desk| {
+            let mut ev = Ev::default();
+            let mut out = ctx.run_ui(egui::RawInput { time: Some(t), screen_rect: Some(screen), events, ..Default::default() }, |_| {
+                desk.begin(screen, &[]);
+                let mut v = View::default();
+                v.drag("lblA", Drag(1, 0, 7)).scroll("lblA", "vsbT", 15.0, 30).scroll("lblB", "vsbT", 15.0, 30);
+                v.paint("lblA", |_, r, _| a.set(r.center())).paint("lblB", |_, r, _| b.set(r.center()));
+                ev = desk.window(&ctx, "frmT", v, true);
+            });
+            out.textures_delta.clear();
+            (ev, out.viewport_output.values().map(|v| v.repaint_delay).min().unwrap_or(std::time::Duration::MAX))
+        };
+        let touch = |phase, pos| egui::Event::Touch { device_id: egui::TouchDeviceId(1), id: egui::TouchId(1), phase, pos, force: None };
+        // What egui-winit sends for a finger down and up.
+        let down = |pos| vec![touch(egui::TouchPhase::Start, pos), egui::Event::PointerMoved(pos), egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() }];
+        let up = |pos| vec![touch(egui::TouchPhase::End, pos), egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() }, egui::Event::PointerGone];
+        // A new window shows from its second frame.
+        frame(0.0, vec![], &mut desk);
+        frame(0.5, vec![], &mut desk);
+        let (pa, pb) = (a.get(), b.get());
+        // A finger held still still wanders a point or two, which the phone reports every
+        // frame or so.
+        frame(1.0, down(pa), &mut desk);
+        for i in 1..=80 {
+            let j = pa + vec2(1.5 * (i as f32 * 0.7).sin(), 1.0);
+            frame(1.0 + i as f64 * 0.016, vec![touch(egui::TouchPhase::Move, j), egui::Event::PointerMoved(j)], &mut desk);
+        }
+        assert_eq!(desk.carry.as_ref().map(|c| (c.0.as_str(), c.1)), Some(("frmT.lblA", Drag(1, 0, 7))), "the long touch picks it up");
+        frame(2.3, up(pa), &mut desk);
+        assert!(desk.carry.is_some(), "lifting the finger keeps it carried");
+        frame(3.0, down(pb), &mut desk);
+        let (ev, _) = frame(3.1, up(pb), &mut desk);
+        assert_eq!(ev.dropped, Some(("lblB".to_string(), Drag(1, 0, 7))), "the tap puts it down");
+        assert!(desk.carry.is_none() && ev.clicked.is_none());
+    }}

@@ -14,7 +14,8 @@ build (2026-11-04) and the Android APK (2026-11-05).
 - **Android.** The APK is published openly (it holds only project code, the shareware
   and the SoundFont). The player imports their files on the phone with the system's
   document picker (`android/Main.java` copies them into the app's storage). Built by
-  `scripts/build-apk.ps1` without Gradle, for arm64 and x86_64, Android 8 and up, in either orientation. It is
+  `scripts/build-apk.ps1` without Gradle, for phones (arm64; `-Emulator` adds x86_64 for test builds only, owner
+  2026-11-21), Android 8 and up, in either orientation. It is
   signed with `~/.android/dejenol-release.jks` (made on the first build): keep that key,
   since an APK signed with another can't update an installed copy. Updates are a new APK,
   which the game offers itself (as Windows does): once a day, or Options' Check Updates, it
