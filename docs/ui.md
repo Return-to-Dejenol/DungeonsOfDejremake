@@ -201,11 +201,20 @@ Taken while building; reviewed at play-test.
   Options' No Party Sound, No HELP Sound and No Msg. Ding as the original. Not played:
   the sounds for other players' characters in the room (the remake has none).
 
+- **Carrying** (2026-11-24, owner: bodies and companions as the original): P (toolbar and
+  dungeon) opens Pickup Character with the dead lying below whom nobody here carries; the
+  controlled character picks one up if it lies in this room and isn't Hidden, putting
+  down what it carried. L (toolbar Leave and dungeon) puts it down here. It travels with
+  the party, drops where its carrier dies, and reaches the morgue in the city; raising
+  spells wait while carrying. A character carries one dead companion, the one with the
+  most hits, unless it is more than one size above the race; the others, and any while
+  it carries a character, are lost, as is one put down with L. A death loses all the
+  character's companions (mdrcharIsDead). Alt+P pools the gold (also Alt-click). The
+  Objects tab's carry line shows what is carried. The remake's own party still carries
+  its dead members.
+
 ## Not done yet
 
-- Pickup/Drop, Carry and the toolbar's Leave (carrying characters) stay off: the owner
-  left carrying out. The toolbar's fifth button pools gold (the original's P picked up a
-  character; pooling was Alt+P).
 - The spell list's type filter only offers "All"; the Look tab is sparse.
 - Window positions are not saved per character as the original saved them.
 - Not matched yet: the store's inner sunken list boxes; Windows 95 title bars are drawn from memory

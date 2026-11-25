@@ -550,7 +550,13 @@ impl App {
                 v.drag(&format!("picCompanion({k})"), Drag(2, sel, k));
             }
         }
-        v.text("lblCarryInfo", format!("{} companion{}", c.companions.len(), if c.companions.len() == 1 { "" } else { "s" })).show("cmdCompanion(0)", false);
+        // What it carries (mdrcharShowCharry): a character, else a dead companion.
+        let carry = match (&c.carrying, c.companions.iter().find(|x| x.hp <= 0)) {
+            (Some(b), _) => format!("{}\"{}\"", d.t(0x0f83_6388), b.name),
+            (None, Some(x)) => format!("{}\"{}\"{}", d.t(0x0f83_6388), d.monsters[x.monster].name, d.t(0x2b0c_98f1)),
+            _ => String::new(),
+        };
+        v.text("lblCarryInfo", carry).show("cmdCompanion(0)", false);
         let ev = desk.window(ctx, F, v, false);
         // An item dragged from the bank's list comes back into the pack.
         if let Some((_, Drag(6, m, k))) = ev.dropped.clone()

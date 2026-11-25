@@ -21,7 +21,8 @@ impl App {
     pub(crate) fn dungeon(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData, t: &Tuning) {
         const F: &str = "frmDungeonMain";
         let typing = ctx.egui_wants_keyboard_input() || self.dialog.is_some();
-        let mut keys = ctx.input(|i| [Key::ArrowUp, Key::ArrowLeft, Key::ArrowRight, Key::ArrowDown, Key::T, Key::F, Key::D, Key::R, Key::Space, Key::A, Key::O, Key::J].map(|k| i.key_pressed(k) && !typing));
+        let mut keys = ctx.input(|i| [Key::ArrowUp, Key::ArrowLeft, Key::ArrowRight, Key::ArrowDown, Key::T, Key::F, Key::D, Key::R, Key::Space, Key::A, Key::O, Key::J, Key::P, Key::L].map(|k| i.key_pressed(k) && !typing));
+        let alt = ctx.input(|i| i.modifiers.alt);
         let (mut ev, open) = {
             let g = self.game.as_ref().unwrap();
             let p = g.pos();
@@ -156,7 +157,8 @@ impl App {
                 self.automap_open = true;
                 desk.active = Some("frmAutoMap".into());
             }
-            Some(4 | 5) => g.log.push("Carrying characters isn't in the remake yet.".into()),
+            Some(4) => keys[12] = true,
+            Some(5) => keys[13] = true,
             Some(7) if on_up && g.pos().floor == 1 => g.take_stairs(d, t),
             Some(7) => g.log.push("You must be on the stairs up on level 1 to exit.".into()),
             _ => {}
@@ -199,6 +201,14 @@ impl App {
         }
         if keys[8] {
             self.paused = !self.paused;
+        }
+        // P picks up a body here (Alt+P pools the gold), L puts down what is carried.
+        if keys[12] {
+            self.pick_or_pool(desk, d, alt);
+        }
+        if keys[13] {
+            self.game.as_mut().unwrap().put_down(d);
+            self.persist();
         }
         // Timed rounds: the first comes a full round after the fight starts.
         let g = self.game.as_mut().unwrap();

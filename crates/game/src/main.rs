@@ -64,6 +64,8 @@ enum Dialog {
     Confirm(String, Deed),
     /// The original's "Pickup Character": add a saved character to the party.
     Recruit,
+    /// Pickup Character ('P'): pick up a dead character lying in this room.
+    Pickup(Vec<String>),
     /// A question for the Seer: the button asked (Character 0, Monster 2, Item 3).
     Seer(u16),
     /// The Morgue's "Character's Name?" for its Raise (0) or rescue (3) button.
@@ -351,7 +353,9 @@ impl App {
         let Some(g) = &mut self.game else { return };
         g.store.saved = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
         let mut err = None;
-        for m in &g.party {
+        // The party, the bodies it carries (where they are now) and those it put down.
+        let dropped = std::mem::take(&mut g.dropped);
+        for m in g.party.iter().chain(g.party.iter().filter_map(|m| m.carrying.as_deref())).chain(&dropped) {
             if let Err(e) = m.save(&saves()) {
                 err = Some(format!("Could not save {}: {e}", m.name));
             }
@@ -369,6 +373,32 @@ impl App {
         if let Some(e) = err {
             self.say(e);
         }
+    }
+
+    /// 'P': Pickup Character asks which body to pick up; Alt+P pools the party's gold to
+    /// the character shown.
+    fn pick_or_pool(&mut self, desk: &mut Desk, d: &GameData, alt: bool) {
+        let Some(g) = self.game.as_mut() else { return };
+        if !alt {
+            // The dead lying below whom nobody here carries (frmInteract's PICKUP list).
+            let here = |n: &String| g.party.iter().any(|m| &m.name == n || m.carrying.as_ref().is_some_and(|b| &b.name == n));
+            let dead = game::saved(&saves()).into_iter().filter(|n| !here(n) && load(n).is_ok_and(|c| matches!(c.life, ddj_rules::game::Life::Dead(_)))).collect();
+            desk.st.retain(|k, _| !k.starts_with("frmInteract."));
+            self.dialog = Some(Dialog::Pickup(dead));
+            return;
+        }
+        let sel = self.sel.min(g.party.len() - 1);
+        let msg = if g.party.len() == 1 {
+            d.t(0x6a6b_6533).into()
+        } else if g.fight.is_some() {
+            d.t(0x5df7_32e1).into()
+        } else {
+            let pooled: u64 = g.party.iter_mut().enumerate().filter(|(i, _)| *i != sel).map(|(_, m)| std::mem::take(&mut m.gold)).sum();
+            g.party[sel].gold += pooled;
+            format!("{}\"{}\"{}", d.t(0x2928_069c), g.party[sel].name, d.t(0xb0af_31db))
+        };
+        g.log.push(msg);
+        self.persist();
     }
 
     /// Starts play with a character, bringing its allies along when they can come.
@@ -452,11 +482,9 @@ impl App {
                 }
             });
         }
-        for i in [1, 2, 3, 4, 5, 7, 8] {
+        for i in [1, 2, 3, 4, 5, 6, 7, 8] {
             v.enable(&format!("cmdTool({i})"), playing);
         }
-        // Leave (L) only puts down a carried character, which the remake doesn't carry.
-        v.enable("cmdTool(6)", false);
         let ev = desk.main(ui, &title, v);
         match ev.index("cmdTool") {
             // The HelpLesson; F5: Objects & Spells; F8: the AutoMap; 'A': add a character; F10: options.
@@ -467,20 +495,10 @@ impl App {
                 desk.active = Some("frmAutoMap".into());
             }
             Some(3) => self.dialog = Some(Dialog::Recruit),
-            Some(5) => {
-                // 'P': pool the party's gold to the character shown.
+            Some(5) => self.pick_or_pool(desk, d, ui.input(|i| i.modifiers.alt)),
+            Some(6) => {
                 if let Some(g) = self.game.as_mut() {
-                    let sel = self.sel.min(g.party.len() - 1);
-                    let msg = if g.party.len() == 1 {
-                        d.t(0x6a6b_6533).into()
-                    } else if g.fight.is_some() {
-                        d.t(0x5df7_32e1).into()
-                    } else {
-                        let pooled: u64 = g.party.iter_mut().enumerate().filter(|(i, _)| *i != sel).map(|(_, m)| std::mem::take(&mut m.gold)).sum();
-                        g.party[sel].gold += pooled;
-                        format!("{}\"{}\"{}", d.t(0x2928_069c), g.party[sel].name, d.t(0xb0af_31db))
-                    };
-                    g.log.push(msg);
+                    g.put_down(d);
                     self.persist();
                 }
             }
@@ -1185,6 +1203,7 @@ impl App {
             Dialog::Load => self.load_dialog(desk, ctx, d),
             Dialog::Import => self.import(desk, ctx),
             Dialog::Recruit => self.recruit(desk, ctx, d),
+            Dialog::Pickup(names) => self.pickup(desk, ctx, d, &names),
             Dialog::Seer(b) => self.seer(desk, ctx, d, b),
             Dialog::MorgueWho(b) => self.morgue_who(desk, ctx, d, b),
             Dialog::MorgueWhere(i) => self.morgue_where(desk, ctx, d, i),

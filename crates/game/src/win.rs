@@ -1591,7 +1591,7 @@ mod tests {
         desk.touch = true;
         desk.synth("frmT", "T", 200, 100, &[("Label", "lblA", None, [10, 10, 80, 15], "A"), ("Label", "lblB", None, [10, 50, 80, 15], "B")]);
         let (a, b) = (Cell::new(Pos2::ZERO), Cell::new(Pos2::ZERO));
-        let mut frame = |t: f64, events: Vec<egui::Event>, desk: &mut Desk| {
+        let frame = |t: f64, events: Vec<egui::Event>, desk: &mut Desk| {
             let mut ev = Ev::default();
             let mut out = ctx.run_ui(egui::RawInput { time: Some(t), screen_rect: Some(screen), events, ..Default::default() }, |_| {
                 desk.begin(screen, &[]);

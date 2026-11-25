@@ -247,6 +247,10 @@ pub struct Character {
     /// Dead in solid rock (death kind 8): no rescue, no morgue, only Resurrect.
     #[serde(default)]
     pub rocked: bool,
+    /// The dead character this one carries (MORDOR.EXE's p10B6 from 4). Not saved: the
+    /// original drops it on loading, where the body was last put.
+    #[serde(skip)]
+    pub carrying: Option<Box<Character>>,
     rng: u64,
 }
 
@@ -346,6 +350,7 @@ impl Character {
             quest_item: None,
             vault: Vec::new(),
             rocked: false,
+            carrying: None,
             rng: seed | 1,
         };
         c.sp = c.max_sp(data, &Tuning::load(&[]).expect("built-in tuning"));
@@ -543,8 +548,21 @@ impl Character {
     pub fn add_xp(&mut self, data: &GameData, t: &Tuning, xp: u64) -> u64 {
         let xp = if self.buffs.xp_mult > 1.0 { (xp as f32 * self.buffs.xp_mult) as u64 } else { xp };
         // Pinned: XP stops one short of the level after next until the next level is made.
-        let cap = t.xp_needed(self.level() + 1, data.races[self.race].xp_factor, data.guilds[self.guild].xp_factor) - 1;
-        self.xp[self.guild] = (self.xp[self.guild] + xp).min(cap);
+        let credit = |c: &mut Self, g: usize, xp: u64| {
+            let cap = t.xp_needed(c.levels[g] + 1, data.races[c.race].xp_factor, data.guilds[g].xp_factor) - 1;
+            c.xp[g] = (c.xp[g] + xp).min(cap);
+        };
+        credit(self, self.guild, xp);
+        // Nomad's shared experience (docs/balance.md): Nomad gains a fifth of what another
+        // guild earns; playing Nomad, each other guild within 5 levels of it gains a fifth.
+        let share = xp / 5;
+        let nomad = self.levels[NOMAD];
+        for g in 0..self.levels.len() {
+            let l = self.levels[g];
+            if g != self.guild && l > 0 && (g == NOMAD || self.guild == NOMAD && l.abs_diff(nomad) <= 5) {
+                credit(self, g, share);
+            }
+        }
         xp
     }
 
@@ -1031,6 +1049,8 @@ pub struct Game {
     pub lost: crate::automap::Lost,
     /// Sound effects for the window to play, in order.
     pub sounds: Vec<Sound>,
+    /// Bodies put down, for the window to save to their own files.
+    pub dropped: Vec<Character>,
 }
 
 /// A sound effect by its number in the original's table (gv20CA), and the member whose
@@ -1050,7 +1070,7 @@ pub const SQUARE: usize = 2;
 
 impl Game {
     pub fn new(lead: Character) -> Self {
-        Self { party: vec![lead], fight: None, chest: None, rooms: Default::default(), ticks: 0, log: Vec::new(), store: Store::default(), hall: Hall::default(), library: Default::default(), said: Default::default(), boxes: Vec::new(), teleport_pending: None, lost: Default::default(), sounds: Vec::new() }
+        Self { party: vec![lead], fight: None, chest: None, rooms: Default::default(), ticks: 0, log: Vec::new(), store: Store::default(), hall: Hall::default(), library: Default::default(), said: Default::default(), boxes: Vec::new(), teleport_pending: None, lost: Default::default(), sounds: Vec::new(), dropped: Vec::new() }
     }
 
     pub fn lead(&self) -> &Character {
@@ -1216,9 +1236,53 @@ impl Game {
         if i == 0 || i >= self.party.len() {
             return None;
         }
-        let c = self.party.remove(i);
+        let mut c = self.party.remove(i);
         self.party[0].allies = self.party[1..].iter().map(|m| m.name.clone()).collect();
+        // A body it carried stays where it is.
+        self.dropped.extend(c.carrying.take().map(|b| *b));
         Some(c)
+    }
+
+    /// Pickup Character ('P', fn14CB): the controlled character picks up a dead character
+    /// lying in this room, putting down what it carried. Nothing while dead or paralyzed.
+    pub fn pick_up(&mut self, data: &GameData, body: Character) -> Result<(), String> {
+        let me = &self.party[0];
+        if !me.alive() || me.status.paralysis > 0 {
+            return Ok(());
+        }
+        // frmInteract's checks for PICKUP, in its order.
+        let here = |p: Pos| data.floors.get(p.floor.wrapping_sub(1)).map(|f| (p.floor, f.square(p.x, p.y).area));
+        if body.name == me.name {
+            return Err(data.t(0x3b5f_e47d).into());
+        }
+        let Life::Dead(p) = body.life else { return Err(data.t(0x7b58_07f4).into()) };
+        if here(p).is_none() || here(p) != here(me.pos) {
+            return Err(data.t(0x44ef_8a7c).into());
+        }
+        if body.panel.hide {
+            return Err(format!("\"{}\"{}", body.name, data.t(0x83d1_afb4)));
+        }
+        self.put_down(data);
+        self.say(format!("{}{}\"{}\"{}", self.quoted(0), data.t(0xfdd3_8b0c), body.name, data.t(0x2b0c_98f1)));
+        self.party[0].carrying = Some(Box::new(body));
+        Ok(())
+    }
+
+    /// Leave ('L'): the controlled character puts down what it carries; a character lies
+    /// here, a dead companion is left behind for good.
+    pub fn put_down(&mut self, data: &GameData) {
+        let m = &mut self.party[0];
+        let what = if let Some(mut b) = m.carrying.take() {
+            (b.pos, b.life) = (m.pos, Life::Dead(m.pos));
+            let name = format!("\"{}\"", b.name);
+            self.dropped.push(*b);
+            name
+        } else if let Some(k) = m.companions.iter().position(|c| c.hp <= 0) {
+            format!("\"{}\"", data.monsters[m.companions.remove(k).monster].name)
+        } else {
+            return;
+        };
+        self.say(format!("{}{}{what}{}", self.quoted(0), data.t(0xa8a2_e3b4), data.t(0x2b0c_98f1)));
     }
 
     /// Moves member i to place j among the followers (the leader stays first).
@@ -1254,6 +1318,9 @@ impl Game {
             if let Life::Dead(_) = m.life {
                 m.life = Life::Dead(p);
             }
+            if let Some(b) = &mut m.carrying {
+                (b.pos, b.life) = (p, Life::Dead(p));
+            }
             if m.alive() && floor_changed {
                 m.buffs.xp_mult = 0.0;
             }
@@ -1269,6 +1336,15 @@ impl Game {
         let days = (100.0 - 100.0 * f64::from(lead.hp) / f64::from(lead.max_hp.max(1))) / 3.25;
         let days = if lead.alive() { days.round_ties_even() as u32 } else { 0 };
         self.lost = Default::default();
+        // A carried character is put down in the city, for the morgue (frmCity's Form_Load).
+        for i in 0..self.party.len() {
+            if let Some(mut b) = self.party[i].carrying.take() {
+                (b.pos, b.life) = (Pos::default(), Life::InMorgue);
+                let who = if self.party.len() > 1 { format!("{}{}", self.quoted(i), data.t(0xa8a2_e3b4)) } else { data.t(0x8490_ea5d).into() };
+                self.say(format!("{who}\"{}\"{}", b.name, data.t(0x2b0c_98f1)));
+                self.dropped.push(*b);
+            }
+        }
         for m in &mut self.party {
             m.pos = Pos::default();
             m.buffs = Buffs::default();
@@ -1583,9 +1659,16 @@ impl Game {
         }
         m.hp = 0;
         m.life = Life::Dead(m.pos);
-        // Death clears the ailments (mdrcharIsDead -> sub048C).
+        // Death clears the ailments (mdrcharIsDead -> sub048C), loses the companions and
+        // drops the body carried where it falls.
         m.buffs = Buffs::default();
         m.status = Status::default();
+        m.companions.clear();
+        if let Some(mut b) = m.carrying.take() {
+            (b.pos, b.life) = (m.pos, Life::Dead(m.pos));
+            self.dropped.push(*b);
+        }
+        let m = &mut self.party[i];
         let name = format!("\"{}\"", m.name);
         // The guild log (mdrcharSetDead): where, if the level is known.
         let (g, floor) = (m.guild, m.pos.floor);
@@ -2139,6 +2222,65 @@ mod tests {
         let mut c = hero(&d, "Roll", 0, 0, 8, 1);
         let rolls: Vec<f64> = (0..2000).map(|_| magic::hits(&mut c, bolt, 1.0, false)).collect();
         assert!(rolls.iter().all(|&r| (6.0..=13.0).contains(&r)), "{:?}", rolls.iter().fold((99.0f64, 0.0f64), |a, &r| (a.0.min(r), a.1.max(r))));
+    }
+
+    #[test]
+    fn nomad_shares_experience() {
+        let (d, t) = (data(), Tuning::load(&[]).unwrap());
+        let mut c = hero(&d, "Sharer", 0, 1, 1, 10);
+        c.levels[NOMAD] = 9;
+        c.xp.iter_mut().for_each(|x| *x = 0);
+        // Another guild's play: Nomad gains a fifth, whatever its level.
+        c.add_xp(&d, &t, 1000);
+        assert_eq!((c.xp[1], c.xp[NOMAD]), (1000, 200));
+        // Nomad's play: guilds within 5 levels of Nomad gain a fifth, others nothing.
+        c.guild = NOMAD;
+        c.add_xp(&d, &t, 1000);
+        assert_eq!((c.xp[1], c.xp[NOMAD]), (1200, 1200));
+        c.levels[1] = 15;
+        c.add_xp(&d, &t, 1000);
+        assert_eq!(c.xp[1], 1200);
+    }
+
+    #[test]
+    fn bodies_and_dead_companions_are_carried() {
+        let (d, t) = (data(), Tuning::load(&[]).unwrap());
+        let mut g = Game::new(hero(&d, "Bearer", 0, 1, 0, 5));
+        g.enter_dungeon(&d).unwrap();
+        let p = g.pos();
+        let dead = |name: &str, at: Pos| {
+            let mut c = hero(&d, name, 0, 1, 0, 1);
+            (c.hp, c.life) = (0, Life::Dead(at));
+            c
+        };
+        // Only a body lying in this room.
+        assert!(g.pick_up(&d, dead("Far", Pos { floor: 2, ..p })).is_err());
+        g.pick_up(&d, dead("Fallen", p)).unwrap();
+        // It travels with the party.
+        let q = Pos { x: p.x + 1, ..p };
+        g.set_pos(&d, q);
+        // L puts it down where the party stands; carried to the city, it reaches the morgue.
+        g.put_down(&d);
+        assert_eq!(g.dropped.pop().map(|b| b.life), Some(Life::Dead(q)));
+        g.pick_up(&d, dead("Fallen", q)).unwrap();
+        g.to_town(&d, &t);
+        assert_eq!(g.dropped.pop().map(|b| b.life), Some(Life::InMorgue));
+        // One dead companion is carried, the one with the most hits; none while carrying.
+        g.enter_dungeon(&d).unwrap();
+        let kobold = d.monsters.iter().position(|m| m.name == "Kobold").unwrap();
+        let pet = |max_hp| Companion { monster: kobold, hp: max_hp, max_hp, bind: 10, id: 0, align: None };
+        g.party[0].companions = vec![pet(10), pet(20), pet(30)];
+        crate::monsters::companion_hurt(&mut g, &d, 0, 0, 99);
+        crate::monsters::companion_hurt(&mut g, &d, 0, 1, 99);
+        assert_eq!(g.party[0].companions.iter().map(|c| (c.max_hp, c.hp)).collect::<Vec<_>>(), [(20, 0), (30, 30)]);
+        g.pick_up(&d, dead("Fallen", g.pos())).unwrap();
+        assert_eq!(g.party[0].companions.len(), 1);
+        crate::monsters::companion_hurt(&mut g, &d, 0, 0, 99);
+        assert!(g.party[0].companions.is_empty());
+        // The carrier's death drops the body where it falls.
+        let r = g.pos();
+        g.hurt(&d, 0, 9999);
+        assert_eq!(g.dropped.pop().map(|b| b.life), Some(Life::Dead(r)));
     }
 
     #[test]

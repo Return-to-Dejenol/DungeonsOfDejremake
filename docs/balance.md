@@ -231,6 +231,16 @@ gain makes it stronger still.
 - A character whose only guild is Nomad has its Nomad ratings cut to 70% (start). A
   pure Nomad is the hard mode.
 
+### Nomad shares experience (2026-11-24)
+
+Strengthens the Nomad start a little and rewards versatility.
+
+- Experience earned in another guild also gives Nomad 20% of it, whatever Nomad's level.
+- Experience earned as Nomad gives 20% of it to each other guild the character belongs
+  to that is within 5 levels of Nomad.
+- The share is 20% of what was earned (after experience boosts), even if the earning
+  guild is pinned; each guild's own pin still caps what it takes in.
+
 ### Melee uses STR and DEX (2026-11-03)
 
 Giants stay the best melee race, but by less. STR max stays 25.

@@ -461,8 +461,8 @@ fn hit_companion(g: &mut Game, d: &GameData, m: usize, j: usize, k: usize) -> bo
     true
 }
 
-/// Damage to member j's companion k; a dead one stays in its slot until raised.
-fn companion_hurt(g: &mut Game, d: &GameData, j: usize, k: usize, dmg: i32) {
+/// Damage to member j's companion k; a dead one is carried until raised, as below.
+pub(crate) fn companion_hurt(g: &mut Game, d: &GameData, j: usize, k: usize, dmg: i32) {
     let c = &mut g.party[j].companions[k];
     if c.hp <= 0 || dmg <= 0 {
         return;
@@ -472,6 +472,46 @@ fn companion_hurt(g: &mut Game, d: &GameData, j: usize, k: usize, dmg: i32) {
         let m = c.monster;
         g.sound(death_cry(d, m), Some(j));
         g.say(format!("The {} dies.", d.monsters[m].name));
+        carry_companion(g, d, j, k);
+    }
+}
+
+/// Member j's companion k has died (mdrcharGetCarry): a character carries one dead
+/// companion, the one with the most hits, unless it is more than one size above its
+/// race (then that one is lost), and none while it carries a character. The other dead
+/// companions are left behind.
+fn carry_companion(g: &mut Game, d: &GameData, j: usize, k: usize) {
+    let quoted = |c: &Companion| format!("\"{}\"", d.monsters[c.monster].name);
+    let (name, me) = (g.party[j].name.clone(), j == 0);
+    let m = &g.party[j];
+    let old = (0..m.companions.len()).find(|&i| i != k && m.companions[i].hp <= 0);
+    let mut keep = old;
+    let mut said = Vec::new();
+    if m.carrying.is_none() {
+        // The first with the most hits, in slot order.
+        let (a, b) = old.map_or((k, k), |o| (o.min(k), o.max(k)));
+        let best = if m.companions[b].max_hp > m.companions[a].max_hp { b } else { a };
+        let c = &m.companions[best];
+        if Some(best) != old {
+            let fits = d.monsters[c.monster].w(64) - d.races[m.race].w(28) <= 1;
+            if fits {
+                if let Some(o) = old {
+                    said.push(format!("\"{name}\"{}{}{}{}{}", d.t(0x9bff_c309), quoted(&m.companions[o]), d.t(0x32d2_eb37), quoted(c), d.t(0x2b0c_98f1)));
+                }
+                said.push(if me { format!("{}{}.", d.t(0xbfee_e101), quoted(c)) } else { format!("{name}{}{}.", d.t(0x911b_02b5), quoted(c)) });
+                keep = Some(best);
+            } else {
+                said.push(if me { format!("{}{}", quoted(c), d.t(0xb7fd_2638)) } else { format!("{name}{}{}{}", d.t(0x89d0_00f1), quoted(c), d.t(0xb7fd_2638)) });
+            }
+        }
+    }
+    let mut i = 0;
+    g.party[j].companions.retain(|c| {
+        i += 1;
+        c.hp > 0 || Some(i - 1) == keep
+    });
+    for s in said {
+        g.say(s);
     }
 }
 

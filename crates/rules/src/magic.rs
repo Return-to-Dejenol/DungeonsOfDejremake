@@ -328,6 +328,10 @@ pub fn cast(g: &mut Game, d: &GameData, t: &Tuning, i: usize, s: usize, target: 
     if !gate(g, d, i, s) {
         return;
     }
+    // The raising spells wait until a carried character is put down (mdrcharCastSpell).
+    if (20..=25).contains(&d.spells[s].effect) && g.party[i].carrying.is_some() {
+        return g.say(format!("{}{}", g.quoted(i), d.t(0xa86f_6980)));
+    }
     // Teleport and Displacement out of a fight ask for offsets first; the SP goes when
     // they are given.
     if matches!(d.spells[s].effect, 7 | 8) && g.fight.is_none() {

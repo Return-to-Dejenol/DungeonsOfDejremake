@@ -254,6 +254,25 @@ impl App {
         ev.click("cmdOK") || ev.click("cmdCancel") || ev.closed
     }
 
+    /// Pickup Character ('P'): the controlled character picks up one of the dead lying
+    /// below; the rules check that it lies in this room.
+    pub(crate) fn pickup(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData, names: &[String]) -> bool {
+        let mut v = View::default();
+        v.caption = Some(d.t(0xa4d5_c426).into());
+        v.text("lblQuestion", d.t(0x2113_adde)).show("txtQuestion", false).show("cmbCharacter", true).items("cmbCharacter", names.to_vec());
+        let ev = desk.window(ctx, "frmInteract", v, true);
+        if ev.click("cmdOK")
+            && let Some(n) = desk.state("frmInteract", "cmbCharacter").sel.and_then(|i| names.get(i))
+            && let Some(g) = self.game.as_mut()
+        {
+            let msg = load(n).map_err(|e| e.to_string()).and_then(|c| g.pick_up(d, c)).err().unwrap_or_default();
+            desk.state("frmInteract", "cmbCharacter").sel = None;
+            self.say(msg);
+            self.persist();
+        }
+        ev.click("cmdOK") || ev.click("cmdCancel") || ev.closed
+    }
+
     /// Teleport's and Displacement's offsets (mdrcharTeleport): right, forward and (for
     /// Teleport) down, each picked with - and + instead of the original's typed line.
     pub(crate) fn teleport(&mut self, desk: &mut Desk, ctx: &egui::Context, d: &GameData, t: &ddj_rules::Tuning) -> bool {
